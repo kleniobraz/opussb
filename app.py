@@ -79,9 +79,12 @@ def upload():
     return jsonify({"job_id": job_id}), 202
 
 
+_TRUSTED_CALLERS = {"127.0.0.1", "172.17.0.1"}
+
+
 @app.route("/api/callback", methods=["POST"])
 def callback():
-    if request.remote_addr != "127.0.0.1":
+    if request.remote_addr not in _TRUSTED_CALLERS:
         abort(403)
     data = request.get_json(force=True)
     job_id = data.get("job_id")
@@ -100,7 +103,7 @@ def callback():
 
 @app.route("/api/internal/jobs/<job_id>", methods=["PATCH"])
 def internal_update_job(job_id):
-    if request.remote_addr != "127.0.0.1":
+    if request.remote_addr not in _TRUSTED_CALLERS:
         abort(403)
     data = request.get_json(force=True)
     allowed = {"runpod_job_id", "status", "progress", "error"}
