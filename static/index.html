@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpusSB — Corte Viral</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="container">
+    <h1>OpusSB</h1>
+    <p class="subtitle">Envie um vídeo longo e receba clipes virais em 9:16</p>
+
+    <div id="upload-section">
+      <form id="upload-form">
+        <div class="field">
+          <label for="video-file">Vídeo (mp4, mov, avi, mkv, webm — até 4GB)</label>
+          <input type="file" id="video-file" name="video" accept=".mp4,.mov,.avi,.mkv,.webm" required>
+        </div>
+        <div class="field row">
+          <div>
+            <label for="min-duration">Duração mínima (s)</label>
+            <input type="number" id="min-duration" name="min_duration" value="30" min="5" max="300" required>
+          </div>
+          <div>
+            <label for="max-duration">Duração máxima (s)</label>
+            <input type="number" id="max-duration" name="max_duration" value="90" min="10" max="600" required>
+          </div>
+        </div>
+        <button type="submit" id="submit-btn">Processar Vídeo</button>
+      </form>
+      <div id="upload-error" class="error hidden"></div>
+    </div>
+
+    <div id="progress-section" class="hidden">
+      <p id="filename-label" class="filename"></p>
+      <div class="progress-bar-track">
+        <div id="progress-bar" class="progress-bar-fill" style="width: 0%"></div>
+      </div>
+      <p id="progress-pct" class="progress-pct">0%</p>
+      <p id="status-label" class="status-label">Iniciando...</p>
+      <button id="new-video-btn" class="hidden secondary">Processar outro vídeo</button>
+    </div>
+
+    <div id="results-section" class="hidden">
+      <h2>Clipes prontos</h2>
+      <div id="clips-list"></div>
+    </div>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
