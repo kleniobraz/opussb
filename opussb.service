@@ -1,0 +1,25 @@
+[Unit]
+Description=OpusSB Flask Job Server
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/opussb
+EnvironmentFile=/opt/opussb/.env
+ExecStart=/opt/opussb/venv/bin/gunicorn \
+    --workers 1 \
+    --threads 4 \
+    --bind 127.0.0.1:5001 \
+    --timeout 300 \
+    app:app
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=opussb
+
+[Install]
+WantedBy=multi-user.target

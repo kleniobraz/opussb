@@ -8,3 +8,4 @@ scipy>=1.13
 numpy>=1.26
 pytest>=8.2
 pytest-mock>=3.14
+gunicorn>=22.0
