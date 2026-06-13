@@ -16,6 +16,7 @@ def test_config_expoe_variaveis_obrigatorias():
     assert hasattr(config, "FLASK_PORT")
     assert hasattr(config, "MAX_CONCURRENT_JOBS")
     assert hasattr(config, "JOB_DIR")
+    assert hasattr(config, "CLAUDE_MODEL")
 
 
 def test_flask_port_e_inteiro():

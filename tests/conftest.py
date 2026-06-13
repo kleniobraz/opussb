@@ -11,6 +11,7 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "sk-ant-test")
 os.environ.setdefault("N8N_WEBHOOK_URL", "http://localhost:5678/webhook/opussb")
 os.environ.setdefault("MAX_CONCURRENT_JOBS", "1")
 os.environ.setdefault("FLASK_PORT", "5001")
+os.environ.setdefault("JOB_DIR", "/tmp/test-opussb-jobs")
 
 import pytest
 import importlib
@@ -20,6 +21,10 @@ import importlib
 def fresh_db(tmp_path):
     db_path = str(tmp_path / "test.db")
     jobs_dir = str(tmp_path / "jobs")
+
+    old_db_path = os.environ.get("DB_PATH")
+    old_jobs_dir = os.environ.get("JOB_DIR")
+
     os.environ["DB_PATH"] = db_path
     os.environ["JOB_DIR"] = jobs_dir
     os.makedirs(jobs_dir, exist_ok=True)
@@ -28,5 +33,16 @@ def fresh_db(tmp_path):
     importlib.reload(db)
     db.init_db()
     yield
+
     if os.path.exists(db_path):
         os.remove(db_path)
+
+    if old_db_path is None:
+        os.environ.pop("DB_PATH", None)
+    else:
+        os.environ["DB_PATH"] = old_db_path
+
+    if old_jobs_dir is None:
+        os.environ.pop("JOB_DIR", None)
+    else:
+        os.environ["JOB_DIR"] = old_jobs_dir
