@@ -61,7 +61,7 @@ def upload():
 
     min_duration = request.form.get("min_duration", type=int)
     max_duration = request.form.get("max_duration", type=int)
-    if not min_duration or not max_duration or min_duration >= max_duration:
+    if min_duration is None or max_duration is None or min_duration >= max_duration:
         return jsonify({
             "error": "min_duration e max_duration são obrigatórios e min deve ser menor que max."
         }), 400
