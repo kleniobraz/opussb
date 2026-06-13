@@ -21,9 +21,18 @@ apt update && apt install -y \
     libxext6
 
 echo "==> Creating Python virtual environment..."
-python3.10 -m venv /opt/opussb/venv
+if [ ! -d /opt/opussb/venv ]; then
+    python3.10 -m venv /opt/opussb/venv
+    echo "Virtual environment created."
+else
+    echo "Virtual environment already exists, skipping creation."
+fi
 
 # Assumes project files have already been rsynced to /opt/opussb/
+if [ ! -f /opt/opussb/requirements.txt ]; then
+    echo "ERROR: /opt/opussb/requirements.txt not found. Rsync the project files first." >&2
+    exit 1
+fi
 echo "==> Installing pip dependencies from /opt/opussb/requirements.txt..."
 /opt/opussb/venv/bin/pip install --upgrade pip
 /opt/opussb/venv/bin/pip install -r /opt/opussb/requirements.txt
