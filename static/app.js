@@ -16,6 +16,24 @@
   let pollTimer = null;
   let currentJobId = null;
 
+  // Seções
+  const authSection = document.getElementById('auth-section');
+  const changeSection = document.getElementById('change-section');
+  const appSection = document.getElementById('app-section');
+
+  // Login
+  const loginForm = document.getElementById('login-form');
+  const loginBtn = document.getElementById('login-btn');
+  const loginError = document.getElementById('login-error');
+
+  // Troca de senha
+  const changeForm = document.getElementById('change-form');
+  const changeBtn = document.getElementById('change-btn');
+  const changeError = document.getElementById('change-error');
+
+  // App
+  const userEmail = document.getElementById('user-email');
+  const logoutBtn = document.getElementById('logout-btn');
   const form = document.getElementById('upload-form');
   const submitBtn = document.getElementById('submit-btn');
   const uploadError = document.getElementById('upload-error');
@@ -29,49 +47,128 @@
   const resultsSection = document.getElementById('results-section');
   const clipsList = document.getElementById('clips-list');
 
+  // ─── Roteamento de telas ────────────────────────────────────────────────
+
+  function show(section) {
+    authSection.classList.add('hidden');
+    changeSection.classList.add('hidden');
+    appSection.classList.add('hidden');
+    section.classList.remove('hidden');
+  }
+
+  async function boot() {
+    try {
+      const resp = await fetch('/api/me');
+      if (resp.status === 401) { show(authSection); return; }
+      const me = await resp.json();
+      userEmail.textContent = me.email || '';
+      if (me.must_change_password) { show(changeSection); }
+      else { show(appSection); }
+    } catch (_) {
+      show(authSection);
+    }
+  }
+
+  // ─── Login ──────────────────────────────────────────────────────────────
+
+  loginForm.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    hide(loginError);
+    loginBtn.disabled = true;
+    loginBtn.textContent = 'Entrando...';
+    try {
+      const resp = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: document.getElementById('login-email').value,
+          password: document.getElementById('login-password').value,
+        }),
+      });
+      const json = await resp.json();
+      if (!resp.ok) { showMsg(loginError, json.error || 'Falha no login.'); return; }
+      userEmail.textContent = json.email || '';
+      loginForm.reset();
+      if (json.must_change_password) { show(changeSection); } else { show(appSection); }
+    } catch (_) {
+      showMsg(loginError, 'Falha de conexão. Tente novamente.');
+    } finally {
+      loginBtn.disabled = false;
+      loginBtn.textContent = 'Entrar';
+    }
+  });
+
+  // ─── Troca de senha ───────────────────────────────────────────────────────
+
+  changeForm.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    hide(changeError);
+    const cur = document.getElementById('cur-password').value;
+    const n1 = document.getElementById('new-password').value;
+    const n2 = document.getElementById('new-password2').value;
+    if (n1 !== n2) { showMsg(changeError, 'As senhas novas não coincidem.'); return; }
+    if (n1.length < 8) { showMsg(changeError, 'A nova senha precisa ter ao menos 8 caracteres.'); return; }
+
+    changeBtn.disabled = true;
+    changeBtn.textContent = 'Salvando...';
+    try {
+      const resp = await fetch('/api/change_password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ current_password: cur, new_password: n1 }),
+      });
+      const json = await resp.json();
+      if (!resp.ok) { showMsg(changeError, json.error || 'Falha ao trocar a senha.'); return; }
+      changeForm.reset();
+      show(appSection);
+    } catch (_) {
+      showMsg(changeError, 'Falha de conexão. Tente novamente.');
+    } finally {
+      changeBtn.disabled = false;
+      changeBtn.textContent = 'Salvar nova senha';
+    }
+  });
+
+  // ─── Logout ───────────────────────────────────────────────────────────────
+
+  logoutBtn.addEventListener('click', async function () {
+    stopPolling();
+    try { await fetch('/api/logout', { method: 'POST' }); } catch (_) {}
+    resetUI();
+    show(authSection);
+  });
+
+  // ─── Upload ───────────────────────────────────────────────────────────────
+
   form.addEventListener('submit', async function (e) {
     e.preventDefault();
-    hideError();
+    hide(uploadError);
 
     const minD = parseInt(document.getElementById('min-duration').value, 10);
     const maxD = parseInt(document.getElementById('max-duration').value, 10);
-    if (minD >= maxD) {
-      showError('A duração mínima deve ser menor que a máxima.');
-      return;
-    }
+    if (minD >= maxD) { showMsg(uploadError, 'A duração mínima deve ser menor que a máxima.'); return; }
 
     const fileInput = document.getElementById('video-file');
-    if (!fileInput.files.length) {
-      showError('Selecione um vídeo.');
-      return;
-    }
+    if (!fileInput.files.length) { showMsg(uploadError, 'Selecione um vídeo.'); return; }
 
     submitBtn.disabled = true;
     submitBtn.textContent = 'Enviando...';
 
     const data = new FormData(form);
-
     try {
       const resp = await fetch('/api/upload', { method: 'POST', body: data });
+      if (resp.status === 401) { show(authSection); return; }
       const json = await resp.json();
-
-      if (!resp.ok) {
-        showError(json.error || 'Erro ao enviar vídeo.');
-        resetSubmitBtn();
-        return;
-      }
-
+      if (!resp.ok) { showMsg(uploadError, json.error || 'Erro ao enviar vídeo.'); resetSubmitBtn(); return; }
       currentJobId = json.job_id;
       startPolling(currentJobId, fileInput.files[0].name);
     } catch (err) {
-      showError('Falha de conexão ao enviar o vídeo. Tente novamente.');
+      showMsg(uploadError, 'Falha de conexão ao enviar o vídeo. Tente novamente.');
       resetSubmitBtn();
     }
   });
 
-  newVideoBtn.addEventListener('click', function () {
-    resetUI();
-  });
+  newVideoBtn.addEventListener('click', function () { resetUI(); });
 
   function startPolling(jobId, filename) {
     uploadSection.classList.add('hidden');
@@ -79,7 +176,6 @@
     resultsSection.classList.add('hidden');
     filenameLabel.textContent = filename;
     setProgress(5, 'queued');
-
     if (pollTimer) clearInterval(pollTimer);
     poll(jobId);
     pollTimer = setInterval(function () { poll(jobId); }, 30000);
@@ -88,9 +184,9 @@
   async function poll(jobId) {
     try {
       const resp = await fetch('/api/status/' + jobId);
+      if (resp.status === 401) { stopPolling(); show(authSection); return; }
       if (!resp.ok) return;
       const data = await resp.json();
-
       setProgress(data.progress || 0, data.status);
 
       if (data.status === 'done') {
@@ -106,9 +202,7 @@
           showResults(data.partial_clips, true);
         }
       }
-    } catch (_) {
-      // network blip — keep polling
-    }
+    } catch (_) { /* network blip — keep polling */ }
   }
 
   function setProgress(pct, status) {
@@ -121,10 +215,7 @@
   function showResults(urls, partial) {
     resultsSection.classList.remove('hidden');
     clipsList.innerHTML = '';
-    if (!urls.length) {
-      clipsList.innerHTML = '<p>Nenhum clipe gerado.</p>';
-      return;
-    }
+    if (!urls.length) { clipsList.innerHTML = '<p>Nenhum clipe gerado.</p>'; return; }
     const heading = partial ? '<p class="partial-notice">Clipes parciais (processamento falhou após estes):</p>' : '';
     clipsList.innerHTML = heading + urls.map(function (url, i) {
       return '<a href="' + url + '" class="clip-link" download>Baixar clipe ' + (i + 1) + '</a>';
@@ -135,14 +226,8 @@
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   }
 
-  function showError(msg) {
-    uploadError.textContent = msg;
-    uploadError.classList.remove('hidden');
-  }
-
-  function hideError() {
-    uploadError.classList.add('hidden');
-  }
+  function showMsg(el, msg) { el.textContent = msg; el.classList.remove('hidden'); }
+  function hide(el) { el.classList.add('hidden'); }
 
   function resetSubmitBtn() {
     submitBtn.disabled = false;
@@ -160,6 +245,8 @@
     newVideoBtn.classList.add('hidden');
     statusLabel.classList.remove('error-text');
     resetSubmitBtn();
-    hideError();
+    hide(uploadError);
   }
+
+  boot();
 })();

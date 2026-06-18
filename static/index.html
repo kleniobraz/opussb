@@ -8,44 +8,94 @@
 </head>
 <body>
   <div class="container">
-    <h1>OpusSB</h1>
-    <p class="subtitle">Envie um vídeo longo e receba clipes virais em 9:16</p>
 
-    <div id="upload-section">
-      <form id="upload-form">
+    <!-- Tela: Login -->
+    <div id="auth-section" class="hidden">
+      <h1>OpusSB</h1>
+      <p class="subtitle">Acesso restrito. Entre com seu email corporativo.</p>
+      <form id="login-form">
         <div class="field">
-          <label for="video-file">Vídeo (mp4, mov, avi, mkv, webm — até 4GB)</label>
-          <input type="file" id="video-file" name="video" accept=".mp4,.mov,.avi,.mkv,.webm" required>
+          <label for="login-email">Email</label>
+          <input type="email" id="login-email" autocomplete="username" required>
         </div>
-        <div class="field row">
-          <div>
-            <label for="min-duration">Duração mínima (s)</label>
-            <input type="number" id="min-duration" name="min_duration" value="30" min="5" max="300" required>
-          </div>
-          <div>
-            <label for="max-duration">Duração máxima (s)</label>
-            <input type="number" id="max-duration" name="max_duration" value="90" min="10" max="600" required>
-          </div>
+        <div class="field">
+          <label for="login-password">Senha</label>
+          <input type="password" id="login-password" autocomplete="current-password" required>
         </div>
-        <button type="submit" id="submit-btn">Processar Vídeo</button>
+        <button type="submit" id="login-btn">Entrar</button>
       </form>
-      <div id="upload-error" class="error hidden"></div>
+      <div id="login-error" class="error hidden"></div>
     </div>
 
-    <div id="progress-section" class="hidden">
-      <p id="filename-label" class="filename"></p>
-      <div class="progress-bar-track">
-        <div id="progress-bar" class="progress-bar-fill" style="width: 0%"></div>
+    <!-- Tela: Troca de senha (primeiro acesso) -->
+    <div id="change-section" class="hidden">
+      <h1>Defina sua senha</h1>
+      <p class="subtitle">Primeiro acesso: crie uma senha pessoal antes de continuar.</p>
+      <form id="change-form">
+        <div class="field">
+          <label for="cur-password">Senha atual (a padrão)</label>
+          <input type="password" id="cur-password" autocomplete="current-password" required>
+        </div>
+        <div class="field">
+          <label for="new-password">Nova senha (mínimo 8 caracteres)</label>
+          <input type="password" id="new-password" autocomplete="new-password" minlength="8" required>
+        </div>
+        <div class="field">
+          <label for="new-password2">Repita a nova senha</label>
+          <input type="password" id="new-password2" autocomplete="new-password" minlength="8" required>
+        </div>
+        <button type="submit" id="change-btn">Salvar nova senha</button>
+      </form>
+      <div id="change-error" class="error hidden"></div>
+    </div>
+
+    <!-- Tela: App -->
+    <div id="app-section" class="hidden">
+      <div class="topbar">
+        <span id="user-email" class="user-email"></span>
+        <button id="logout-btn" class="linkbtn" type="button">Sair</button>
       </div>
-      <p id="progress-pct" class="progress-pct">0%</p>
-      <p id="status-label" class="status-label">Iniciando...</p>
-      <button id="new-video-btn" class="hidden secondary">Processar outro vídeo</button>
+
+      <h1>OpusSB</h1>
+      <p class="subtitle">Envie um vídeo longo e receba clipes virais em 9:16</p>
+
+      <div id="upload-section">
+        <form id="upload-form">
+          <div class="field">
+            <label for="video-file">Vídeo (mp4, mov, avi, mkv, webm — até 15GB)</label>
+            <input type="file" id="video-file" name="video" accept=".mp4,.mov,.avi,.mkv,.webm" required>
+          </div>
+          <div class="field row">
+            <div>
+              <label for="min-duration">Duração mínima (s)</label>
+              <input type="number" id="min-duration" name="min_duration" value="30" min="5" max="300" required>
+            </div>
+            <div>
+              <label for="max-duration">Duração máxima (s)</label>
+              <input type="number" id="max-duration" name="max_duration" value="90" min="10" max="600" required>
+            </div>
+          </div>
+          <button type="submit" id="submit-btn">Processar Vídeo</button>
+        </form>
+        <div id="upload-error" class="error hidden"></div>
+      </div>
+
+      <div id="progress-section" class="hidden">
+        <p id="filename-label" class="filename"></p>
+        <div class="progress-bar-track">
+          <div id="progress-bar" class="progress-bar-fill" style="width: 0%"></div>
+        </div>
+        <p id="progress-pct" class="progress-pct">0%</p>
+        <p id="status-label" class="status-label">Iniciando...</p>
+        <button id="new-video-btn" class="hidden secondary">Processar outro vídeo</button>
+      </div>
+
+      <div id="results-section" class="hidden">
+        <h2>Clipes prontos</h2>
+        <div id="clips-list"></div>
+      </div>
     </div>
 
-    <div id="results-section" class="hidden">
-      <h2>Clipes prontos</h2>
-      <div id="clips-list"></div>
-    </div>
   </div>
   <script src="/app.js"></script>
 </body>

@@ -51,7 +51,10 @@ h1 {
 }
 
 input[type="file"],
-input[type="number"] {
+input[type="number"],
+input[type="email"],
+input[type="password"],
+input[type="text"] {
   width: 100%;
   background: #1a1a1a;
   border: 1px solid #333;
@@ -62,7 +65,10 @@ input[type="number"] {
 }
 
 input[type="number"]:focus,
-input[type="file"]:focus {
+input[type="file"]:focus,
+input[type="email"]:focus,
+input[type="password"]:focus,
+input[type="text"]:focus {
   outline: 2px solid #5865f2;
   border-color: transparent;
 }
@@ -151,4 +157,33 @@ button.secondary:hover:not(:disabled) { background: #383a40; }
   font-size: 0.85rem;
   color: #f04747;
   margin-bottom: 8px;
+}
+
+/* Topbar (app logado) */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.user-email {
+  font-size: 0.85rem;
+  color: #888;
+}
+
+.linkbtn {
+  width: auto;
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid #333;
+  color: #aaa;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.linkbtn:hover:not(:disabled) {
+  background: #1a1a1a;
+  color: #e8e8e8;
 }
