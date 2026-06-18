@@ -33,6 +33,7 @@ _upload_lock = threading.Lock()
 
 db.init_db()
 db.init_users()
+db.init_favorites()
 
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 MIN_PASSWORD_LEN = 8
@@ -163,6 +164,108 @@ def _clip_objects(job_id, result_urls_json):
     return clips
 
 
+def _project_from_job(job):
+    """Mapeia um job para o shape Project que o front consome (um job = um projeto)."""
+    try:
+        items = json.loads(job.get("result_urls") or "[]")
+    except (TypeError, ValueError):
+        items = []
+    scores = [float(it["score"]) for it in items
+              if isinstance(it, dict) and it.get("score") is not None]
+    status = job["status"] if job["status"] in ("done", "error") else "processing"
+    return {
+        "id": job["job_id"],
+        "title": job["filename"],
+        "filename": job["filename"],
+        "created_at": job.get("created_at"),
+        "status": status,
+        "thumbnail_url": None,
+        "clip_count": len(items) if job["status"] == "done" else 0,
+        "avg_score": round(sum(scores) / len(scores), 1) if scores else None,
+        "duration": None,
+    }
+
+
+@app.route("/api/projects")
+@login_required
+def list_projects():
+    jobs = db.list_jobs(session["user"])
+    return jsonify({"projects": [_project_from_job(j) for j in jobs], "total": len(jobs)})
+
+
+@app.route("/api/projects/<job_id>")
+@login_required
+def get_project(job_id):
+    job = db.get_job(job_id)
+    if not job or (job.get("user_email") and job["user_email"] != session["user"]):
+        return jsonify({"error": "Projeto não encontrado."}), 404
+    proj = _project_from_job(job)
+    proj["clips"] = _clip_objects(job_id, job["result_urls"]) if job["result_urls"] else []
+    return jsonify(proj)
+
+
+@app.route("/api/stats")
+@login_required
+def stats():
+    jobs = db.list_jobs(session["user"])
+    done = [j for j in jobs if j["status"] == "done"]
+    clips, all_scores = 0, []
+    for j in done:
+        try:
+            items = json.loads(j.get("result_urls") or "[]")
+        except (TypeError, ValueError):
+            items = []
+        clips += len(items)
+        all_scores += [float(it["score"]) for it in items
+                       if isinstance(it, dict) and it.get("score") is not None]
+    return jsonify({
+        "videos_processed": len(done),
+        "clips_generated": clips,
+        "avg_score": round(sum(all_scores) / len(all_scores), 1) if all_scores else None,
+        "processing_count": sum(1 for j in jobs if j["status"] not in ("done", "error")),
+        "recent": [_project_from_job(j) for j in done[:4]],
+    })
+
+
+@app.route("/api/clips/favorites")
+@login_required
+def favorites_list():
+    ids = db.list_favorites(session["user"])
+    cache, clips = {}, []
+    for cid in ids:
+        jid, _, idx = cid.rpartition(":")          # clip_id = "job_id:index"
+        if not jid:
+            continue
+        try:
+            idx = int(idx)
+        except ValueError:
+            continue
+        if jid not in cache:
+            job = db.get_job(jid)
+            cache[jid] = _clip_objects(jid, job["result_urls"]) if job and job["result_urls"] else []
+        arr = cache[jid]
+        if 0 <= idx < len(arr):
+            c = dict(arr[idx])
+            c["favorite"] = True
+            clips.append(c)
+    return jsonify({"clips": clips})
+
+
+# clip_id contém ":" (ex.: "uuid:3"), por isso <path:...>. O front manda encodeURIComponent.
+@app.route("/api/clips/<path:clip_id>/favorite", methods=["POST"])
+@login_required
+def favorite_add(clip_id):
+    db.add_favorite(session["user"], clip_id)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/clips/<path:clip_id>/favorite", methods=["DELETE"])
+@login_required
+def favorite_remove(clip_id):
+    db.remove_favorite(session["user"], clip_id)
+    return jsonify({"ok": True})
+
+
 @app.route("/api/upload", methods=["POST"])
 @login_required
 def upload():
@@ -200,7 +303,7 @@ def upload():
             return jsonify({
                 "error": "Um vídeo já está em processamento! Vai tomar uma água, respirar e aguardar a conclusão antes de enviar novo vídeo :)"
             }), 429
-        db.create_job(job_id, file.filename, min_duration, max_duration, local_path)
+        db.create_job(job_id, file.filename, min_duration, max_duration, local_path, session["user"])
 
     # Fora do lock: salvar o arquivo (grande/lento) e disparar a thread, pra não
     # bloquear a admissão de outros uploads durante o upload em si.

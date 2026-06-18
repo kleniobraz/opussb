@@ -19,6 +19,13 @@ def _conn():
         conn.close()
 
 
+def _ensure_column(conn, table: str, col: str, decl: str) -> None:
+    """Migração idempotente: adiciona a coluna se ainda não existir."""
+    cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+    if col not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+
+
 def init_db() -> None:
     with _conn() as conn:
         conn.execute("""
@@ -40,6 +47,20 @@ def init_db() -> None:
                 updated_at    TEXT
             )
         """)
+        # Dono do job. Jobs antigos ficam com NULL (legado = visível a todos).
+        _ensure_column(conn, "jobs", "user_email", "TEXT")
+
+
+def init_favorites() -> None:
+    with _conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS favorites (
+                user_email TEXT NOT NULL,
+                clip_id    TEXT NOT NULL,          -- formato "job_id:index"
+                created_at TEXT,
+                PRIMARY KEY (user_email, clip_id)
+            )
+        """)
 
 
 def init_users() -> None:
@@ -59,14 +80,51 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def create_job(job_id: str, filename: str, min_duration: int, max_duration: int, local_path: str) -> None:
+def create_job(job_id: str, filename: str, min_duration: int, max_duration: int,
+               local_path: str, user_email: str | None = None) -> None:
     with _conn() as conn:
         conn.execute(
             """INSERT INTO jobs
-               (job_id, filename, status, progress, min_duration, max_duration, local_path, created_at, updated_at)
-               VALUES (?, ?, 'queued', 5, ?, ?, ?, ?, ?)""",
-            (job_id, filename, min_duration, max_duration, local_path, _now(), _now()),
+               (job_id, filename, status, progress, min_duration, max_duration,
+                local_path, user_email, created_at, updated_at)
+               VALUES (?, ?, 'queued', 5, ?, ?, ?, ?, ?, ?)""",
+            (job_id, filename, min_duration, max_duration, local_path, user_email, _now(), _now()),
         )
+
+
+def list_jobs(user_email: str | None = None) -> list:
+    """Jobs do usuário + os legados (dono NULL, criados antes do escopo por dono),
+    pra histórico não sumir. Sem user_email, retorna tudo (uso administrativo)."""
+    with _conn() as conn:
+        if user_email:
+            rows = conn.execute(
+                "SELECT * FROM jobs WHERE user_email = ? OR user_email IS NULL ORDER BY created_at DESC",
+                (user_email,),
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM jobs ORDER BY created_at DESC").fetchall()
+        return [dict(r) for r in rows]
+
+
+def add_favorite(user_email: str, clip_id: str) -> None:
+    with _conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO favorites (user_email, clip_id, created_at) VALUES (?, ?, ?)",
+            (user_email, clip_id, _now()),
+        )
+
+
+def remove_favorite(user_email: str, clip_id: str) -> None:
+    with _conn() as conn:
+        conn.execute("DELETE FROM favorites WHERE user_email = ? AND clip_id = ?", (user_email, clip_id))
+
+
+def list_favorites(user_email: str) -> list:
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT clip_id FROM favorites WHERE user_email = ? ORDER BY created_at DESC", (user_email,)
+        ).fetchall()
+        return [r["clip_id"] for r in rows]
 
 
 def get_job(job_id: str) -> dict | None:
