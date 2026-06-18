@@ -34,6 +34,7 @@ _upload_lock = threading.Lock()
 db.init_db()
 db.init_users()
 db.init_favorites()
+db.init_preferences()
 
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 MIN_PASSWORD_LEN = 8
@@ -263,6 +264,46 @@ def favorite_add(clip_id):
 @login_required
 def favorite_remove(clip_id):
     db.remove_favorite(session["user"], clip_id)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/projects/<job_id>", methods=["DELETE"])
+@login_required
+def delete_project(job_id):
+    job = db.get_job(job_id)
+    if not job or (job.get("user_email") and job["user_email"] != session["user"]):
+        return jsonify({"error": "Projeto não encontrado."}), 404
+    # Apaga os arquivos no S3 (áudio + clipes) e depois o registro. Se a limpeza do
+    # S3 falhar parcialmente, ainda removemos o job pra UI ficar consistente (o que
+    # sobrar no bucket é órfão e pode ser varrido depois).
+    try:
+        s3_client.delete_prefix(f"jobs/{job_id}/")
+    except Exception as e:
+        print(f"[delete] falha ao limpar S3 do job {job_id}: {e}")
+    db.delete_job(job_id)
+    return jsonify({"ok": True})
+
+
+_PREF_KEYS = {"defaultMin", "defaultMax", "aspect", "language", "captions", "autoplayPreview"}
+
+
+@app.route("/api/preferences")
+@login_required
+def get_preferences():
+    raw = db.get_preferences(session["user"])
+    try:
+        return jsonify(json.loads(raw) if raw else {})
+    except (TypeError, ValueError):
+        return jsonify({})
+
+
+@app.route("/api/preferences", methods=["PUT"])
+@login_required
+def put_preferences():
+    data = request.get_json(silent=True) or {}
+    # Whitelist das chaves conhecidas: não guardar blob arbitrário do cliente.
+    clean = {k: data[k] for k in _PREF_KEYS if k in data}
+    db.set_preferences(session["user"], json.dumps(clean))
     return jsonify({"ok": True})
 
 

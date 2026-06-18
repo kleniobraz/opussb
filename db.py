@@ -63,6 +63,17 @@ def init_favorites() -> None:
         """)
 
 
+def init_preferences() -> None:
+    with _conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS preferences (
+                user_email TEXT PRIMARY KEY,
+                data       TEXT,                   -- JSON serializado das prefs
+                updated_at TEXT
+            )
+        """)
+
+
 def init_users() -> None:
     with _conn() as conn:
         conn.execute("""
@@ -125,6 +136,30 @@ def list_favorites(user_email: str) -> list:
             "SELECT clip_id FROM favorites WHERE user_email = ? ORDER BY created_at DESC", (user_email,)
         ).fetchall()
         return [r["clip_id"] for r in rows]
+
+
+def delete_job(job_id: str) -> None:
+    """Remove o job e qualquer favorito que aponte para clipes dele (clip_id job_id:N)."""
+    with _conn() as conn:
+        conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
+        conn.execute("DELETE FROM favorites WHERE clip_id LIKE ?", (job_id + ":%",))
+
+
+def get_preferences(user_email: str):
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT data FROM preferences WHERE user_email = ?", (user_email,)
+        ).fetchone()
+        return row["data"] if row else None
+
+
+def set_preferences(user_email: str, data: str) -> None:
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO preferences (user_email, data, updated_at) VALUES (?, ?, ?)
+               ON CONFLICT(user_email) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at""",
+            (user_email, data, _now()),
+        )
 
 
 def get_job(job_id: str) -> dict | None:

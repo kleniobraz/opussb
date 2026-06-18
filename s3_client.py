@@ -28,3 +28,24 @@ def get_presigned_url(s3_key: str, expiry_seconds: int = 86400) -> str:
         Params={"Bucket": config.S3_BUCKET, "Key": s3_key},
         ExpiresIn=expiry_seconds,
     )
+
+
+def delete_prefix(prefix: str) -> int:
+    """Apaga todos os objetos sob um prefixo (ex: 'jobs/{job_id}/'). Lista paginado
+    e deleta em lotes de até 1000. Retorna quantos objetos foram removidos."""
+    client = _client()
+    deleted = 0
+    batch = []
+    paginator = client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=config.S3_BUCKET, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            batch.append({"Key": obj["Key"]})
+            if len(batch) == 1000:
+                client.delete_objects(Bucket=config.S3_BUCKET, Delete={"Objects": batch})
+                deleted += len(batch)
+                batch = []
+    if batch:
+        client.delete_objects(Bucket=config.S3_BUCKET, Delete={"Objects": batch})
+        deleted += len(batch)
+    print(f"[s3] delete prefix {prefix}: {deleted} objeto(s)")
+    return deleted
