@@ -43,14 +43,13 @@
 - Repo privado no GitHub: `kleniobraz/opussb`, via deploy key SSH. `git push` já funciona da VPS. `.env`, `opussb.db` e htpasswd nunca commitados.
 
 ### Backlog real (substitui a seção 11 como "próximos passos")
-Concluído: cleanup de disco, segurança de acesso, login, watchdog, backup no GitHub.
-Aberto, em ordem:
+Concluído: cleanup de disco, segurança de acesso, login, watchdog, backup no GitHub, **race condition no `MAX_CONCURRENT_JOBS`** (admissão sob lock), **`MAX_CONTENT_LENGTH`** (16GiB, secundário ao Nginx).
+
+Aberto, em ordem. O backend em código Flask está fechado; o que resta não é código nesta máquina:
 1. **TLS/HTTPS** (precisa de domínio apontado pro IP; sem isso a senha de login trafega em texto puro na porta 80). Ao subir, virar `SESSION_COOKIE_SECURE=True`.
 2. **Frontend de produto** (evolução do atual): player de vídeo embutido nos clipes em vez de só link, UX, responsivo mobile, identidade visual.
-3. Race condition no `MAX_CONCURRENT_JOBS` (TOCTOU entre `count_active_jobs` e `create_job` com gunicorn `--threads 4`).
-4. `MAX_CONTENT_LENGTH` no Flask como rede de proteção de disco.
-5. Causa raiz no N8N: fazer o nó `IF Counter Limit` dar PATCH de erro de volta ao Flask quando aborta o polling (hoje o watchdog é só o backstop).
-6. Cadastrar os demais emails da equipe.
+3. **Causa raiz no N8N** (config do workflow na UI do container): no nó `IF Counter Limit`, no ramo de estouro, adicionar HTTP Request `PATCH /api/internal/jobs/{job_id}` com `{status:"error", error:"RunPod timeout"}`, pra falha aparecer na hora em vez de esperar o watchdog. Não renomear nós (o `POST Callback` referencia `Extract Clips - Code` pelo nome).
+4. Cadastrar os demais emails da equipe (`manage_users.py add`).
 
 ---
 
