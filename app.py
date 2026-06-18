@@ -22,7 +22,14 @@ app.config.update(
     # secure=False porque ainda não há HTTPS. Quando subir TLS, virar True.
     SESSION_COOKIE_SECURE=False,
     PERMANENT_SESSION_LIFETIME=timedelta(days=config.SESSION_DAYS),
+    # Teto de upload. Secundário ao Nginx (client_max_body_size 15G), protege
+    # o caminho direto :5001. 16 GiB fica acima do Nginx pra ele ser o 1o gate.
+    MAX_CONTENT_LENGTH=16 * 1024 * 1024 * 1024,
 )
+
+# Serializa a admissão de upload (check de vaga + reserva). Gunicorn roda 1 worker
+# com 4 threads, então um lock de processo fecha a race de uploads simultâneos.
+_upload_lock = threading.Lock()
 
 db.init_db()
 db.init_users()
@@ -143,15 +150,6 @@ def upload():
     if user["must_change_password"]:
         return jsonify({"error": "Troque a senha do primeiro acesso antes de processar vídeos."}), 403
 
-    reaped = db.reap_stale_jobs(config.JOB_STALE_MINUTES)
-    if reaped:
-        print(f"[watchdog] {reaped} job(s) preso(s) liberado(s) por timeout")
-
-    if db.count_active_jobs() >= config.MAX_CONCURRENT_JOBS:
-        return jsonify({
-            "error": "Um vídeo já está em processamento! Vai tomar uma água, respirar e aguardar a conclusão antes de enviar novo vídeo :)"
-        }), 429
-
     file = request.files.get("video")
     if not file or not file.filename or not _allowed(file.filename):
         return jsonify({"error": "Arquivo inválido. Use mp4, mov, avi, mkv ou webm."}), 400
@@ -165,12 +163,31 @@ def upload():
 
     job_id = str(uuid.uuid4())
     job_dir = os.path.join(config.JOB_DIR, job_id)
-    os.makedirs(job_dir, exist_ok=True)
     ext = os.path.splitext(file.filename)[1].lower()
     local_path = os.path.join(job_dir, f"original{ext}")
-    file.save(local_path)
 
-    db.create_job(job_id, file.filename, min_duration, max_duration, local_path)
+    # Admissão atômica: reap + check de vaga + reserva, tudo sob o lock, fechando
+    # a race onde dois uploads simultâneos passariam o check antes de qualquer um
+    # gravar. A vaga é reservada criando o job como 'queued' (conta em count_active).
+    with _upload_lock:
+        reaped = db.reap_stale_jobs(config.JOB_STALE_MINUTES)
+        if reaped:
+            print(f"[watchdog] {reaped} job(s) preso(s) liberado(s) por timeout")
+        if db.count_active_jobs() >= config.MAX_CONCURRENT_JOBS:
+            return jsonify({
+                "error": "Um vídeo já está em processamento! Vai tomar uma água, respirar e aguardar a conclusão antes de enviar novo vídeo :)"
+            }), 429
+        db.create_job(job_id, file.filename, min_duration, max_duration, local_path)
+
+    # Fora do lock: salvar o arquivo (grande/lento) e disparar a thread, pra não
+    # bloquear a admissão de outros uploads durante o upload em si.
+    try:
+        os.makedirs(job_dir, exist_ok=True)
+        file.save(local_path)
+    except Exception as e:
+        db.update_job(job_id, status="error", error=f"Falha ao salvar upload: {e}")
+        return jsonify({"error": "Falha ao salvar o vídeo."}), 500
+
     threading.Thread(target=processor.run_thread1, args=(job_id,), daemon=True).start()
 
     return jsonify({"job_id": job_id}), 202
