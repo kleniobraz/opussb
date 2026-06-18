@@ -128,16 +128,39 @@ def status(job_id):
     }
 
     if job["status"] == "done" and job["result_urls"]:
-        keys = json.loads(job["result_urls"])
-        resp["clips"] = [s3_client.get_presigned_url(k, expiry_seconds=604800) for k in keys]
+        resp["clips"] = _clip_objects(job_id, job["result_urls"])
 
     if job["status"] == "error":
         resp["error"] = job["error"]
         if job["result_urls"]:
-            keys = json.loads(job["result_urls"])
-            resp["partial_clips"] = [s3_client.get_presigned_url(k, expiry_seconds=604800) for k in keys]
+            resp["partial_clips"] = _clip_objects(job_id, job["result_urls"])
 
     return jsonify(resp)
+
+
+def _clip_objects(job_id, result_urls_json):
+    """Constrói a lista de Clip (score/title/reason + URL presignada) a partir do
+    result_urls. Aceita o formato novo (objeto por clipe) e o antigo (só a chave),
+    pra jobs criados antes desta mudança não quebrarem."""
+    try:
+        items = json.loads(result_urls_json)
+    except (TypeError, ValueError):
+        return []
+    clips = []
+    for i, it in enumerate(items):
+        meta = {} if isinstance(it, str) else (it or {})
+        key = it if isinstance(it, str) else meta.get("key")
+        if not key:
+            continue
+        clips.append({
+            "id": f"{job_id}:{i}",
+            "url": s3_client.get_presigned_url(key, expiry_seconds=604800),
+            "title": meta.get("title"),
+            "reason": meta.get("reason"),
+            "score": meta.get("score"),
+            "duration": meta.get("duration"),
+        })
+    return clips
 
 
 @app.route("/api/upload", methods=["POST"])

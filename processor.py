@@ -43,28 +43,30 @@ def run_thread2(job_id: str) -> None:
         os.makedirs(job_clips_dir, exist_ok=True)
 
         db.update_job(job_id, status="cutting", progress=70)
-        cut_paths = _cut_clips(job["local_path"], clips_data, job_clips_dir)
+        produced = _cut_clips(job["local_path"], clips_data, job_clips_dir)
 
         db.update_job(job_id, status="reframing", progress=85)
         from reframer import reframe_clip
-        final_paths = []
-        for i, cut_path in enumerate(cut_paths):
-            out_path = cut_path.replace(".mp4", "_9x16.mp4")
+        for i, item in enumerate(produced):
+            out_path = item["path"].replace(".mp4", "_9x16.mp4")
             try:
-                reframe_clip(cut_path, out_path)
+                reframe_clip(item["path"], out_path)
             except Exception as e:
                 print(f"[reframe] clip {i+1} falhou ({e}), usando center crop")
-                _center_crop_fallback(cut_path, out_path)
-            final_paths.append(out_path)
+                _center_crop_fallback(item["path"], out_path)
+            item["final"] = out_path
 
         db.update_job(job_id, status="uploading_clips", progress=95)
-        s3_keys = []
-        for i, path in enumerate(final_paths):
+        results = []
+        for i, item in enumerate(produced):
             key = f"jobs/{job_id}/clips/clip_{i+1:02d}_9x16.mp4"
-            _s3_upload_with_retry(path, key)
-            s3_keys.append(key)
+            _s3_upload_with_retry(item["final"], key)
+            results.append(_clip_result(key, item["meta"]))
 
-        db.update_job(job_id, status="done", progress=100, result_urls=json.dumps(s3_keys), error=None)
+        # result_urls agora guarda objetos {key, title, score, reason, duration},
+        # não só a chave. O /api/status monta o Clip a partir disso. (Jobs antigos
+        # têm só a string da chave; o status trata os dois formatos.)
+        db.update_job(job_id, status="done", progress=100, result_urls=json.dumps(results), error=None)
 
         # Cleanup só aqui, depois dos clipes confirmados no S3 (regra: nunca antes).
         shutil.rmtree(os.path.join(config.JOB_DIR, job_id), ignore_errors=True)
@@ -74,6 +76,21 @@ def run_thread2(job_id: str) -> None:
 
 
 # ─── Private helpers ─────────────────────────────────────────────────────────
+
+def _clip_result(key: str, meta: dict) -> dict:
+    """Monta a entrada salva em result_urls: a chave S3 + o metadata do Claude."""
+    try:
+        duration = int(round(float(meta.get("end")) - float(meta.get("start"))))
+    except (TypeError, ValueError):
+        duration = None
+    return {
+        "key": key,
+        "title": meta.get("title"),
+        "score": meta.get("score"),
+        "reason": meta.get("reason"),
+        "duration": duration,
+    }
+
 
 def _extract_audio(video_path: str, job_id: str) -> str:
     audio_path = os.path.join(config.JOB_DIR, job_id, "audio.mp3")
@@ -119,14 +136,19 @@ def _trigger_n8n_with_retry(
 
 
 def _cut_clips(video_path: str, clips_data: list, output_dir: str) -> list:
-    cut_paths = []
-    for i, clip in enumerate(clips_data):
+    """Corta cada clipe e devolve, por clipe efetivamente produzido, {path, meta}.
+    Carrega o metadata original (title/score/reason) junto, pra não depender do
+    índice (clipes < 5s ou que falham são pulados e quebrariam o casamento)."""
+    produced = []
+    idx = 0
+    for n, clip in enumerate(clips_data):
         start = float(clip["start"])
         end = float(clip["end"])
         if end - start < 5:
-            print(f"[cut] clip {i+1} ignorado: duração {end-start:.1f}s muito curta")
+            print(f"[cut] clip {n+1} ignorado: duração {end-start:.1f}s muito curta")
             continue
-        out_path = os.path.join(output_dir, f"clip_{i+1:02d}.mp4")
+        idx += 1
+        out_path = os.path.join(output_dir, f"clip_{idx:02d}.mp4")
         result = subprocess.run(
             ["ffmpeg", "-y", "-i", video_path,
              "-ss", str(start), "-to", str(end),
@@ -135,10 +157,10 @@ def _cut_clips(video_path: str, clips_data: list, output_dir: str) -> list:
             capture_output=True, text=True,
         )
         if result.returncode == 0 and os.path.exists(out_path):
-            cut_paths.append(out_path)
+            produced.append({"path": out_path, "meta": clip})
         else:
-            print(f"[cut] clip {i+1} falhou: {result.stderr[:200]}")
-    return cut_paths
+            print(f"[cut] clip {n+1} falhou: {result.stderr[:200]}")
+    return produced
 
 
 def _center_crop_fallback(input_path: str, output_path: str) -> None:
