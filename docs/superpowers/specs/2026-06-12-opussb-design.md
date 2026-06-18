@@ -6,6 +6,54 @@
 
 ---
 
+## 0. ATUALIZAÇÃO DE ESTADO (2026-06-18)
+
+> O corpo abaixo (seções 1 em diante) é o design original de 12/06, mantido como
+> registro histórico. Esta seção 0 reflete o que está EM PRODUÇÃO hoje. Em caso de
+> divergência, vale a seção 0.
+
+### Infra real (corrige a seção 2)
+- VPS Hetzner **CPX21**: 3 vCPU, 4GB RAM, swap 4GB. Volume de 80GB montado em **`/mnt/opussb-jobs`**.
+- `JOB_DIR=/mnt/opussb-jobs` (não `/opt/opussb/jobs`).
+- S3 endpoint real: `https://fsn1.your-objectstorage.com`, region `eu-central-1` explícita no boto3.
+- `CLAUDE_MODEL` padrão = `claude-haiku-4-5-20251001` (Haiku, por custo).
+- Nginx `client_max_body_size 15G` (não 4G). Transcodificação na entrada foi DESCARTADA: a redução de bitrate (10-15 Mbps, 30fps) é padrão de export na origem, fora do OpusSB.
+
+### Autenticação (NOVO, não existia no design original)
+- Login de sessão no próprio Flask. Tabela `users` (email PK, `password_hash` scrypt, `must_change_password`).
+- Rotas: `POST /api/login`, `POST /api/logout`, `GET /api/me`, `POST /api/change_password`.
+- Primeiro acesso força troca de senha antes de liberar upload (checado no banco, não na sessão).
+- Gestão por CLI: `./venv/bin/python manage_users.py add|reset|list|delete`.
+- Sessão por cookie assinado (`FLASK_SECRET_KEY` no `.env`), `httponly`, `samesite=Lax`, `SESSION_COOKIE_SECURE=False` até ter HTTPS.
+- Frontend tem 3 telas: login, troca de senha (1º acesso) e o app, roteadas por `/api/me`.
+
+### Segurança de acesso (NOVO)
+- Gunicorn faz bind em **`127.0.0.1:5001` + `172.17.0.1:5001`**, NUNCA `0.0.0.0` (não expor o Flask na internet). Ver `opussb.service`.
+- N8N (container `172.17.0.2`) chama o Flask direto em **`172.17.0.1:5001`**, sem passar pelo Nginx. A menção a `127.0.0.1:5001` no doc do N8N está errada (de dentro do container não funciona).
+- Nginx devolve **404** para `/api/callback` e `/api/internal` na porta 80 (essas rotas só pelo `:5001`).
+- Gate das rotas internas (`_is_trusted_caller`): loopback + subnet `172.17.0.0/16` (não IP fixo, pra não quebrar se o Docker recriar o container do N8N com outro IP).
+- Permissões: `.env` 600, `opussb.db` 660.
+
+### Robustez (NOVO)
+- **Watchdog**: `db.reap_stale_jobs()` chamado no `/api/upload` marca como `error` job não terminal sem update há mais de `JOB_STALE_MINUTES` (30). Como `MAX_CONCURRENT_JOBS=1`, um job preso travaria a fila inteira; isto libera a vaga.
+- Cleanup de disco: `shutil.rmtree` movido do `finally` para o bloco de SUCESSO (regra: nunca apagar source antes dos clipes no S3). Caminho de erro limpa via `_fail_job`.
+- Campo `error` é limpo quando o job conclui (`done`).
+
+### Backup
+- Repo privado no GitHub: `kleniobraz/opussb`, via deploy key SSH. `git push` já funciona da VPS. `.env`, `opussb.db` e htpasswd nunca commitados.
+
+### Backlog real (substitui a seção 11 como "próximos passos")
+Concluído: cleanup de disco, segurança de acesso, login, watchdog, backup no GitHub.
+Aberto, em ordem:
+1. **TLS/HTTPS** (precisa de domínio apontado pro IP; sem isso a senha de login trafega em texto puro na porta 80). Ao subir, virar `SESSION_COOKIE_SECURE=True`.
+2. **Frontend de produto** (evolução do atual): player de vídeo embutido nos clipes em vez de só link, UX, responsivo mobile, identidade visual.
+3. Race condition no `MAX_CONCURRENT_JOBS` (TOCTOU entre `count_active_jobs` e `create_job` com gunicorn `--threads 4`).
+4. `MAX_CONTENT_LENGTH` no Flask como rede de proteção de disco.
+5. Causa raiz no N8N: fazer o nó `IF Counter Limit` dar PATCH de erro de volta ao Flask quando aborta o polling (hoje o watchdog é só o backstop).
+6. Cadastrar os demais emails da equipe.
+
+---
+
 ## 1. Contexto e Escopo
 
 ### Usuários
