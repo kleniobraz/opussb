@@ -48,7 +48,7 @@ Concluído: cleanup de disco, segurança de acesso, login, watchdog, backup no G
 Aberto, em ordem. O backend em código Flask está fechado; o que resta não é código nesta máquina:
 1. **TLS/HTTPS** (precisa de domínio apontado pro IP; sem isso a senha de login trafega em texto puro na porta 80). Ao subir, virar `SESSION_COOKIE_SECURE=True`.
 2. **Frontend de produto** (evolução do atual): player de vídeo embutido nos clipes em vez de só link, UX, responsivo mobile, identidade visual.
-3. **Causa raiz no N8N** (config do workflow na UI do container): no nó `IF Counter Limit`, no ramo de estouro, adicionar HTTP Request `PATCH /api/internal/jobs/{job_id}` com `{status:"error", error:"RunPod timeout"}`, pra falha aparecer na hora em vez de esperar o watchdog. Não renomear nós (o `POST Callback` referencia `Extract Clips - Code` pelo nome).
+3. **N8N: subir o limite de polling** (config do workflow na UI). O nó IF compara `counter < 60`; com Wait de 10s isso mata o job em ~10min, mas a transcrição pode levar até 15min, matando áudio longo legítimo. Subir o Value 2 de `60` para `120` (20min, abaixo do watchdog de 30min). OBS: o PATCH de erro no estouro JÁ existe (Step 5 do N8N_WORKFLOW.md), não precisa adicionar. Conferir também que as URLs dos HTTP Request usam `172.17.0.1:5001` (o doc cita `127.0.0.1`, que não funciona de dentro do container). NÃO renomear nós (o POST Callback referencia o nó que extrai os clipes pelo nome exato).
 4. Cadastrar os demais emails da equipe (`manage_users.py add`).
 
 ---
