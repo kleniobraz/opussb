@@ -20,6 +20,13 @@ def reframe_clip(input_path: str, output_path: str) -> None:
 
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    # Se já é 9:16 (ou mais vertical), copia direto sem reframe
+    if width > 0 and height / width >= 16 / 9 - 0.05:
+        cap.release()
+        import shutil
+        shutil.copy2(input_path, output_path)
+        return
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
@@ -49,12 +56,12 @@ def reframe_clip(input_path: str, output_path: str) -> None:
     if not raw_cx:
         per_frame_cx = [center_x] * total_frames
     else:
-        per_frame_cx = _interpolate_and_smooth(raw_cx, total_frames, window=45)
+        per_frame_cx = _interpolate_and_smooth(raw_cx, total_frames, window=15)
 
     # Pass 2: write cropped frames
     tmp_path = output_path + ".tmp.mp4"
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    out = cv2.VideoWriter(tmp_path, fourcc, fps, (crop_w, height))
+    out = cv2.VideoWriter(tmp_path, fourcc, fps, (1080, 1920))
     assert out.isOpened(), f"VideoWriter failed to open: {tmp_path}"
 
     cap2 = cv2.VideoCapture(input_path)
@@ -116,7 +123,11 @@ def _interpolate_and_smooth(raw_cx: list, total_frames: int, window: int = 45) -
 
     # Moving average
     kernel = np.ones(window) / window
-    smoothed = np.convolve(dense, kernel, mode="same")
+    # Pad edges with border values to avoid pulling toward center
+    pad = window // 2
+    padded = np.pad(dense, pad, mode="edge")
+    smoothed = np.convolve(padded, kernel, mode="valid")
+    smoothed = smoothed[:total_frames]
     return [int(round(v)) for v in smoothed]
 
 
@@ -125,7 +136,8 @@ def _mux_audio(original: str, video_only: str, output: str) -> None:
         ["ffmpeg", "-y",
          "-i", video_only,
          "-i", original,
-         "-c:v", "copy",
+         "-c:v", "libx264",
+         "-vf", "setsar=1",
          "-c:a", "aac",
          "-map", "0:v:0",
          "-map", "1:a:0",

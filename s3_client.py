@@ -9,12 +9,17 @@ def _client():
         endpoint_url=config.S3_ENDPOINT,
         aws_access_key_id=config.S3_ACCESS_KEY,
         aws_secret_access_key=config.S3_SECRET_KEY,
+        region_name="eu-central-1",
         config=Config(signature_version="s3v4"),
     )
 
 
 def upload_file(local_path: str, s3_key: str) -> None:
+    import os
+    if not os.path.exists(local_path):
+        raise FileNotFoundError(f"Arquivo não encontrado para upload: {local_path}")
     _client().upload_file(local_path, config.S3_BUCKET, s3_key)
+    print(f"[s3] upload ok: {s3_key}")
 
 
 def get_presigned_url(s3_key: str, expiry_seconds: int = 86400) -> str:
