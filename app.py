@@ -284,6 +284,21 @@ def delete_project(job_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/jobs/<job_id>/cancel", methods=["POST"])
+@login_required
+def cancel_job(job_id):
+    job = db.get_job(job_id)
+    if not job or (job.get("user_email") and job["user_email"] != session["user"]):
+        return jsonify({"error": "Job não encontrado."}), 404
+    if job["status"] in ("done", "error"):
+        return jsonify({"ok": True, "already_final": True})
+    # Cancel honesto: marca error (libera a vaga do MAX_CONCURRENT na hora). As threads
+    # do processor checam isso entre etapas e param; o callback do N8N não retoma o corte.
+    # A transcrição já em curso no RunPod não é recolhida (custo já gasto).
+    db.update_job(job_id, status="error", error="Cancelado pelo usuário.")
+    return jsonify({"ok": True})
+
+
 _PREF_KEYS = {"defaultMin", "defaultMax", "aspect", "language", "captions", "autoplayPreview"}
 
 
@@ -384,8 +399,12 @@ def callback():
         abort(403)
     data = request.get_json(force=True)
     job_id = data.get("job_id")
-    if not job_id or not db.get_job(job_id):
+    job = db.get_job(job_id)
+    if not job_id or not job:
         return jsonify({"error": "job_id inválido"}), 400
+    # Se o job foi cancelado durante a transcrição, não retoma o corte.
+    if job["status"] == "error":
+        return jsonify({"ok": True, "skipped": "job cancelado ou em erro"})
     db.update_job(
         job_id,
         transcript=data.get("transcript"),

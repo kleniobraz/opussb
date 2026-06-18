@@ -9,13 +9,27 @@ import db
 import s3_client
 
 
+class _Cancelled(Exception):
+    """Sinaliza que o job foi cancelado externamente (status virou 'error')."""
+
+
+def _check_cancel(job_id: str) -> None:
+    """Aborta cooperativamente se o job sumiu ou foi marcado como error (cancelado).
+    Chamado entre etapas pra a thread parar e não sobrescrever o cancelamento."""
+    j = db.get_job(job_id)
+    if j is None or j["status"] == "error":
+        raise _Cancelled()
+
+
 def run_thread1(job_id: str) -> None:
     """Thread 1: extract audio → upload to S3 → trigger N8N."""
     job = db.get_job(job_id)
     try:
+        _check_cancel(job_id)
         db.update_job(job_id, status="extracting_audio", progress=15)
         audio_path = _extract_audio(job["local_path"], job_id)
 
+        _check_cancel(job_id)
         db.update_job(job_id, status="uploading_audio", progress=25)
         audio_s3_key = f"jobs/{job_id}/audio/audio.mp3"
         _s3_upload_with_retry(audio_path, audio_s3_key)
@@ -25,6 +39,9 @@ def run_thread1(job_id: str) -> None:
         _trigger_n8n_with_retry(
             job_id, audio_s3_url, job["min_duration"], job["max_duration"]
         )
+    except _Cancelled:
+        print(f"[cancel] job {job_id} cancelado; encerrando thread1 e limpando disco")
+        shutil.rmtree(os.path.join(config.JOB_DIR, job_id), ignore_errors=True)
     except Exception as e:
         _fail_job(job_id, str(e))
 
@@ -42,9 +59,11 @@ def run_thread2(job_id: str) -> None:
         job_clips_dir = os.path.join(config.JOB_DIR, job_id, "clips")
         os.makedirs(job_clips_dir, exist_ok=True)
 
+        _check_cancel(job_id)
         db.update_job(job_id, status="cutting", progress=70)
         produced = _cut_clips(job["local_path"], clips_data, job_clips_dir)
 
+        _check_cancel(job_id)
         db.update_job(job_id, status="reframing", progress=85)
         from reframer import reframe_clip
         for i, item in enumerate(produced):
@@ -56,6 +75,7 @@ def run_thread2(job_id: str) -> None:
                 _center_crop_fallback(item["path"], out_path)
             item["final"] = out_path
 
+        _check_cancel(job_id)
         db.update_job(job_id, status="uploading_clips", progress=95)
         results = []
         for i, item in enumerate(produced):
@@ -66,11 +86,15 @@ def run_thread2(job_id: str) -> None:
         # result_urls agora guarda objetos {key, title, score, reason, duration},
         # não só a chave. O /api/status monta o Clip a partir disso. (Jobs antigos
         # têm só a string da chave; o status trata os dois formatos.)
+        _check_cancel(job_id)
         db.update_job(job_id, status="done", progress=100, result_urls=json.dumps(results), error=None)
 
         # Cleanup só aqui, depois dos clipes confirmados no S3 (regra: nunca antes).
         shutil.rmtree(os.path.join(config.JOB_DIR, job_id), ignore_errors=True)
 
+    except _Cancelled:
+        print(f"[cancel] job {job_id} cancelado; encerrando thread2 e limpando disco")
+        shutil.rmtree(os.path.join(config.JOB_DIR, job_id), ignore_errors=True)
     except Exception as e:
         _fail_job(job_id, str(e))
 
