@@ -1,6 +1,6 @@
 import sqlite3
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from contextlib import contextmanager
 
 
@@ -42,6 +42,19 @@ def init_db() -> None:
         """)
 
 
+def init_users() -> None:
+    with _conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                email                TEXT PRIMARY KEY,
+                password_hash        TEXT NOT NULL,
+                must_change_password INTEGER NOT NULL DEFAULT 1,
+                created_at           TEXT,
+                updated_at           TEXT
+            )
+        """)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -78,3 +91,59 @@ def count_active_jobs() -> int:
             "SELECT COUNT(*) FROM jobs WHERE status NOT IN ('done', 'error')"
         ).fetchone()
         return row[0]
+
+
+def get_user(email: str) -> dict | None:
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM users WHERE email = ?", (email.strip().lower(),)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def upsert_user(email: str, password_hash: str, must_change: bool = True) -> None:
+    """Cria ou redefine um usuário. Usado pelo manage_users.py para cadastrar e
+    resetar com a senha padrão (must_change=True força troca no primeiro acesso)."""
+    email = email.strip().lower()
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO users (email, password_hash, must_change_password, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(email) DO UPDATE SET
+                   password_hash = excluded.password_hash,
+                   must_change_password = excluded.must_change_password,
+                   updated_at = excluded.updated_at""",
+            (email, password_hash, 1 if must_change else 0, _now(), _now()),
+        )
+
+
+def set_user_password(email: str, password_hash: str) -> None:
+    """Troca de senha pelo próprio usuário: limpa o must_change_password."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE users SET password_hash = ?, must_change_password = 0, updated_at = ? WHERE email = ?",
+            (password_hash, _now(), email.strip().lower()),
+        )
+
+
+def list_users() -> list:
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT email, must_change_password, created_at FROM users ORDER BY email"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def reap_stale_jobs(stale_minutes: int) -> int:
+    """Marca como error os jobs presos em estado não terminal sem atualização há
+    mais de stale_minutes (ex: callback do N8N perdido). Como MAX_CONCURRENT_JOBS=1,
+    um job preso trava a fila inteira; isto libera a vaga. Retorna quantos liberou."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=stale_minutes)).isoformat()
+    msg = f"timeout: sem atualização há mais de {stale_minutes}min (callback do N8N perdido?)"
+    with _conn() as conn:
+        cur = conn.execute(
+            "UPDATE jobs SET status = 'error', error = ?, updated_at = ? "
+            "WHERE status NOT IN ('done', 'error') AND updated_at < ?",
+            (msg, _now(), cutoff),
+        )
+        return cur.rowcount

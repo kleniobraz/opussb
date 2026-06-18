@@ -33,7 +33,12 @@ def run_thread2(job_id: str) -> None:
     """Thread 2: cut clips → reframe → upload to S3 → mark done."""
     job = db.get_job(job_id)
     try:
-        clips_data = json.loads(job["clips_json"])
+        raw = job["clips_json"].strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        clips_data = json.loads(raw.strip())
         job_clips_dir = os.path.join(config.JOB_DIR, job_id, "clips")
         os.makedirs(job_clips_dir, exist_ok=True)
 
@@ -59,12 +64,13 @@ def run_thread2(job_id: str) -> None:
             _s3_upload_with_retry(path, key)
             s3_keys.append(key)
 
-        db.update_job(job_id, status="done", progress=100, result_urls=json.dumps(s3_keys))
+        db.update_job(job_id, status="done", progress=100, result_urls=json.dumps(s3_keys), error=None)
+
+        # Cleanup só aqui, depois dos clipes confirmados no S3 (regra: nunca antes).
+        shutil.rmtree(os.path.join(config.JOB_DIR, job_id), ignore_errors=True)
 
     except Exception as e:
         _fail_job(job_id, str(e))
-    finally:
-        shutil.rmtree(os.path.join(config.JOB_DIR, job_id), ignore_errors=True)
 
 
 # ─── Private helpers ─────────────────────────────────────────────────────────
@@ -103,7 +109,7 @@ def _trigger_n8n_with_retry(
     }
     for attempt in range(retries):
         try:
-            resp = requests.post(config.N8N_WEBHOOK_URL, json=payload, timeout=10)
+            resp = requests.post(config.N8N_WEBHOOK_URL, json=payload, timeout=600)
             resp.raise_for_status()
             return
         except Exception as e:
