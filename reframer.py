@@ -4,6 +4,9 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
+# Rede de proteção contra ffmpeg travado no mux/encode final (clipe curto; folga larga).
+_FFMPEG_TIMEOUT = 1200
+
 _model = None
 
 def _get_model() -> YOLO:
@@ -154,13 +157,14 @@ def _mux_audio(original: str, video_only: str, output: str, subtitles: str | Non
          "-vf", vf,
          "-c:a", "aac",
          "-map", "0:v:0",
-         "-map", "1:a:0",
+         "-map", "1:a:0?",
          "-shortest",
+         "-movflags", "+faststart",
          output],
-        capture_output=True, text=True,
+        capture_output=True, text=True, timeout=_FFMPEG_TIMEOUT,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"FFmpeg audio mux failed: {result.stderr}")
+        raise RuntimeError(f"FFmpeg audio mux failed: {result.stderr[-400:]}")
 
 
 def _encode_with_subtitles(input_path: str, output_path: str, subtitles: str) -> None:
@@ -170,8 +174,9 @@ def _encode_with_subtitles(input_path: str, output_path: str, subtitles: str) ->
         ["ffmpeg", "-y", "-i", input_path,
          "-vf", vf,
          "-c:v", "libx264", "-c:a", "aac",
+         "-movflags", "+faststart",
          output_path],
-        capture_output=True, text=True,
+        capture_output=True, text=True, timeout=_FFMPEG_TIMEOUT,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"FFmpeg subtitle burn failed: {result.stderr}")
+        raise RuntimeError(f"FFmpeg subtitle burn failed: {result.stderr[-400:]}")

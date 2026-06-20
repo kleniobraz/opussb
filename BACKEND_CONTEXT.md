@@ -180,8 +180,14 @@ letras é aplicado por evento via tag inline `\fsp`. `\fsp` em px na fonte 70: ~
 - **Clipes antigos** (pré-feature, `clip_NN_9x16.mp4` já queimado, sem
   `clip_captions`): servidos direto, **não editáveis**.
 - A queima roda no `app.py` com ffmpeg via subprocess (não usa o reframer, pra não
-  carregar YOLO no worker web). Helpers: `_burn_clip`, `_clip_burn_lock`,
-  `_invalidate_cap`.
+  carregar YOLO no worker web). Helpers: `_build_burn_cmd` (monta o comando, função
+  pura testável), `_burn_clip`, `_clip_burn_lock`, `_invalidate_cap`.
+- **Mapeamento de áudio (cuidado)**: quando há legenda mas NÃO há música, o filtro
+  `[0:v]subtitles[v]` faz a gente usar `-map [v]`, e isso DESLIGA o mapeamento
+  automático do ffmpeg. Tem que mapear o áudio original explicitamente (`-map 0:a?`,
+  o `?` deixa opcional), senão o clipe sai mudo. Era exatamente o bug do áudio sumido
+  ao editar legenda. O teste `test_backend.py` trava essa regra (o áudio nunca pode
+  sumir em nenhum dos 4 casos: só legenda, só música, ambos, nenhum).
 
 Contrato completo dessas rotas: `BACKEND_INTEGRATION.md` seção 3.1.
 
@@ -241,9 +247,59 @@ Contrato completo dessas rotas: `BACKEND_INTEGRATION.md` seção 3.1.
 Fabrique um job de teste, exercite via HTTP com um usuário descartável, confira no
 S3 + banco, e **limpe tudo**:
 ```
-./venv/bin/python manage_users.py add teste@local --password 'X'   # + UPDATE must_change=0
+./venv/bin/python manage_users.py add teste@local --password 'X' --active  # já ativo, sem troca
 # criar job TEST*, subir base no S3, set clip_captions, logar via curl, bater nas rotas
 db.delete_job("TESTxxx"); s3_client.delete_prefix("jobs/TESTxxx/")  # cleanup
 ./venv/bin/python manage_users.py delete teste@local
 ```
 Frames de vídeo dá pra inspecionar extraindo PNG com ffmpeg e abrindo a imagem.
+
+**Testes unitários** (puros, sem rede, não tocam dados reais): `./venv/bin/python
+test_backend.py`. Usam um DB_PATH temporário (definido antes de importar o app) e
+cobrem o builder do comando de queima (regressão do áudio), validação de segmentos,
+parsing do clips_json e o round-trip SRT -> .ass.
+
+---
+
+## 11. Onda de correções e endurecimento (2026-06-20)
+
+Validado em produção (restart + `test_backend.py` + teste e2e da queima com job TEST
+e cleanup). Backups em `/opt/opussb_backups/` (db + tarball do código) antes da troca.
+
+**Bug corrigido (crítico):** áudio sumia ao editar a legenda. A queima só-legenda
+montava `-map [v] -c:a copy` sem mapear o áudio (ver seção 6). Corrigido com
+`-map 0:a?` e isolado em `_build_burn_cmd` com teste de regressão.
+
+**Endurecimento aplicado (sem mexer em arquitetura, custo, N8N ou modelo de scoring):**
+- **db.py**: WAL + `busy_timeout=30s` + `synchronous=NORMAL` + rollback em exceção no
+  `_conn()` (fecha o "database is locked" com 1 worker / 4 threads). Índices em
+  `jobs(user_email, created_at)` e `jobs(status)`. (WAL cria `opussb.db-wal/-shm`,
+  já no `.gitignore`; backup com `cp` deve checkpointar antes pra não pegar estado
+  parcial.)
+- **s3_client.py**: cliente boto3 cacheado (singleton sob lock) em vez de recriar a
+  cada chamada; retries nativos (`max_attempts=3`) cobrem blips transitórios.
+- **processor.py**: timeouts em TODO ffmpeg (rede de proteção contra processo
+  travado); parsing tolerante do `clips_json` (`_parse_clips_json`, não levanta);
+  validação de start/end no corte (pula item ruim em vez de derrubar o job);
+  `-preset veryfast` + `+faststart` nos cortes; timeout (connect, read) no trigger do
+  N8N (falha rápido se o host morrer).
+- **reframer.py**: timeouts no mux/encode; `+faststart`; `-map 1:a:0?` (áudio
+  opcional, não quebra se a fonte não tiver trilha).
+- **captions.py**: `build_ass_from_segments` pula segmento com tempo inválido
+  (NaN/inf, end<=start) em vez de gerar `.ass` quebrado.
+- **app.py**: throttle de login em memória (anti força bruta, por IP+email); headers
+  de segurança (`after_request`); erros de `/api/*` sempre em JSON (errorhandlers);
+  `/health` com ping no banco + jobs ativos; validação reforçada de segmentos
+  (rejeita NaN e intervalo que some no arredondamento); limites de duração no upload;
+  validação de conteúdo de áudio na música (ffprobe); `put_preferences` com checagem
+  de tipo; `clip_video` reusa `_clip_lookup` (DRY).
+- **Logging**: `print()` trocado por `logging` no logger `opussb` com handler em
+  stderr (resolve o buffer do gunicorn citado na seção 8; agora aparece no
+  `journalctl` na hora, com nível e timestamp).
+- **manage_users.py**: flag `--active` cria/reseta usuário já ativo (sem troca
+  obrigatória), útil pra testes e scripts.
+
+**Pré-existente, não tocado:** gunicorn 26 loga `Control server error: Permission
+denied: '/var/www/.gunicorn'` no boot (HOME do www-data). É inofensivo (recurso
+opcional do gunicorn) e não tem a ver com o código Python; fica de nota pra um ajuste
+de unit/permissão no futuro, se incomodar.

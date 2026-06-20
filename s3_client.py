@@ -1,26 +1,46 @@
+import os
+import logging
+import threading
+
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 import config
 
+log = logging.getLogger("opussb.s3")
+
+# Cliente boto3 cacheado: criar um client tem custo (sessão + resolução de endpoint)
+# e antes a gente recriava em TODA chamada (upload/download/exists/presign), inclusive
+# no caminho quente da queima sob demanda. Clients do boto3 são thread-safe pra chamadas,
+# então um singleton guardado sob lock atende os 4 threads do gunicorn com segurança.
+_client_singleton = None
+_client_lock = threading.Lock()
+
 
 def _client():
-    return boto3.client(
-        "s3",
-        endpoint_url=config.S3_ENDPOINT,
-        aws_access_key_id=config.S3_ACCESS_KEY,
-        aws_secret_access_key=config.S3_SECRET_KEY,
-        region_name="eu-central-1",
-        config=Config(signature_version="s3v4"),
-    )
+    global _client_singleton
+    if _client_singleton is None:
+        with _client_lock:
+            if _client_singleton is None:
+                _client_singleton = boto3.client(
+                    "s3",
+                    endpoint_url=config.S3_ENDPOINT,
+                    aws_access_key_id=config.S3_ACCESS_KEY,
+                    aws_secret_access_key=config.S3_SECRET_KEY,
+                    region_name="eu-central-1",
+                    config=Config(
+                        signature_version="s3v4",
+                        retries={"max_attempts": 3, "mode": "standard"},
+                    ),
+                )
+    return _client_singleton
 
 
 def upload_file(local_path: str, s3_key: str) -> None:
-    import os
     if not os.path.exists(local_path):
         raise FileNotFoundError(f"Arquivo não encontrado para upload: {local_path}")
     _client().upload_file(local_path, config.S3_BUCKET, s3_key)
-    print(f"[s3] upload ok: {s3_key}")
+    log.info("upload ok: %s", s3_key)
 
 
 def download_file(s3_key: str, local_path: str) -> None:
@@ -69,5 +89,5 @@ def delete_prefix(prefix: str) -> int:
     if batch:
         client.delete_objects(Bucket=config.S3_BUCKET, Delete={"Objects": batch})
         deleted += len(batch)
-    print(f"[s3] delete prefix {prefix}: {deleted} objeto(s)")
+    log.info("delete prefix %s: %d objeto(s)", prefix, deleted)
     return deleted

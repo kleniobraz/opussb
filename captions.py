@@ -15,6 +15,7 @@ num ponto só. Resolução de referência fixa em 1080x1920 (saída do reframe).
 """
 
 import re
+import math
 
 # ─── Estilo SB (1080x1920) ───────────────────────────────────────────────────
 PLAY_W, PLAY_H = 1080, 1920
@@ -179,11 +180,25 @@ def build_ass_from_segments(segments: list):
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
     prefix = f"{{\\blur{GLOW_BLUR}\\fsp{TRACKING_PX:g}}}"
-    body = "".join(
-        f"Dialogue: 0,{_fmt_time(s['start'])},{_fmt_time(s['end'])},SB,,0,0,0,,{prefix}{_sanitize(s['text'])}\n"
-        for s in segments
-    )
-    return header + body
+    lines = []
+    for s in segments:
+        # Defesa: um segmento salvo com tempo inválido (NaN/inf, end<=start) não pode
+        # virar uma linha Dialogue quebrada. _validate_segments já filtra na entrada,
+        # mas o render também é chamado a partir de dado persistido e do pipeline.
+        try:
+            st = float(s["start"])
+            en = float(s["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (math.isfinite(st) and math.isfinite(en)) or en <= st:
+            continue
+        txt = _sanitize(str(s.get("text", "")))
+        if not txt:
+            continue
+        lines.append(f"Dialogue: 0,{_fmt_time(st)},{_fmt_time(en)},SB,,0,0,0,,{prefix}{txt}")
+    if not lines:
+        return None
+    return header + "\n".join(lines) + "\n"
 
 
 def build_ass_for_clip(srt_text: str, clip_start: float, clip_end: float):

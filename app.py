@@ -1,6 +1,10 @@
 import os
+import sys
+import math
+import time
 import uuid
 import json
+import logging
 import ipaddress
 import functools
 import threading
@@ -11,12 +15,25 @@ from datetime import timedelta
 
 from flask import Flask, request, jsonify, abort, session, redirect
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.exceptions import HTTPException
 
 import config
 import db
 import s3_client
 import processor
 import captions
+
+# Logging pra stderr: print() no worker do gunicorn fica com buffer e some do
+# journalctl. Um handler próprio no logger "opussb" (sem propagar) garante log
+# imediato, com nível e timestamp, pros módulos (app/processor/s3).
+_opussb_logger = logging.getLogger("opussb")
+if not _opussb_logger.handlers:
+    _h = logging.StreamHandler(sys.stderr)
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
+    _opussb_logger.addHandler(_h)
+    _opussb_logger.setLevel(logging.INFO)
+    _opussb_logger.propagate = False
+log = logging.getLogger("opussb.app")
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 app.secret_key = config.FLASK_SECRET_KEY
@@ -45,12 +62,87 @@ db.init_clip_music()
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 MIN_PASSWORD_LEN = 8
 
+# Limites sãos pra duração de clipe pedida no upload. min < max já era exigido;
+# aqui evitamos valores absurdos (0, negativo, horas) que o scoring não trata bem.
+_MIN_CLIP_SECONDS = 1
+_MAX_CLIP_SECONDS = 3600
+
 
 def _allowed(filename: str) -> bool:
     return os.path.splitext(filename.lower())[1] in ALLOWED_EXTENSIONS
 
 
+# ─── Cabeçalhos de segurança + erros em JSON ─────────────────────────────────
+
+@app.after_request
+def _security_headers(resp):
+    """Defesa em profundidade barata. O app é interno e atrás de login; estes
+    cabeçalhos evitam sniffing de MIME e clickjacking sem custo."""
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    return resp
+
+
+@app.errorhandler(HTTPException)
+def _json_http_error(e):
+    """Rotas /api respondem erro em JSON (o front sempre espera JSON). Fora de /api
+    mantém o comportamento padrão do Flask (HTML), pra não mexer no SPA estático."""
+    if request.path.startswith("/api/"):
+        return jsonify({"error": e.description, "status": e.code}), e.code
+    return e
+
+
+@app.errorhandler(Exception)
+def _json_unhandled_error(e):
+    if isinstance(e, HTTPException):
+        return e
+    log.exception("erro não tratado em %s", request.path)
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "Erro interno.", "status": 500}), 500
+    raise e
+
+
 # ─── Autenticação ────────────────────────────────────────────────────────────
+
+# Throttle de login em memória (sem dependência externa): trava tentativas repetidas
+# por (IP, email) numa janela curta, freando força bruta. Reseta no restart e libera
+# sozinho ao expirar a janela; o teto é folgado pra não atrapalhar quem só errou a senha.
+_LOGIN_WINDOW_SECONDS = 300
+_LOGIN_MAX_FAILS = 10
+_login_fails: dict = {}
+_login_fails_lock = threading.Lock()
+
+
+def _login_key() -> str:
+    email = ((request.get_json(silent=True) or {}).get("email") or "").strip().lower()
+    return f"{request.remote_addr}|{email}"
+
+
+def _login_blocked(key: str) -> bool:
+    now = time.time()
+    with _login_fails_lock:
+        hits = [t for t in _login_fails.get(key, []) if now - t < _LOGIN_WINDOW_SECONDS]
+        _login_fails[key] = hits
+        return len(hits) >= _LOGIN_MAX_FAILS
+
+
+def _login_record_failure(key: str) -> None:
+    now = time.time()
+    with _login_fails_lock:
+        hits = [t for t in _login_fails.get(key, []) if now - t < _LOGIN_WINDOW_SECONDS]
+        hits.append(now)
+        _login_fails[key] = hits
+        # Poda oportunista pra o dicionário não crescer sem limite.
+        if len(_login_fails) > 4096:
+            for k in [k for k, v in _login_fails.items() if not v]:
+                _login_fails.pop(k, None)
+
+
+def _login_clear(key: str) -> None:
+    with _login_fails_lock:
+        _login_fails.pop(key, None)
+
 
 def login_required(fn):
     @functools.wraps(fn)
@@ -67,11 +159,19 @@ def login():
     email = (data.get("email") or "").strip().lower()
     password = data.get("password") or ""
 
+    key = _login_key()
+    if _login_blocked(key):
+        return jsonify({
+            "error": "Tentativas demais. Espere alguns minutos e tente de novo."
+        }), 429
+
     user = db.get_user(email)
     # Mensagem genérica de propósito: não revela se o email existe.
     if not user or not check_password_hash(user["password_hash"], password):
+        _login_record_failure(key)
         return jsonify({"error": "Email ou senha inválidos."}), 401
 
+    _login_clear(key)
     session.permanent = True
     session["user"] = email
     return jsonify({"email": email, "must_change_password": bool(user["must_change_password"])})
@@ -119,7 +219,19 @@ def change_password():
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok"})
+    """Saúde do processo. Inclui um ping leve no banco e a contagem de jobs ativos,
+    pra checagem de ops enxergar 'degraded' quando o SQLite trava. Sem segredos."""
+    db_ok, active = True, None
+    try:
+        active = db.count_active_jobs()
+    except Exception as e:
+        db_ok = False
+        log.warning("health: checagem do banco falhou (%s)", e)
+    return jsonify({
+        "status": "ok" if db_ok else "degraded",
+        "db": db_ok,
+        "active_jobs": active,
+    }), (200 if db_ok else 503)
 
 
 @app.route("/api/status/<job_id>")
@@ -308,12 +420,14 @@ def _filter_escape(path: str) -> str:
 _BURN_TIMEOUT = 180
 
 
-def _burn_clip(base_path: str, ass_path, music_path, music_vol, out_path: str) -> None:
-    """Renderiza o clipe final a partir da base (já 1080x1920): queima a legenda
-    (.ass, se houver) no vídeo e mixa a música de fundo (se houver, em loop e com
-    volume) no áudio. Levanta se o ffmpeg falhar, sair vazio, ou estourar
-    _BURN_TIMEOUT (o subprocess é morto). O chamador só sobe pro S3 DEPOIS que isto
-    retorna ok, então uma render que falha no meio nunca vira um _cap.mp4 corrompido."""
+def _build_burn_cmd(base_path: str, ass_path, music_path, music_vol, out_path: str) -> list:
+    """Monta o comando ffmpeg da queima (função pura, sem efeito colateral, pra ser
+    testável). Regras de mapeamento de stream:
+      - vídeo: filtro de legenda (.ass) se houver, senão o vídeo da base direto;
+      - áudio: se houver música, mixa fala+música; SENÃO mapeia o áudio original da
+        base explicitamente (`0:a?`). Sem esse map, o `-map [v]` da legenda desliga
+        o mapeamento automático do ffmpeg e o clipe sairia MUDO (era o bug). O `?`
+        deixa o áudio opcional pra não quebrar caso a base não tenha trilha."""
     cmd = ["ffmpeg", "-y", "-i", base_path]
     if music_path:
         cmd += ["-stream_loop", "-1", "-i", music_path]   # loopa a música pra cobrir o clipe
@@ -327,7 +441,7 @@ def _burn_clip(base_path: str, ass_path, music_path, music_vol, out_path: str) -
         try:
             vol = max(0.0, min(float(music_vol), 1.0))
         except (TypeError, ValueError):
-            vol = 0.15
+            vol = _DEFAULT_MUSIC_VOL
         fc.append(f"[1:a]volume={vol}[m]")
         fc.append("[0:a][m]amix=inputs=2:duration=first:dropout_transition=0[a]")
         amap = "[a]"
@@ -336,11 +450,26 @@ def _burn_clip(base_path: str, ass_path, music_path, music_vol, out_path: str) -
     if fc:
         cmd += ["-filter_complex", ";".join(fc)]
     cmd += ["-map", vmap]
-    cmd += (["-map", amap, "-c:a", "aac"] if amap else ["-c:a", "copy"])
+    if amap:
+        cmd += ["-map", amap, "-c:a", "aac"]
+    else:
+        # Sem música: preserva o áudio original do clipe (copiando, sem recodificar).
+        cmd += ["-map", "0:a?", "-c:a", "copy"]
     cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+    cmd += ["-movflags", "+faststart"]   # moov no início: playback progressivo no navegador
     if music_path:
         cmd += ["-shortest"]
     cmd += [out_path]
+    return cmd
+
+
+def _burn_clip(base_path: str, ass_path, music_path, music_vol, out_path: str) -> None:
+    """Renderiza o clipe final a partir da base (já 1080x1920): queima a legenda
+    (.ass, se houver) no vídeo e mixa a música de fundo (se houver, em loop e com
+    volume) no áudio. Levanta se o ffmpeg falhar, sair vazio, ou estourar
+    _BURN_TIMEOUT (o subprocess é morto). O chamador só sobe pro S3 DEPOIS que isto
+    retorna ok, então uma render que falha no meio nunca vira um _cap.mp4 corrompido."""
+    cmd = _build_burn_cmd(base_path, ass_path, music_path, music_vol, out_path)
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=_BURN_TIMEOUT)
     if r.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1024:
         raise RuntimeError(f"ffmpeg render falhou: {r.stderr[-400:]}")
@@ -355,7 +484,7 @@ def _invalidate_cap(base_key: str) -> None:
     try:
         s3_client.delete_object(cap_key)
     except Exception as e:
-        print(f"[cache] falha ao invalidar {cap_key}: {e}")
+        log.warning("[cache] falha ao invalidar %s: %s", cap_key, e)
 
 
 @app.route("/api/clips/<path:clip_id>/video")
@@ -364,26 +493,7 @@ def clip_video(clip_id):
     """Entrega o vídeo do clipe via 302 pra URL presignada do S3. Queima a legenda
     sob demanda (cacheada). Em qualquer falha de queima, faz 302 pra base SEM
     legenda (o clipe sempre toca) e nunca deixa _cap.mp4 corrompido no S3."""
-    job_id, _, idx_s = clip_id.rpartition(":")
-    try:
-        idx = int(idx_s)
-    except ValueError:
-        abort(404)
-    if not job_id:
-        abort(404)
-    job = db.get_job(job_id)
-    if not job or (job.get("user_email") and job["user_email"] != session["user"]):
-        abort(404)
-    try:
-        items = json.loads(job.get("result_urls") or "[]")
-    except (TypeError, ValueError):
-        items = []
-    if not (0 <= idx < len(items)):
-        abort(404)
-    item = items[idx]
-    base_key = item if isinstance(item, str) else item.get("key")
-    if not base_key:
-        abort(404)
+    job, idx, base_key = _clip_lookup(clip_id)
 
     segments_json = db.get_clip_captions(clip_id)
     music = db.get_clip_music(clip_id)
@@ -422,7 +532,7 @@ def clip_video(clip_id):
             _burn_clip(base_path, ass_path, music_path, (music or {}).get("volume"), out_path)
             s3_client.upload_file(out_path, cap_key)      # só após render local ok
         except Exception as e:
-            print(f"[burn] clip {clip_id} falhou ({e}); servindo base")
+            log.warning("[burn] clip %s falhou (%s); servindo base", clip_id, e)
             return redirect(s3_client.get_presigned_url(base_key), code=302)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -476,12 +586,20 @@ def _validate_segments(data):
             en = float(s["end"])
         except (KeyError, TypeError, ValueError):
             raise ValueError(f"Item {i}: start/end inválidos.")
+        if not (math.isfinite(st) and math.isfinite(en)):
+            raise ValueError(f"Item {i}: start/end inválidos.")
         txt = s.get("text", "")
         if not isinstance(txt, str):
             raise ValueError(f"Item {i}: text deve ser texto.")
         if en <= st:
             raise ValueError(f"Item {i}: end deve ser maior que start.")
-        out.append({"start": round(max(st, 0.0), 3), "end": round(en, 3), "text": txt.strip()[:_MAX_TEXT_LEN]})
+        st = round(max(st, 0.0), 3)
+        en = round(en, 3)
+        # Arredondar pra 3 casas pode colapsar start/end muito próximos: rejeita pra
+        # não gravar um evento de duração zero (que viraria legenda invisível/quebrada).
+        if en <= st:
+            raise ValueError(f"Item {i}: intervalo curto demais após arredondar.")
+        out.append({"start": st, "end": en, "text": txt.strip()[:_MAX_TEXT_LEN]})
     return out
 
 
@@ -528,6 +646,20 @@ _MAX_MUSIC_BYTES = 25 * 1024 * 1024
 _DEFAULT_MUSIC_VOL = 0.15
 
 
+def _has_audio_stream(path: str) -> bool:
+    """Confirma com ffprobe que o arquivo tem trilha de áudio de verdade (a extensão
+    sozinha não garante). Evita guardar lixo que faria a queima sob demanda falhar."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=codec_type", "-of", "csv=p=0", path],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+    return r.returncode == 0 and "audio" in (r.stdout or "")
+
+
 @app.route("/api/clips/<path:clip_id>/music", methods=["POST"])
 @login_required
 def clip_music_upload(clip_id):
@@ -558,6 +690,8 @@ def clip_music_upload(clip_id):
     try:
         local = os.path.join(tmp, "track" + ext)
         f.save(local)
+        if not _has_audio_stream(local):
+            return jsonify({"error": "O arquivo enviado não parece ser um áudio válido."}), 400
         s3_client.upload_file(local, music_key)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -595,7 +729,7 @@ def clip_music_remove(clip_id):
         try:
             s3_client.delete_object(music["music_key"])
         except Exception as e:
-            print(f"[music] falha ao apagar {music['music_key']}: {e}")
+            log.warning("[music] falha ao apagar %s: %s", music["music_key"], e)
     db.delete_clip_music(clip_id)
     _invalidate_cap(base_key)
     return jsonify({"ok": True})
@@ -613,7 +747,7 @@ def delete_project(job_id):
     try:
         s3_client.delete_prefix(f"jobs/{job_id}/")
     except Exception as e:
-        print(f"[delete] falha ao limpar S3 do job {job_id}: {e}")
+        log.warning("[delete] falha ao limpar S3 do job %s: %s", job_id, e)
     db.delete_job(job_id)
     return jsonify({"ok": True})
 
@@ -636,6 +770,28 @@ def cancel_job(job_id):
 _PREF_KEYS = {"defaultMin", "defaultMax", "aspect", "language", "captions", "autoplayPreview"}
 
 
+def _clean_preferences(data) -> dict:
+    """Whitelist + checagem de tipo das prefs: não guardar blob arbitrário do cliente
+    e não deixar entrar tipo errado (ex: string onde o front espera número)."""
+    out = {}
+    if not isinstance(data, dict):
+        return out
+    for k in ("defaultMin", "defaultMax"):
+        if k in data:
+            try:
+                out[k] = int(data[k])
+            except (TypeError, ValueError):
+                pass
+    for k in ("captions", "autoplayPreview"):
+        if k in data:
+            out[k] = bool(data[k])
+    for k in ("aspect", "language"):
+        v = data.get(k)
+        if isinstance(v, str):
+            out[k] = v[:32]
+    return out
+
+
 @app.route("/api/preferences")
 @login_required
 def get_preferences():
@@ -650,8 +806,7 @@ def get_preferences():
 @login_required
 def put_preferences():
     data = request.get_json(silent=True) or {}
-    # Whitelist das chaves conhecidas: não guardar blob arbitrário do cliente.
-    clean = {k: data[k] for k in _PREF_KEYS if k in data}
+    clean = _clean_preferences(data)
     db.set_preferences(session["user"], json.dumps(clean))
     return jsonify({"ok": True})
 
@@ -675,6 +830,10 @@ def upload():
     if min_duration is None or max_duration is None or min_duration >= max_duration:
         return jsonify({
             "error": "min_duration e max_duration são obrigatórios e min deve ser menor que max."
+        }), 400
+    if not (_MIN_CLIP_SECONDS <= min_duration < max_duration <= _MAX_CLIP_SECONDS):
+        return jsonify({
+            "error": f"Duração fora do intervalo permitido ({_MIN_CLIP_SECONDS} a {_MAX_CLIP_SECONDS}s)."
         }), 400
 
     job_id = str(uuid.uuid4())
@@ -701,7 +860,7 @@ def upload():
     with _upload_lock:
         reaped = db.reap_stale_jobs(config.JOB_STALE_MINUTES)
         if reaped:
-            print(f"[watchdog] {reaped} job(s) preso(s) liberado(s) por timeout")
+            log.info("[watchdog] %d job(s) preso(s) liberado(s) por timeout", reaped)
         if db.count_active_jobs() >= config.MAX_CONCURRENT_JOBS:
             return jsonify({
                 "error": "Um vídeo já está em processamento! Vai tomar uma água, respirar e aguardar a conclusão antes de enviar novo vídeo :)"

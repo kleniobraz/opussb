@@ -27,22 +27,25 @@ def _get_password(arg_password: str | None) -> str:
     return pw
 
 
-def cmd_add(emails, password):
+def cmd_add(emails, password, active=False):
     pw = _get_password(password)
     h = generate_password_hash(pw)
+    must_change = not active
     for email in emails:
-        db.upsert_user(email, h, must_change=True)
-        print(f"[ok] cadastrado: {email.strip().lower()} (troca obrigatória no 1º acesso)")
+        db.upsert_user(email, h, must_change=must_change)
+        suffix = "(já ativo, sem troca obrigatória)" if active else "(troca obrigatória no 1º acesso)"
+        print(f"[ok] cadastrado: {email.strip().lower()} {suffix}")
 
 
-def cmd_reset(emails, password):
+def cmd_reset(emails, password, active=False):
     pw = _get_password(password)
     h = generate_password_hash(pw)
+    must_change = not active
     for email in emails:
         if not db.get_user(email):
             print(f"[skip] não existe: {email}")
             continue
-        db.upsert_user(email, h, must_change=True)
+        db.upsert_user(email, h, must_change=must_change)
         print(f"[ok] resetado: {email.strip().lower()}")
 
 
@@ -71,10 +74,14 @@ def main():
     a = sub.add_parser("add", help="cadastra usuários com senha padrão")
     a.add_argument("emails", nargs="+")
     a.add_argument("--password", default=None)
+    a.add_argument("--active", action="store_true",
+                   help="cria já ativo (sem troca obrigatória); útil pra testes/scripts")
 
     r = sub.add_parser("reset", help="reseta usuários para a senha padrão")
     r.add_argument("emails", nargs="+")
     r.add_argument("--password", default=None)
+    r.add_argument("--active", action="store_true",
+                   help="reseta já ativo (sem troca obrigatória)")
 
     sub.add_parser("list", help="lista usuários")
 
@@ -83,9 +90,9 @@ def main():
 
     args = p.parse_args()
     if args.cmd == "add":
-        cmd_add(args.emails, args.password)
+        cmd_add(args.emails, args.password, args.active)
     elif args.cmd == "reset":
-        cmd_reset(args.emails, args.password)
+        cmd_reset(args.emails, args.password, args.active)
     elif args.cmd == "list":
         cmd_list()
     elif args.cmd == "delete":

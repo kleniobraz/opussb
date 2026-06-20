@@ -10,11 +10,22 @@ def _db_path() -> str:
 
 @contextmanager
 def _conn():
-    conn = sqlite3.connect(_db_path())
+    # timeout=30: o gunicorn roda 1 worker com 4 threads e várias rotas escrevem
+    # (update_job, clip_captions, clip_music). Em vez de estourar "database is locked"
+    # na hora, o SQLite espera o lock liberar por até 30s.
+    conn = sqlite3.connect(_db_path(), timeout=30.0)
     conn.row_factory = sqlite3.Row
+    # WAL deixa leitor e escritor coexistirem (status/polling do front não bloqueia o
+    # processor escrevendo). busy_timeout casa com o timeout acima no nível do SQLite.
+    conn.execute("PRAGMA busy_timeout = 30000")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
     try:
         yield conn
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -51,6 +62,10 @@ def init_db() -> None:
         _ensure_column(conn, "jobs", "user_email", "TEXT")
         # Legenda queimada ligada/desligada por job. Default 1 (ligada) pro piloto.
         _ensure_column(conn, "jobs", "captions", "INTEGER DEFAULT 1")
+        # Índices: list_jobs filtra por dono e ordena por created_at; count_active e
+        # reap_stale filtram por status. Baratos e ajudam conforme o histórico cresce.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs(user_email, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
 
 
 def init_favorites() -> None:

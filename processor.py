@@ -1,5 +1,7 @@
 import os
 import json
+import math
+import logging
 import shutil
 import subprocess
 import time
@@ -8,6 +10,15 @@ import config
 import db
 import s3_client
 import captions
+
+log = logging.getLogger("opussb.processor")
+
+# Tetos de tempo dos ffmpeg do pipeline. NÃO são limites de performance: são rede de
+# proteção contra um ffmpeg travado (pipe/codec) que penduraria a thread pra sempre.
+# O watchdog (JOB_STALE_MINUTES) só marca o registro como error; o processo/thread
+# vazariam sem isto. Valores folgados pra não matar job legítimo longo.
+_FFMPEG_AUDIO_TIMEOUT = 1800     # extrair áudio do vídeo inteiro (pode ser longo)
+_FFMPEG_CUT_TIMEOUT = 900        # cortar/recodificar um clipe (curto)
 
 
 class _Cancelled(Exception):
@@ -41,7 +52,7 @@ def run_thread1(job_id: str) -> None:
             job_id, audio_s3_url, job["min_duration"], job["max_duration"]
         )
     except _Cancelled:
-        print(f"[cancel] job {job_id} cancelado; encerrando thread1 e limpando disco")
+        log.info("[cancel] job %s cancelado; encerrando thread1 e limpando disco", job_id)
         shutil.rmtree(os.path.join(config.JOB_DIR, job_id), ignore_errors=True)
     except Exception as e:
         _fail_job(job_id, str(e))
@@ -53,12 +64,9 @@ def run_thread2(job_id: str) -> None:
     de vídeo), não aqui."""
     job = db.get_job(job_id)
     try:
-        raw = job["clips_json"].strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        clips_data = json.loads(raw.strip())
+        clips_data = _parse_clips_json(job.get("clips_json"))
+        if not clips_data:
+            raise RuntimeError("clips_json vazio ou inválido (nenhum clipe pra cortar).")
         job_clips_dir = os.path.join(config.JOB_DIR, job_id, "clips")
         os.makedirs(job_clips_dir, exist_ok=True)
 
@@ -79,7 +87,7 @@ def run_thread2(job_id: str) -> None:
             try:
                 reframe_clip(item["path"], out_path)            # base 9x16 SEM legenda
             except Exception as e:
-                print(f"[reframe] clip {i+1} falhou ({e}), usando center crop")
+                log.warning("[reframe] clip %d falhou (%s), usando center crop", i + 1, e)
                 _center_crop_fallback(item["path"], out_path)
             item["final"] = out_path
 
@@ -101,7 +109,7 @@ def run_thread2(job_id: str) -> None:
                     if segs:
                         db.set_clip_captions(f"{job_id}:{i}", json.dumps(segs, ensure_ascii=False))
                 except Exception as e:
-                    print(f"[caption] clip {i+1}: falha ao gravar segmentos ({e})")
+                    log.warning("[caption] clip %d: falha ao gravar segmentos (%s)", i + 1, e)
             results.append(_clip_result(key, item["meta"]))
 
         # result_urls guarda objetos {key, title, score, reason, duration}. A key
@@ -115,13 +123,39 @@ def run_thread2(job_id: str) -> None:
         shutil.rmtree(os.path.join(config.JOB_DIR, job_id), ignore_errors=True)
 
     except _Cancelled:
-        print(f"[cancel] job {job_id} cancelado; encerrando thread2 e limpando disco")
+        log.info("[cancel] job %s cancelado; encerrando thread2 e limpando disco", job_id)
         shutil.rmtree(os.path.join(config.JOB_DIR, job_id), ignore_errors=True)
     except Exception as e:
         _fail_job(job_id, str(e))
 
 
 # ─── Private helpers ─────────────────────────────────────────────────────────
+
+def _parse_clips_json(raw):
+    """Parse tolerante do clips_json vindo do Claude (via N8N). Aceita None, lista já
+    pronta, ou string com/sem cerca ```json. Nunca levanta: devolve [] no que não der
+    pra interpretar (o chamador trata lista vazia como erro amigável)."""
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return raw
+    if not isinstance(raw, str):
+        return []
+    text = raw.strip()
+    if text.startswith("```"):
+        # Pega o miolo da primeira cerca; se vier malformada, cai no parse direto.
+        parts = text.split("```")
+        if len(parts) >= 2:
+            text = parts[1]
+        if text.lstrip().lower().startswith("json"):
+            text = text.lstrip()[4:]
+    text = text.strip()
+    try:
+        data = json.loads(text)
+    except (TypeError, ValueError):
+        return []
+    return data if isinstance(data, list) else []
+
 
 def _clip_result(key: str, meta: dict) -> dict:
     """Monta a entrada salva em result_urls: a chave S3 (base) + o metadata do Claude."""
@@ -143,10 +177,10 @@ def _extract_audio(video_path: str, job_id: str) -> str:
     result = subprocess.run(
         ["ffmpeg", "-y", "-i", video_path,
          "-vn", "-acodec", "libmp3lame", "-q:a", "4", audio_path],
-        capture_output=True, text=True,
+        capture_output=True, text=True, timeout=_FFMPEG_AUDIO_TIMEOUT,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"FFmpeg audio extraction failed: {result.stderr}")
+        raise RuntimeError(f"FFmpeg audio extraction failed: {result.stderr[-400:]}")
     return audio_path
 
 
@@ -172,7 +206,9 @@ def _trigger_n8n_with_retry(
     }
     for attempt in range(retries):
         try:
-            resp = requests.post(config.N8N_WEBHOOK_URL, json=payload, timeout=600)
+            # (connect, read): N8N morto/inacessível falha em 10s no connect em vez de
+            # pendurar 600s; o read longo cobre o tempo do workflow (RunPod + Claude).
+            resp = requests.post(config.N8N_WEBHOOK_URL, json=payload, timeout=(10, 600))
             resp.raise_for_status()
             return
         except Exception as e:
@@ -188,24 +224,37 @@ def _cut_clips(video_path: str, clips_data: list, output_dir: str) -> list:
     produced = []
     idx = 0
     for n, clip in enumerate(clips_data):
-        start = float(clip["start"])
-        end = float(clip["end"])
+        # Valida start/end antes de chamar o ffmpeg: um item malformado do scoring
+        # (faltando campo, NaN, end<=start, negativo) é pulado, não derruba o job.
+        try:
+            start = float(clip["start"])
+            end = float(clip["end"])
+        except (KeyError, TypeError, ValueError):
+            log.warning("[cut] clip %d ignorado: start/end ausente ou inválido", n + 1)
+            continue
+        if not (math.isfinite(start) and math.isfinite(end)) or start < 0 or end <= start:
+            log.warning("[cut] clip %d ignorado: intervalo inválido (%s -> %s)", n + 1, start, end)
+            continue
         if end - start < 5:
-            print(f"[cut] clip {n+1} ignorado: duração {end-start:.1f}s muito curta")
+            log.info("[cut] clip %d ignorado: duração %.1fs muito curta", n + 1, end - start)
             continue
         idx += 1
         out_path = os.path.join(output_dir, f"clip_{idx:02d}.mp4")
-        result = subprocess.run(
-            ["ffmpeg", "-y", "-i", video_path,
-             "-ss", str(start), "-to", str(end),
-             "-c:v", "libx264", "-c:a", "aac",
-             "-avoid_negative_ts", "1", out_path],
-            capture_output=True, text=True,
-        )
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-y", "-i", video_path,
+                 "-ss", str(start), "-to", str(end),
+                 "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
+                 "-avoid_negative_ts", "1", "-movflags", "+faststart", out_path],
+                capture_output=True, text=True, timeout=_FFMPEG_CUT_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            log.error("[cut] clip %d estourou o timeout (%ss); pulando", n + 1, _FFMPEG_CUT_TIMEOUT)
+            continue
         if result.returncode == 0 and os.path.exists(out_path):
             produced.append({"path": out_path, "meta": clip})
         else:
-            print(f"[cut] clip {n+1} falhou: {result.stderr[:200]}")
+            log.warning("[cut] clip %d falhou: %s", n + 1, result.stderr[:200])
     return produced
 
 
@@ -217,8 +266,9 @@ def _center_crop_fallback(input_path: str, output_path: str, subtitles: str | No
     subprocess.run(
         ["ffmpeg", "-y", "-i", input_path,
          "-vf", vf,
-         "-c:v", "libx264", "-crf", "23", "-c:a", "aac", output_path],
-        capture_output=True, check=True,
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac",
+         "-movflags", "+faststart", output_path],
+        capture_output=True, check=True, timeout=_FFMPEG_CUT_TIMEOUT,
     )
 
 
