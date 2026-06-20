@@ -7,3 +7,7 @@ opussb.db
 *.egg-info/
 .pytest_cache/
 yolov8n.pt
+# Fontes Inter (4MB de binário) e o .prtextstyle: já instaladas na VPS e
+# documentadas na memória do projeto. Fora do repo pra mantê-lo leve.
+FONTE INTER/
+*.prtextstyle

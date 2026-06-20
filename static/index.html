@@ -3,34 +3,88 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0a0a0b">
   <title>OpusSB — Corte Viral</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <div class="container">
 
-    <!-- Tela: Login -->
-    <div id="auth-section" class="hidden">
-      <h1>OpusSB</h1>
-      <p class="subtitle">Acesso restrito. Entre com seu email corporativo.</p>
-      <form id="login-form">
-        <div class="field">
-          <label for="login-email">Email</label>
-          <input type="email" id="login-email" autocomplete="username" required>
-        </div>
-        <div class="field">
-          <label for="login-password">Senha</label>
-          <input type="password" id="login-password" autocomplete="current-password" required>
-        </div>
-        <button type="submit" id="login-btn">Entrar</button>
-      </form>
-      <div id="login-error" class="error hidden"></div>
+  <!-- ═══════════════ LOGIN (split editorial) ═══════════════ -->
+  <div id="auth-section" class="login-split hidden">
+    <!-- painel de marca -->
+    <div class="login-brandside">
+      <div class="login-glows" aria-hidden="true">
+        <div class="glow glow-a"></div>
+        <div class="glow glow-b"></div>
+        <div class="glow glow-c"></div>
+      </div>
+      <div class="brand login-brand-top">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>
+        </span>
+        <span class="brand-name" style="font-size:1.15rem;">OpusSB</span>
+      </div>
+      <div class="login-brand-mid">
+        <svg class="arrowburst" width="120" height="120" viewBox="0 0 200 200" aria-hidden="true" style="margin-bottom:34px;">
+          <defs><linearGradient id="lgArrow" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFD75E"/><stop offset="1" stop-color="#E0A800"/></linearGradient></defs>
+          <g transform="rotate(0 100 100)"><path d="M126,100 L148,84 L148,92 L190,92 L190,108 L148,108 L148,116 Z" fill="#26262B"/></g>
+          <g transform="rotate(45 100 100)"><path d="M126,100 L148,84 L148,92 L190,92 L190,108 L148,108 L148,116 Z" fill="#26262B"/></g>
+          <g transform="rotate(90 100 100)"><path d="M126,100 L148,84 L148,92 L190,92 L190,108 L148,108 L148,116 Z" fill="#26262B"/></g>
+          <g transform="rotate(135 100 100)"><path d="M126,100 L148,84 L148,92 L190,92 L190,108 L148,108 L148,116 Z" fill="#26262B"/></g>
+          <g transform="rotate(180 100 100)"><path d="M126,100 L148,84 L148,92 L190,92 L190,108 L148,108 L148,116 Z" fill="#26262B"/></g>
+          <g transform="rotate(270 100 100)"><path d="M126,100 L148,84 L148,92 L190,92 L190,108 L148,108 L148,116 Z" fill="#26262B"/></g>
+          <g transform="rotate(315 100 100)"><path d="M126,100 L148,84 L148,92 L190,92 L190,108 L148,108 L148,116 Z" fill="#26262B"/></g>
+          <g transform="rotate(225 100 100)"><path d="M126,100 L148,84 L148,92 L190,92 L190,108 L148,108 L148,116 Z" fill="url(#lgArrow)"/></g>
+        </svg>
+        <h1 class="login-headline">Vídeos longos<br>viram clipes<br>que <span class="grad-text">bombam.</span></h1>
+        <p class="login-mid-sub">A central de clipes do Grupo SB. Envie um vídeo longo e receba os melhores momentos em 9:16.</p>
+      </div>
+      <div class="login-brand-foot"><span class="demo-dot"></span> Acesso interno · Grupo SB</div>
     </div>
+    <!-- formulário -->
+    <div class="login-formside">
+      <div class="login-form-inner">
+        <p class="eyebrow">Acesso interno</p>
+        <h2 class="auth-title">Entrar no OpusSB</h2>
+        <p class="auth-sub">Use seu email corporativo e sua senha.</p>
+        <form id="login-form">
+          <div class="field">
+            <label for="login-email">Email</label>
+            <input type="email" id="login-email" autocomplete="username" placeholder="voce@seubone.com" required>
+          </div>
+          <div class="field">
+            <label for="login-password">Senha</label>
+            <input type="password" id="login-password" autocomplete="current-password" placeholder="••••••••" required>
+          </div>
+          <button type="submit" id="login-btn" class="btn btn-gold btn-block">Entrar</button>
+        </form>
+        <div id="login-error" class="error hidden"></div>
+        <div class="auth-foot">Uso interno · Grupo SB · contas criadas pela equipe</div>
+      </div>
+    </div>
+  </div>
 
-    <!-- Tela: Troca de senha (primeiro acesso) -->
-    <div id="change-section" class="hidden">
-      <h1>Defina sua senha</h1>
-      <p class="subtitle">Primeiro acesso: crie uma senha pessoal antes de continuar.</p>
+  <!-- ═══════════════ TROCA DE SENHA (primeiro acesso) ═══════════════ -->
+  <div id="change-section" class="auth-screen hidden">
+    <div class="login-glows" aria-hidden="true">
+      <div class="glow glow-a"></div>
+      <div class="glow glow-b"></div>
+    </div>
+    <div class="auth-card">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>
+        </span>
+        <span class="brand-text">
+          <span class="brand-name">OpusSB</span>
+          <span class="brand-sub">CLIPES · SEUBONÉ</span>
+        </span>
+      </div>
+      <h1 class="auth-title" style="font-size:1.6rem;">Defina sua senha</h1>
+      <p class="auth-sub">Primeiro acesso: crie uma senha pessoal antes de continuar.</p>
       <form id="change-form">
         <div class="field">
           <label for="cur-password">Senha atual (a padrão)</label>
@@ -44,59 +98,250 @@
           <label for="new-password2">Repita a nova senha</label>
           <input type="password" id="new-password2" autocomplete="new-password" minlength="8" required>
         </div>
-        <button type="submit" id="change-btn">Salvar nova senha</button>
+        <button type="submit" id="change-btn" class="btn btn-gold btn-block">Salvar nova senha</button>
       </form>
       <div id="change-error" class="error hidden"></div>
     </div>
-
-    <!-- Tela: App -->
-    <div id="app-section" class="hidden">
-      <div class="topbar">
-        <span id="user-email" class="user-email"></span>
-        <button id="logout-btn" class="linkbtn" type="button">Sair</button>
-      </div>
-
-      <h1>OpusSB</h1>
-      <p class="subtitle">Envie um vídeo longo e receba clipes virais em 9:16</p>
-
-      <div id="upload-section">
-        <form id="upload-form">
-          <div class="field">
-            <label for="video-file">Vídeo (mp4, mov, avi, mkv, webm — até 15GB)</label>
-            <input type="file" id="video-file" name="video" accept=".mp4,.mov,.avi,.mkv,.webm" required>
-          </div>
-          <div class="field row">
-            <div>
-              <label for="min-duration">Duração mínima (s)</label>
-              <input type="number" id="min-duration" name="min_duration" value="30" min="5" max="300" required>
-            </div>
-            <div>
-              <label for="max-duration">Duração máxima (s)</label>
-              <input type="number" id="max-duration" name="max_duration" value="90" min="10" max="600" required>
-            </div>
-          </div>
-          <button type="submit" id="submit-btn">Processar Vídeo</button>
-        </form>
-        <div id="upload-error" class="error hidden"></div>
-      </div>
-
-      <div id="progress-section" class="hidden">
-        <p id="filename-label" class="filename"></p>
-        <div class="progress-bar-track">
-          <div id="progress-bar" class="progress-bar-fill" style="width: 0%"></div>
-        </div>
-        <p id="progress-pct" class="progress-pct">0%</p>
-        <p id="status-label" class="status-label">Iniciando...</p>
-        <button id="new-video-btn" class="hidden secondary">Processar outro vídeo</button>
-      </div>
-
-      <div id="results-section" class="hidden">
-        <h2>Clipes prontos</h2>
-        <div id="clips-list"></div>
-      </div>
-    </div>
-
   </div>
+
+  <!-- ═══════════════ APP (logado, topbar) ═══════════════ -->
+  <div id="app-section" class="app-shell hidden">
+
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="topbar-brand">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>
+          </span>
+          <span class="brand-name">OpusSB</span>
+          <span class="topbar-tag">CLIPES · SB</span>
+        </div>
+        <nav class="topnav">
+          <a class="nav-item is-active" data-nav="home" href="#/"><span>Home</span></a>
+          <a class="nav-item" data-nav="projetos" href="#/projetos"><span>Projetos</span></a>
+          <a class="nav-item" data-nav="favoritos" href="#/favoritos"><span>Favoritos</span></a>
+          <a class="nav-item" data-nav="config" href="#/config"><span>Configurações</span></a>
+        </nav>
+        <div class="topbar-user">
+          <div class="user-chip">
+            <span id="user-name" class="user-name"></span>
+            <span id="user-avatar" class="user-avatar" aria-hidden="true">SB</span>
+          </div>
+          <button id="logout-btn" class="icon-btn" type="button" title="Sair" aria-label="Sair">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main>
+
+      <!-- ═══════ HOME ═══════ -->
+      <div id="view-home" class="view">
+        <section class="hero">
+          <div class="hero-glows" aria-hidden="true">
+            <div class="glow glow-a" style="top:-10%;left:8%;"></div>
+            <div class="glow glow-b" style="top:0;right:6%;"></div>
+          </div>
+          <div class="hero-inner">
+            <div class="hero-text">
+              <p class="eyebrow">Central de clipes</p>
+              <h1 class="page-title" style="font-size:clamp(40px,5.6vw,72px);letter-spacing:-0.035em;">E aí, <span class="grad-text" id="greeting-name">você</span>.</h1>
+              <p class="page-sub">Solte um vídeo longo abaixo e o OpusSB devolve os melhores momentos cortados, reformatados e legendados.</p>
+            </div>
+            <svg class="arrowburst hero-art" width="100" height="100" viewBox="0 0 200 200" aria-hidden="true">
+              <defs><linearGradient id="hmArrow" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFD75E"/><stop offset="1" stop-color="#E0A800"/></linearGradient></defs>
+              <g transform="rotate(0 100 100)"><path d="M126,100 L148,84 L148,92 L190,92 L190,108 L148,108 L148,116 Z" fill="#26262B"/></g>
+              <g transform="rotate(45 100 100)"><path d="M126,100 L148,84 L148,92 L190,92 L190,108 L148,108 L148,116 Z" fill="#26262B"/></g>
+              <g transform="rotate(90 100 100)"><path d="M126,100 L148,84 L148,92 L190,92 L190,108 L148,108 L148,116 Z" fill="#26262B"/></g>
+              <g transform="rotate(135 100 100)"><path d="M126,100 L148,84 L148,92 L190,92 L190,108 L148,108 L148,116 Z" fill="#26262B"/></g>
+              <g transform="rotate(180 100 100)"><path d="M126,100 L148,84 L148,92 L190,92 L190,108 L148,108 L148,116 Z" fill="#26262B"/></g>
+              <g transform="rotate(270 100 100)"><path d="M126,100 L148,84 L148,92 L190,92 L190,108 L148,108 L148,116 Z" fill="#26262B"/></g>
+              <g transform="rotate(315 100 100)"><path d="M126,100 L148,84 L148,92 L190,92 L190,108 L148,108 L148,116 Z" fill="#26262B"/></g>
+              <g transform="rotate(225 100 100)"><path d="M126,100 L148,84 L148,92 L190,92 L190,108 L148,108 L148,116 Z" fill="url(#hmArrow)"/></g>
+            </svg>
+          </div>
+
+          <div class="upload-wrap">
+            <section id="upload-section" class="upload-card">
+              <form id="upload-form">
+                <label class="dropzone" for="video-file" id="dropzone">
+                  <span class="dropzone-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 16.5A4.5 4.5 0 0 0 17.5 8h-1.3A7 7 0 1 0 4 14.9"/><polyline points="9 13 12 10 15 13"/><line x1="12" y1="10" x2="12" y2="20"/></svg>
+                  </span>
+                  <span class="dropzone-title">Arraste seu vídeo ou clique para enviar</span>
+                  <span class="dropzone-hint">mp4, mov, avi, mkv, webm · até 15GB</span>
+                  <span class="dropzone-meta" id="file-name-display"></span>
+                  <span class="dropzone-meta" id="file-meta"></span>
+                  <input type="file" id="video-file" name="video" accept=".mp4,.mov,.avi,.mkv,.webm" required>
+                </label>
+
+                <div class="console-body">
+                  <div class="presets" id="presets" role="group" aria-label="Presets de formato">
+                    <button type="button" class="chip" data-min="15" data-max="30" data-aspect="9:16">Shorts 15-30s</button>
+                    <button type="button" class="chip" data-min="20" data-max="60" data-aspect="9:16">Reels 20-60s</button>
+                    <button type="button" class="chip" data-min="30" data-max="90" data-aspect="9:16">TikTok 30-90s</button>
+                    <button type="button" class="chip" data-min="60" data-max="180" data-aspect="16:9">Longo 1-3min</button>
+                  </div>
+
+                  <div class="console-grid">
+                    <div>
+                      <label class="ctrl-label" for="min-duration">Duração mín. (s)</label>
+                      <input type="number" id="min-duration" name="min_duration" value="30" min="5" max="300" required>
+                    </div>
+                    <div>
+                      <label class="ctrl-label" for="max-duration">Duração máx. (s)</label>
+                      <input type="number" id="max-duration" name="max_duration" value="90" min="10" max="600" required>
+                    </div>
+                    <div>
+                      <label class="ctrl-label" for="opt-aspect">Formato</label>
+                      <select id="opt-aspect">
+                        <option value="9:16">9:16</option>
+                        <option value="1:1">1:1</option>
+                        <option value="16:9">16:9</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label class="ctrl-label" for="opt-language">Idioma</label>
+                      <select id="opt-language">
+                        <option value="pt">Português</option>
+                        <option value="en">Inglês</option>
+                        <option value="es">Espanhol</option>
+                        <option value="auto">Detectar</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div class="console-foot">
+                    <label class="switch"><input type="checkbox" id="opt-captions" checked><span>Gerar legendas embutidas</span></label>
+                    <button type="submit" id="submit-btn" class="btn btn-gold">Gerar clipes</button>
+                  </div>
+                </div>
+              </form>
+              <div id="upload-error" class="error hidden" style="padding:0 18px 14px;"></div>
+            </section>
+          </div>
+        </section>
+
+        <!-- Progresso -->
+        <section id="progress-section" class="progress-card hidden" style="padding-top:40px;">
+          <div class="progress-inner">
+            <p class="eyebrow eyebrow-light">Processando</p>
+            <p id="filename-label" class="filename"></p>
+            <div class="progress-bar-track">
+              <div id="progress-bar" class="progress-bar-fill" style="width: 0%"></div>
+            </div>
+            <div class="progress-meta">
+              <span id="status-label" class="status-label">Iniciando...</span>
+              <span id="progress-pct" class="progress-pct">0%</span>
+            </div>
+            <div class="progress-actions">
+              <button id="cancel-btn" class="btn btn-danger hidden" type="button">Cancelar</button>
+              <button id="new-video-btn" class="btn btn-ghost hidden" type="button">Processar outro vídeo</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Resultado (job atual) -->
+        <section id="results-section" class="hidden">
+          <div class="results-head">
+            <div>
+              <p class="eyebrow">Resultado</p>
+              <h2 class="results-title">Clipes prontos</h2>
+            </div>
+          </div>
+          <div id="clips-list" class="clips-grid"></div>
+        </section>
+
+        <!-- Stats -->
+        <section id="home-stats" class="home-stats"></section>
+
+        <!-- Como funciona (faixa clara, animada) -->
+        <section class="howb" aria-label="Como funciona">
+          <div class="howb-inner">
+            <p class="howb-eyebrow">Como funciona</p>
+            <h2 class="howb-title">Do upload ao clipe<br>em cinco passos</h2>
+            <ol class="howb-track">
+              <li class="howb-step"><div class="howb-num">1</div><div class="howb-name">Extrai o áudio</div><div class="howb-desc">Separa a trilha de voz do vídeo enviado.</div></li>
+              <span class="howb-arrow" aria-hidden="true">→</span>
+              <li class="howb-step"><div class="howb-num">2</div><div class="howb-name">Transcreve a fala</div><div class="howb-desc">Gera a transcrição com marcação de tempo.</div></li>
+              <span class="howb-arrow" aria-hidden="true">→</span>
+              <li class="howb-step"><div class="howb-num">3</div><div class="howb-name">Corta os momentos</div><div class="howb-desc">Pontua e seleciona os melhores trechos.</div></li>
+              <span class="howb-arrow" aria-hidden="true">→</span>
+              <li class="howb-step"><div class="howb-num">4</div><div class="howb-name">Reformata 9:16</div><div class="howb-desc">Ajusta enquadramento e aplica legendas.</div></li>
+              <span class="howb-arrow" aria-hidden="true">→</span>
+              <li class="howb-step howb-step--dark"><div class="howb-num">5</div><div class="howb-name">Entrega os clipes</div><div class="howb-desc">Prontos pra baixar e publicar.</div></li>
+            </ol>
+          </div>
+        </section>
+
+        <!-- Recentes -->
+        <section id="home-recent" class="home-recent"></section>
+      </div>
+
+      <!-- ═══════ PROJETOS ═══════ -->
+      <div id="view-projetos" class="view hidden">
+        <section class="page-hero">
+          <div class="hero-glows" aria-hidden="true"><div class="glow glow-b" style="top:-20%;left:30%;"></div></div>
+          <div class="page-hero-inner">
+            <div class="page-hero-row">
+              <div>
+                <p class="eyebrow">Biblioteca</p>
+                <h1 class="page-title">Projetos</h1>
+              </div>
+              <a class="btn btn-gold" href="#/">+ Novo vídeo</a>
+            </div>
+          </div>
+        </section>
+        <div class="view-pad"><div id="projetos-body"></div></div>
+      </div>
+
+      <!-- ═══════ DETALHE DO PROJETO ═══════ -->
+      <div id="view-projeto" class="view hidden">
+        <div class="view-pad">
+          <div id="projeto-head"></div>
+          <div id="projeto-body"></div>
+        </div>
+      </div>
+
+      <!-- ═══════ FAVORITOS ═══════ -->
+      <div id="view-favoritos" class="view hidden">
+        <section class="page-hero">
+          <div class="page-hero-inner">
+            <p class="eyebrow">Salvos</p>
+            <h1 class="page-title">Favoritos</h1>
+          </div>
+        </section>
+        <div id="favoritos-body"></div>
+      </div>
+
+      <!-- ═══════ CONFIGURAÇÕES ═══════ -->
+      <div id="view-config" class="view hidden">
+        <section class="page-hero">
+          <div class="page-hero-inner">
+            <p class="eyebrow">Conta</p>
+            <h1 class="page-title">Configurações</h1>
+          </div>
+        </section>
+        <div class="view-pad-narrow"><div id="config-body"></div></div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- Infra de UI -->
+  <div id="toast-root" class="toast-root" aria-live="polite" aria-atomic="false"></div>
+  <div id="modal-root" class="modal-root hidden"></div>
+  <div id="demo-badge" class="demo-badge hidden" title="Alguns dados são de exemplo até o backend implementar as rotas novas.">
+    <span class="demo-dot" aria-hidden="true"></span> Modo demonstração
+  </div>
+
+  <script src="/js/store.js"></script>
+  <script src="/js/ui.js"></script>
+  <script src="/js/api.js"></script>
+  <script src="/js/router.js"></script>
+  <script src="/js/views.js"></script>
+  <script src="/js/howit.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

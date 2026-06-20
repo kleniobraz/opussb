@@ -1,5 +1,6 @@
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 import config
 
 
@@ -22,12 +23,33 @@ def upload_file(local_path: str, s3_key: str) -> None:
     print(f"[s3] upload ok: {s3_key}")
 
 
+def download_file(s3_key: str, local_path: str) -> None:
+    """Baixa um objeto do bucket para um caminho local (usado pela queima sob
+    demanda, que parte da base sem legenda guardada no S3)."""
+    _client().download_file(config.S3_BUCKET, s3_key, local_path)
+
+
+def exists(s3_key: str) -> bool:
+    """True se o objeto existe no bucket. Usado pra checar o cache da queima
+    (clip_NN_cap.mp4) antes de decidir entre redirecionar ou queimar."""
+    try:
+        _client().head_object(Bucket=config.S3_BUCKET, Key=s3_key)
+        return True
+    except ClientError:
+        return False
+
+
 def get_presigned_url(s3_key: str, expiry_seconds: int = 86400) -> str:
     return _client().generate_presigned_url(
         "get_object",
         Params={"Bucket": config.S3_BUCKET, "Key": s3_key},
         ExpiresIn=expiry_seconds,
     )
+
+
+def delete_object(s3_key: str) -> None:
+    """Apaga um objeto único (usado pra invalidar o cache da queima ao editar)."""
+    _client().delete_object(Bucket=config.S3_BUCKET, Key=s3_key)
 
 
 def delete_prefix(prefix: str) -> int:

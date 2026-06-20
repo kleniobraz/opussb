@@ -7,6 +7,7 @@ import requests
 import config
 import db
 import s3_client
+import captions
 
 
 class _Cancelled(Exception):
@@ -47,7 +48,9 @@ def run_thread1(job_id: str) -> None:
 
 
 def run_thread2(job_id: str) -> None:
-    """Thread 2: cut clips → reframe → upload to S3 → mark done."""
+    """Thread 2: cut clips → reframe (base SEM legenda) → sobe base + grava
+    segmentos editáveis → mark done. A queima da legenda é sob demanda (na rota
+    de vídeo), não aqui."""
     job = db.get_job(job_id)
     try:
         raw = job["clips_json"].strip()
@@ -59,6 +62,11 @@ def run_thread2(job_id: str) -> None:
         job_clips_dir = os.path.join(config.JOB_DIR, job_id, "clips")
         os.makedirs(job_clips_dir, exist_ok=True)
 
+        # Legenda como DADO editável: gravamos os segmentos sempre que houver
+        # transcript (SRT), independente do toggle. O clipe sai SEM legenda (base
+        # limpa); a queima acontece sob demanda a partir da base + dos segmentos.
+        transcript = job.get("transcript")
+
         _check_cancel(job_id)
         db.update_job(job_id, status="cutting", progress=70)
         produced = _cut_clips(job["local_path"], clips_data, job_clips_dir)
@@ -67,9 +75,9 @@ def run_thread2(job_id: str) -> None:
         db.update_job(job_id, status="reframing", progress=85)
         from reframer import reframe_clip
         for i, item in enumerate(produced):
-            out_path = item["path"].replace(".mp4", "_9x16.mp4")
+            out_path = item["path"].replace(".mp4", "_base.mp4")
             try:
-                reframe_clip(item["path"], out_path)
+                reframe_clip(item["path"], out_path)            # base 9x16 SEM legenda
             except Exception as e:
                 print(f"[reframe] clip {i+1} falhou ({e}), usando center crop")
                 _center_crop_fallback(item["path"], out_path)
@@ -79,17 +87,31 @@ def run_thread2(job_id: str) -> None:
         db.update_job(job_id, status="uploading_clips", progress=95)
         results = []
         for i, item in enumerate(produced):
-            key = f"jobs/{job_id}/clips/clip_{i+1:02d}_9x16.mp4"
+            key = f"jobs/{job_id}/clips/clip_{i+1:02d}_base.mp4"
+            # Sobe a base ANTES de qualquer cleanup: depois do rmtree é a única
+            # cópia que sobra e é de onde a queima sob demanda parte.
             _s3_upload_with_retry(item["final"], key)
+            # Grava os segmentos editáveis (clip_id "<job_id>:<index>", batendo com
+            # o id de favoritos/_clip_objects). Falha aqui não derruba o job: dá pra
+            # re-derivar do transcript depois.
+            if transcript:
+                try:
+                    segs = captions.segments_for_clip(
+                        transcript, float(item["meta"]["start"]), float(item["meta"]["end"]))
+                    if segs:
+                        db.set_clip_captions(f"{job_id}:{i}", json.dumps(segs, ensure_ascii=False))
+                except Exception as e:
+                    print(f"[caption] clip {i+1}: falha ao gravar segmentos ({e})")
             results.append(_clip_result(key, item["meta"]))
 
-        # result_urls agora guarda objetos {key, title, score, reason, duration},
-        # não só a chave. O /api/status monta o Clip a partir disso. (Jobs antigos
-        # têm só a string da chave; o status trata os dois formatos.)
+        # result_urls guarda objetos {key, title, score, reason, duration}. A key
+        # agora aponta pra base SEM legenda (clip_NN_base.mp4). O /api/status monta
+        # o Clip a partir disso. (Jobs antigos têm a chave do clipe já queimado.)
         _check_cancel(job_id)
         db.update_job(job_id, status="done", progress=100, result_urls=json.dumps(results), error=None)
 
-        # Cleanup só aqui, depois dos clipes confirmados no S3 (regra: nunca antes).
+        # Cleanup SÓ AQUI: base no S3 + segmentos no banco + done. Nunca antes (a
+        # queima sob demanda depende da base no S3 e dos segmentos, não do disco).
         shutil.rmtree(os.path.join(config.JOB_DIR, job_id), ignore_errors=True)
 
     except _Cancelled:
@@ -102,7 +124,7 @@ def run_thread2(job_id: str) -> None:
 # ─── Private helpers ─────────────────────────────────────────────────────────
 
 def _clip_result(key: str, meta: dict) -> dict:
-    """Monta a entrada salva em result_urls: a chave S3 + o metadata do Claude."""
+    """Monta a entrada salva em result_urls: a chave S3 (base) + o metadata do Claude."""
     try:
         duration = int(round(float(meta.get("end")) - float(meta.get("start"))))
     except (TypeError, ValueError):
@@ -187,10 +209,14 @@ def _cut_clips(video_path: str, clips_data: list, output_dir: str) -> list:
     return produced
 
 
-def _center_crop_fallback(input_path: str, output_path: str) -> None:
+def _center_crop_fallback(input_path: str, output_path: str, subtitles: str | None = None) -> None:
+    vf = "crop=iw*9/16:ih:(iw-iw*9/16)/2:0,scale=1080:1920"
+    if subtitles:
+        from reframer import _filter_escape
+        vf += f",subtitles={_filter_escape(subtitles)}"
     subprocess.run(
         ["ffmpeg", "-y", "-i", input_path,
-         "-vf", "crop=iw*9/16:ih:(iw-iw*9/16)/2:0,scale=1080:1920",
+         "-vf", vf,
          "-c:v", "libx264", "-crf", "23", "-c:a", "aac", output_path],
         capture_output=True, check=True,
     )

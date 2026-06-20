@@ -49,6 +49,8 @@ def init_db() -> None:
         """)
         # Dono do job. Jobs antigos ficam com NULL (legado = visível a todos).
         _ensure_column(conn, "jobs", "user_email", "TEXT")
+        # Legenda queimada ligada/desligada por job. Default 1 (ligada) pro piloto.
+        _ensure_column(conn, "jobs", "captions", "INTEGER DEFAULT 1")
 
 
 def init_favorites() -> None:
@@ -74,6 +76,33 @@ def init_preferences() -> None:
         """)
 
 
+def init_clip_captions() -> None:
+    """Legenda editável por clipe (base da queima sob demanda). clip_id é o mesmo
+    "job_id:index" usado em favoritos e no _clip_objects."""
+    with _conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS clip_captions (
+                clip_id    TEXT PRIMARY KEY,       -- "<job_id>:<index>"
+                segments   TEXT NOT NULL,          -- JSON [{start,end,text}] relativo ao clipe
+                updated_at TEXT
+            )
+        """)
+
+
+def init_clip_music() -> None:
+    """Música de fundo por clipe (mixada na queima sob demanda). Opcional: clipe
+    sem registro = sem música. clip_id é o mesmo "job_id:index"."""
+    with _conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS clip_music (
+                clip_id    TEXT PRIMARY KEY,       -- "<job_id>:<index>"
+                music_key  TEXT NOT NULL,          -- chave S3 do arquivo de música
+                volume     REAL NOT NULL DEFAULT 0.15,  -- 0..1 (fundo, abaixo da fala)
+                updated_at TEXT
+            )
+        """)
+
+
 def init_users() -> None:
     with _conn() as conn:
         conn.execute("""
@@ -92,14 +121,15 @@ def _now() -> str:
 
 
 def create_job(job_id: str, filename: str, min_duration: int, max_duration: int,
-               local_path: str, user_email: str | None = None) -> None:
+               local_path: str, user_email: str | None = None, captions: int = 1) -> None:
     with _conn() as conn:
         conn.execute(
             """INSERT INTO jobs
                (job_id, filename, status, progress, min_duration, max_duration,
-                local_path, user_email, created_at, updated_at)
-               VALUES (?, ?, 'queued', 5, ?, ?, ?, ?, ?, ?)""",
-            (job_id, filename, min_duration, max_duration, local_path, user_email, _now(), _now()),
+                local_path, user_email, captions, created_at, updated_at)
+               VALUES (?, ?, 'queued', 5, ?, ?, ?, ?, ?, ?, ?)""",
+            (job_id, filename, min_duration, max_duration, local_path, user_email,
+             1 if captions else 0, _now(), _now()),
         )
 
 
@@ -139,10 +169,14 @@ def list_favorites(user_email: str) -> list:
 
 
 def delete_job(job_id: str) -> None:
-    """Remove o job e qualquer favorito que aponte para clipes dele (clip_id job_id:N)."""
+    """Remove o job, favoritos, legendas editáveis e música que apontem para clipes
+    dele (clip_id "job_id:N"). Só é chamado em remoção explícita do usuário; o
+    pipeline nunca chama isto."""
     with _conn() as conn:
         conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
         conn.execute("DELETE FROM favorites WHERE clip_id LIKE ?", (job_id + ":%",))
+        conn.execute("DELETE FROM clip_captions WHERE clip_id LIKE ?", (job_id + ":%",))
+        conn.execute("DELETE FROM clip_music WHERE clip_id LIKE ?", (job_id + ":%",))
 
 
 def get_preferences(user_email: str):
@@ -160,6 +194,50 @@ def set_preferences(user_email: str, data: str) -> None:
                ON CONFLICT(user_email) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at""",
             (user_email, data, _now()),
         )
+
+
+def get_clip_captions(clip_id: str):
+    """Devolve o JSON (string) dos segmentos editáveis do clipe, ou None."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT segments FROM clip_captions WHERE clip_id = ?", (clip_id,)
+        ).fetchone()
+        return row["segments"] if row else None
+
+
+def set_clip_captions(clip_id: str, segments: str) -> None:
+    """Grava/atualiza os segmentos editáveis do clipe (JSON serializado)."""
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO clip_captions (clip_id, segments, updated_at) VALUES (?, ?, ?)
+               ON CONFLICT(clip_id) DO UPDATE SET segments = excluded.segments, updated_at = excluded.updated_at""",
+            (clip_id, segments, _now()),
+        )
+
+
+def get_clip_music(clip_id: str):
+    """Devolve {music_key, volume} do clipe, ou None se não houver música."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT music_key, volume FROM clip_music WHERE clip_id = ?", (clip_id,)
+        ).fetchone()
+        return {"music_key": row["music_key"], "volume": row["volume"]} if row else None
+
+
+def set_clip_music(clip_id: str, music_key: str, volume: float) -> None:
+    """Grava/atualiza a música de fundo do clipe (chave S3 + volume 0..1)."""
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO clip_music (clip_id, music_key, volume, updated_at) VALUES (?, ?, ?, ?)
+               ON CONFLICT(clip_id) DO UPDATE SET music_key = excluded.music_key,
+                   volume = excluded.volume, updated_at = excluded.updated_at""",
+            (clip_id, music_key, volume, _now()),
+        )
+
+
+def delete_clip_music(clip_id: str) -> None:
+    with _conn() as conn:
+        conn.execute("DELETE FROM clip_music WHERE clip_id = ?", (clip_id,))
 
 
 def get_job(job_id: str) -> dict | None:

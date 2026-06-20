@@ -13,7 +13,14 @@ def _get_model() -> YOLO:
     return _model
 
 
-def reframe_clip(input_path: str, output_path: str) -> None:
+def _filter_escape(path: str) -> str:
+    """Escapa um caminho para uso dentro de um filtergraph do ffmpeg (subtitles=...)."""
+    return path.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+
+
+def reframe_clip(input_path: str, output_path: str, subtitles: str | None = None) -> None:
+    """Reenquadra para 9:16 (1080x1920). Se subtitles (caminho .ass) for passado,
+    a legenda é queimada DENTRO do mesmo encode final (sem segundo encode)."""
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open video: {input_path}")
@@ -21,11 +28,15 @@ def reframe_clip(input_path: str, output_path: str) -> None:
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    # Se já é 9:16 (ou mais vertical), copia direto sem reframe
+    # Se já é 9:16 (ou mais vertical): sem reframe. Sem legenda, copia direto;
+    # com legenda, padroniza para 1080x1920 e queima.
     if width > 0 and height / width >= 16 / 9 - 0.05:
         cap.release()
-        import shutil
-        shutil.copy2(input_path, output_path)
+        if subtitles:
+            _encode_with_subtitles(input_path, output_path, subtitles)
+        else:
+            import shutil
+            shutil.copy2(input_path, output_path)
         return
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -79,8 +90,8 @@ def reframe_clip(input_path: str, output_path: str) -> None:
     cap2.release()
     out.release()
 
-    # Mux audio back with FFmpeg
-    _mux_audio(input_path, tmp_path, output_path)
+    # Mux audio back with FFmpeg (legenda queimada aqui, se houver)
+    _mux_audio(input_path, tmp_path, output_path, subtitles)
     if os.path.exists(tmp_path):
         os.remove(tmp_path)
 
@@ -131,13 +142,16 @@ def _interpolate_and_smooth(raw_cx: list, total_frames: int, window: int = 45) -
     return [int(round(v)) for v in smoothed]
 
 
-def _mux_audio(original: str, video_only: str, output: str) -> None:
+def _mux_audio(original: str, video_only: str, output: str, subtitles: str | None = None) -> None:
+    vf = "setsar=1"
+    if subtitles:
+        vf += f",subtitles={_filter_escape(subtitles)}"
     result = subprocess.run(
         ["ffmpeg", "-y",
          "-i", video_only,
          "-i", original,
          "-c:v", "libx264",
-         "-vf", "setsar=1",
+         "-vf", vf,
          "-c:a", "aac",
          "-map", "0:v:0",
          "-map", "1:a:0",
@@ -147,3 +161,17 @@ def _mux_audio(original: str, video_only: str, output: str) -> None:
     )
     if result.returncode != 0:
         raise RuntimeError(f"FFmpeg audio mux failed: {result.stderr}")
+
+
+def _encode_with_subtitles(input_path: str, output_path: str, subtitles: str) -> None:
+    """Caso raro: clipe já é 9:16. Padroniza para 1080x1920 e queima a legenda."""
+    vf = f"scale=1080:1920,setsar=1,subtitles={_filter_escape(subtitles)}"
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-i", input_path,
+         "-vf", vf,
+         "-c:v", "libx264", "-c:a", "aac",
+         output_path],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"FFmpeg subtitle burn failed: {result.stderr}")
