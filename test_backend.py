@@ -158,9 +158,154 @@ def test_thumbnail():
     check(clips2[0]["thumbnail_url"] is None, "sem thumbnail -> clipe com None")
 
 
+# ─── 6. Sessões server-side ───────────────────────────────────────────────────
+def test_sessions_helpers():
+    print("[sessions: helpers puros]")
+    UAS = {
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0 Safari/537.36": ("Chrome", "Windows"),
+        "Mozilla/5.0 (Windows NT 10.0) Chrome/120.0 Safari/537.36 Edg/120.0": ("Edge", "Windows"),
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Version/17.0 Safari/605.1.15": ("Safari", "macOS"),
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Version/17.0 Mobile Safari/604.1": ("Safari", "iOS"),
+        "Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0": ("Firefox", "Linux"),
+        "Mozilla/5.0 (Linux; Android 13) SamsungBrowser/23.0 Chrome/115.0 Mobile Safari/537.36": ("Samsung Internet", "Android"),
+        "Mozilla/5.0 (Windows NT 10.0) Chrome/115.0 Safari/537.36 OPR/101.0": ("Opera", "Windows"),
+        "Mozilla/5.0 (X11; CrOS x86_64) Chrome/120.0 Safari/537.36": ("Chrome", "ChromeOS"),
+    }
+    for ua, exp in UAS.items():
+        check(app._parse_ua(ua) == exp, f"UA -> {exp}")
+    check(app._parse_ua(None) == ("Navegador", None), "UA None -> ('Navegador', None)")
+    check(app._parse_ua("") == ("Navegador", None), "UA vazio -> ('Navegador', None)")
+    check(app._parse_ua("curl/8.0") == ("Navegador", None), "UA curl -> fallback")
+
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    check(app._humanize_pt(now.isoformat()) == "agora", "humanize agora")
+    check(app._humanize_pt((now - timedelta(minutes=5)).isoformat()) == "há 5 min", "humanize há 5 min")
+    check(app._humanize_pt((now - timedelta(hours=3)).isoformat()) == "há 3 h", "humanize há 3 h")
+    check(app._humanize_pt((now - timedelta(days=2)).isoformat()) == "há 2 d", "humanize há 2 d")
+    check("/" in (app._humanize_pt((now - timedelta(days=45)).isoformat()) or ""), "humanize >30d -> data")
+    check(app._humanize_pt(None) is None and app._humanize_pt("lixo") is None, "humanize None/lixo -> None")
+
+    # _client_ip: confia no XFF só quando o peer é loopback (Nginx); pega o ÚLTIMO hop.
+    with app.app.test_request_context(headers={"X-Forwarded-For": "1.1.1.1, 203.0.113.7"},
+                                      environ_base={"REMOTE_ADDR": "127.0.0.1"}):
+        check(app._client_ip() == "203.0.113.7", "XFF: pega o último hop, ignora o forjado")
+    with app.app.test_request_context(environ_base={"REMOTE_ADDR": "127.0.0.1"}):
+        check(app._client_ip() is None, "loopback sem XFF -> None")
+    with app.app.test_request_context(headers={"X-Forwarded-For": "9.9.9.9"},
+                                      environ_base={"REMOTE_ADDR": "8.8.8.8"}):
+        check(app._client_ip() == "8.8.8.8", "peer não-loopback: ignora XFF forjado, usa o peer")
+    with app.app.test_request_context(environ_base={"REMOTE_ADDR": "172.17.0.5"}):
+        check(app._client_ip() is None, "IP da bridge -> None")
+
+
+def test_sessions_ownership():
+    print("[sessions: ownership no banco]")
+    import db
+    db.create_session("sidA", "owner@test", "1.2.3.4", "ua")
+    db.create_session("sidB", "outro@test", "5.6.7.8", "ua")
+    db.delete_session("sidA", "outro@test")        # dono errado: não apaga
+    check(db.get_session("sidA") is not None, "não apaga sessão de outro dono")
+    db.delete_session("sidA", "owner@test")        # dono certo: apaga
+    check(db.get_session("sidA") is None, "apaga a própria sessão")
+    db.delete_user_sessions("outro@test")          # cascade
+    check(db.get_session("sidB") is None, "cascade de delete_user_sessions")
+
+
+def test_sessions_flow():
+    print("[sessions: fluxo HTTP via test client]")
+    import db
+    from werkzeug.security import generate_password_hash
+    db.upsert_user("flow@test", generate_password_hash("pw12345678"), must_change=False)
+    UA = "Mozilla/5.0 (Windows NT 10.0) Chrome/120.0 Safari/537.36"
+
+    c1 = app.app.test_client()
+    c2 = app.app.test_client()
+    r = c1.post("/api/login", json={"email": "flow@test", "password": "pw12345678"}, headers={"User-Agent": UA})
+    check(r.status_code == 200, "login navegador 1 ok")
+    r = c2.post("/api/login", json={"email": "flow@test", "password": "pw12345678"}, headers={"User-Agent": UA})
+    check(r.status_code == 200, "login navegador 2 ok")
+
+    js = c1.get("/api/sessions").get_json()
+    check(len(js["sessions"]) == 2, "lista mostra 2 sessões")
+    cur = [s for s in js["sessions"] if s["current"]]
+    check(len(cur) == 1, "exatamente 1 marcada current")
+    check(cur[0]["browser"] == "Chrome" and cur[0]["os"] == "Windows", "browser/os parseados do UA")
+    cur_id = cur[0]["id"]
+
+    # encerrar a PRÓPRIA sessão atual: no-op, continua logado
+    r = c1.delete("/api/sessions/" + cur_id)
+    check(r.status_code == 200 and r.get_json().get("ok") is True, "delete da atual responde ok")
+    check(len(c1.get("/api/sessions").get_json()["sessions"]) == 2, "delete da atual foi no-op")
+
+    # revoke_all do navegador 1: mata a sessão do navegador 2
+    r = c1.post("/api/sessions/revoke_all")
+    check(r.status_code == 200 and r.get_json().get("ok") is True, "revoke_all responde ok")
+    check(len(c1.get("/api/sessions").get_json()["sessions"]) == 1, "sobra só a sessão atual")
+    check(c2.get("/api/me").status_code == 401, "navegador 2 cai em 401 no request seguinte (revogado)")
+
+    # logout remove a linha; /api/me vira 401
+    check(c1.post("/api/logout").status_code == 200, "logout ok")
+    check(c1.get("/api/me").status_code == 401, "após logout, /api/me 401")
+
+    # rota interna /api/callback NÃO exige sessão (gate por IP da bridge), não vira 401
+    r = app.app.test_client().post("/api/callback", json={"job_id": "naoexiste"},
+                                   environ_base={"REMOTE_ADDR": "172.17.0.5"})
+    check(r.status_code == 400, "/api/callback aberto da bridge sem sessão (400 por job inexistente, não 401/403)")
+
+    db.delete_user_sessions("flow@test")
+    with db._conn() as cc:
+        cc.execute("DELETE FROM users WHERE email = ?", ("flow@test",))
+
+
+def test_sessions_extra():
+    print("[sessions: reuso/reap/método errado/troca de senha]")
+    import db
+    from datetime import datetime, timezone, timedelta
+    from werkzeug.security import generate_password_hash
+
+    # (a) re-login no MESMO navegador reusa o sid: não cria linha órfã.
+    db.upsert_user("reuse@test", generate_password_hash("pw12345678"), must_change=False)
+    c = app.app.test_client()
+    UA = "Mozilla/5.0 (Windows NT 10.0) Chrome/120.0 Safari/537.36"
+    c.post("/api/login", json={"email": "reuse@test", "password": "pw12345678"}, headers={"User-Agent": UA})
+    c.post("/api/login", json={"email": "reuse@test", "password": "pw12345678"}, headers={"User-Agent": UA})
+    check(len(c.get("/api/sessions").get_json()["sessions"]) == 1, "re-login reusa sid (sem linha órfã)")
+
+    # (b) reap_sessions remove sessão inativa além da janela.
+    db.create_session("reapsid", "reap@test", None, "ua")
+    with db._conn() as cc:
+        old = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+        cc.execute("UPDATE sessions SET last_active = ? WHERE id = ?", (old, "reapsid"))
+    db.reap_sessions(7)
+    check(db.get_session("reapsid") is None, "reap remove sessão inativa > janela")
+
+    # (c) DELETE /api/sessions/revoke_all (método errado) cai no <sid> e é no-op 200.
+    r = c.delete("/api/sessions/revoke_all")
+    check(r.status_code == 200 and r.get_json().get("ok") is True, "DELETE revoke_all (método errado) é no-op 200")
+    check(len(c.get("/api/sessions").get_json()["sessions"]) == 1, "continua logado após o no-op")
+
+    # (d) trocar a senha encerra as OUTRAS sessões (mantém a atual).
+    db.upsert_user("pwd@test", generate_password_hash("oldpw12345"), must_change=False)
+    a = app.app.test_client(); b = app.app.test_client()
+    a.post("/api/login", json={"email": "pwd@test", "password": "oldpw12345"}, headers={"User-Agent": UA})
+    b.post("/api/login", json={"email": "pwd@test", "password": "oldpw12345"}, headers={"User-Agent": UA})
+    r = a.post("/api/change_password", json={"current_password": "oldpw12345", "new_password": "newpw12345"})
+    check(r.status_code == 200, "troca de senha ok")
+    check(a.get("/api/me").status_code == 200, "quem trocou continua logado")
+    check(b.get("/api/me").status_code == 401, "outra sessão é revogada após a troca")
+
+    for em in ("reuse@test", "reap@test", "pwd@test"):
+        db.delete_user_sessions(em)
+    with db._conn() as cc:
+        cc.execute("DELETE FROM users WHERE email IN (?, ?)", ("reuse@test", "pwd@test"))
+
+
 def main():
     for t in (test_burn_cmd, test_validate_segments, test_parse_clips_json,
-              test_captions_roundtrip, test_thumbnail):
+              test_captions_roundtrip, test_thumbnail,
+              test_sessions_helpers, test_sessions_ownership, test_sessions_flow,
+              test_sessions_extra):
         t()
     print()
     if _failures:

@@ -146,6 +146,9 @@ reframing, uploading_clips, done, error`.
   clipe), updated_at`. Legenda editável.
 - **`clip_music`**: `clip_id, music_key (S3), volume (0..1), updated_at`. Música de
   fundo por clipe (opcional).
+- **`sessions`**: `id (uuid4, PK; também no cookie), user_email, ip (best-effort, só
+  exibição), user_agent, created_at, last_active`. Sessão server-side (lista + revogação
+  na página de Segurança). Índice `(user_email, last_active)`.
 
 `result_urls` guarda objetos `{key, title, score, reason, duration}` por clipe (jobs
 antigos podem ter só a string da chave; o código trata os dois).
@@ -196,8 +199,13 @@ Contrato completo dessas rotas: `BACKEND_INTEGRATION.md` seção 3.1.
 
 ## 7. Autenticação e segurança
 
-- Sessão via cookie assinado (Flask `secret_key` obrigatória). Senhas com **scrypt**
-  (Werkzeug). `must_change_password` força troca no primeiro acesso (gate no upload).
+- Sessão via cookie assinado (Flask `secret_key` obrigatória) + **estado server-side**
+  na tabela `sessions` (ver seção 13): `login_required` e `/api/me` validam o `sid` no
+  banco a CADA request, então dá pra listar e revogar sessões. Custa 1 SELECT por
+  request autenticado (lookup por PK) + 1 UPDATE de `last_active` no máximo 1x/min por
+  sessão. Trocar a senha encerra as OUTRAS sessões (mantém a atual). Senhas com
+  **scrypt** (Werkzeug). `must_change_password` força troca no primeiro acesso (gate no
+  upload).
 - Sem TLS ainda (`SESSION_COOKIE_SECURE=False`), **adiado até decidir domínio**.
   Quando subir HTTPS, virar `Secure=True`.
 - Defesa das rotas internas em 3 camadas: Flask não escuta público + Nginx 404 +
@@ -212,6 +220,9 @@ Contrato completo dessas rotas: `BACKEND_INTEGRATION.md` seção 3.1.
 
 - **Restart/deploy**: `systemctl restart opussb`. Mudança em `.py` exige restart;
   mudança em `static/` não (Nginx serve direto, `Cache-Control: no-cache`).
+- **Atenção (sessões server-side)**: a primeira subida da feature de sessões desloga
+  todos os usuários ativos uma vez (cookie antigo não tem `sid`); o front cai sozinho
+  na tela de login (`auth:false`) e basta logar de novo. Efeito de uma vez só.
 - **Saúde**: `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5001/health`.
 - **Logs**: `journalctl -u opussb`. **Atenção**: `print()` no worker fica buffered no
   gunicorn; pra debug ao vivo use `flush=True, file=sys.stderr`. A verdade do estado
@@ -328,3 +339,51 @@ Front já estava pronto: renderiza `<img src={thumbnail_url}>` quando vier não-
 - **Validado**: `test_backend.py` (seleção do melhor + contrato) + e2e (geração real
   640px, rota 302, 401 sem sessão) com cleanup. Migração da coluna no padrão
   `_ensure_column`.
+
+---
+
+## 13. Sessões ativas server-side (2026-06-21)
+
+Página de Segurança lista os dispositivos logados e permite encerrá-los. Antes a sessão
+era só um cookie assinado stateless (não dava pra listar nem revogar); agora há estado
+server-side na tabela `sessions` (seção 5). Front já estava pronto; backend só implementou.
+
+**Rotas** (todas `@login_required`, escopo = só o usuário logado):
+- `GET /api/sessions` devolve `{sessions:[{id, current, browser, os, location|null,
+  last_active}]}`. `current=true` na sessão de quem pediu (o front não mostra botão de
+  encerrar nela). `browser/os` vêm de um parser de user-agent próprio (`_parse_ua`, sem
+  dependência externa); `last_active` vem humanizado (`_humanize_pt`, espelha o
+  `ui.timeAgo` do front: agora / há N min / há N h / há N d até 30 dias / depois a data);
+  `location` é o IP (ou null).
+- `DELETE /api/sessions/<id>` encerra UMA (idempotente, sempre `200 {ok:true}`, escopada
+  ao dono; encerrar a PRÓPRIA atual é no-op pra não se deslogar sozinho).
+- `POST /api/sessions/revoke_all` encerra todas menos a atual (um único DELETE).
+
+**Como funciona**:
+- No `login`: gera `sid=uuid4`, grava a linha (ip + user_agent) e põe `session['sid']`.
+  Re-login no mesmo navegador REUSA o sid (não cria linha órfã). Reap oportunista das
+  expiradas (`SESSION_DAYS`).
+- `login_required` e `/api/me` validam `db.get_session(sid)` a CADA request (sem cache),
+  então `DELETE`/`revoke_all`/troca de senha cortam o acesso no request seguinte. Em
+  sid ausente/revogado: `session.clear()` + `401 {auth:false}` (mesmo formato de sempre).
+- `last_active` é atualizado com throttle de 60s, usando o próprio valor gravado (sem
+  dict em memória: nada de lock/poda/vazamento, sobrevive a restart).
+- `logout` apaga a linha do sid atual. `manage_users delete` faz cascade das sessões na
+  mesma transação; `manage_users reset` força re-login em todos os dispositivos do usuário.
+
+**IP / X-Forwarded-For (cuidado)**: o `_client_ip` só confia no XFF quando o peer é o
+loopback do Nginx, e pega o ÚLTIMO hop (o Nginx usa `$proxy_add_x_forwarded_for`, que
+anexa o IP real no fim). Loopback e a subnet da bridge viram `null`. O IP é SÓ exibição,
+NUNCA entra em decisão de auth/throttle. Não usar `ProxyFix` (quebraria o
+`_is_trusted_caller` das rotas internas, que precisa ver `127.0.0.1`).
+
+**Decisões adiadas** (fora do escopo): sem max-age absoluto (janela deslizante de 7
+dias); `SESSION_COOKIE_SECURE` vira `True` quando subir TLS; throttle de login segue por
+email global (sem ProxyFix, todo tráfego proxiado é `127.0.0.1`).
+
+**Validado**: design e implementação passaram por crítica multi-lente + revisão
+adversarial (veredito SHIP, zero blockers). `test_backend.py` cobre parser de UA,
+humanização, `_client_ip` (último hop + XFF forjado ignorado + peer não confiável),
+ownership do delete, reuso de sid, reap, revogação imediata entre dois navegadores,
+no-op da sessão atual, troca de senha revogando as outras, e que `/api/callback` segue
+aberto (não regrediu). E2e ao vivo na produção com usuário TEST e cleanup total.

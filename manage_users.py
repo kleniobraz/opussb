@@ -46,6 +46,8 @@ def cmd_reset(emails, password, active=False):
             print(f"[skip] não existe: {email}")
             continue
         db.upsert_user(email, h, must_change=must_change)
+        # Reset de senha pelo admin força re-login em todos os dispositivos do usuário.
+        db.delete_user_sessions(email.strip().lower())
         print(f"[ok] resetado: {email.strip().lower()}")
 
 
@@ -62,12 +64,17 @@ def cmd_list():
 def cmd_delete(emails):
     with db._conn() as conn:
         for email in emails:
-            conn.execute("DELETE FROM users WHERE email = ?", (email.strip().lower(),))
-            print(f"[ok] removido: {email.strip().lower()}")
+            e = email.strip().lower()
+            conn.execute("DELETE FROM users WHERE email = ?", (e,))
+            # Cascade na MESMA transação: não deixa sessão órfã de usuário removido
+            # (o schema não usa FK ON DELETE CASCADE; cascade é manual, igual delete_job).
+            conn.execute("DELETE FROM sessions WHERE user_email = ?", (e,))
+            print(f"[ok] removido: {e}")
 
 
 def main():
     db.init_users()
+    db.init_sessions()   # garante a tabela pro cascade do delete
     p = argparse.ArgumentParser(description="Gestão de usuários do OpusSB")
     sub = p.add_subparsers(dest="cmd", required=True)
 

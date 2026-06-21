@@ -11,7 +11,7 @@ import threading
 import subprocess
 import tempfile
 import shutil
-from datetime import timedelta
+from datetime import datetime, timezone, timedelta
 
 from flask import Flask, request, jsonify, abort, session, redirect
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -58,6 +58,7 @@ db.init_favorites()
 db.init_preferences()
 db.init_clip_captions()
 db.init_clip_music()
+db.init_sessions()
 
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 MIN_PASSWORD_LEN = 8
@@ -144,10 +145,145 @@ def _login_clear(key: str) -> None:
         _login_fails.pop(key, None)
 
 
+# ─── Sessões server-side (página de Segurança) ────────────────────────────────
+# O cookie assinado guarda session["sid"]; a linha em `sessions` é a fonte de verdade.
+# login_required valida o sid no banco a CADA request, então DELETE/revoke_all cortam
+# o acesso no request seguinte. O IP guardado é só pra exibição (best-effort).
+_MAX_UA_LEN = 400               # corta user-agent gigante antes de gravar
+_SESSION_TOUCH_THROTTLE = 60    # s: no máximo 1 escrita de last_active por sessão/minuto
+
+
+def _client_ip():
+    """IP do cliente pra EXIBIR na lista de sessões. Best-effort e influenciado pelo
+    cliente: NUNCA usar pra auth/throttle. Só confiamos no X-Forwarded-For quando o peer
+    imediato é o loopback do Nginx; o Nginx ($proxy_add_x_forwarded_for) anexa o IP que
+    observou como ÚLTIMO elemento, então pegamos o último hop. Loopback/bridge viram None
+    (não faz sentido mostrar IP interno)."""
+    peer = request.remote_addr
+    if peer in ("127.0.0.1", "::1"):
+        xff = request.headers.get("X-Forwarded-For", "")
+        cand = xff.split(",")[-1].strip() if xff else ""
+        ip = cand or peer
+    else:
+        ip = peer
+    try:
+        ip_obj = ipaddress.ip_address(ip)
+    except (ValueError, TypeError):
+        return None
+    # Loopback e a subnet da bridge Docker não dizem nada pro usuário: viram None
+    # (o front omite a linha de location quando vem vazia). _DOCKER_BRIDGE definido
+    # mais abaixo no módulo (disponível no momento da chamada).
+    if ip_obj.is_loopback or ip_obj in _DOCKER_BRIDGE:
+        return None
+    return ip
+
+
+def _parse_ua(ua):
+    """(browser, os) a partir do user-agent. Total (nunca levanta). Ordem importa:
+    Edge/Opera/Samsung mandam 'Chrome' no UA, e o Chrome manda 'Safari', então o que
+    se disfarça vem antes. browser cai em 'Navegador' (igual ao parseUA do front) e os
+    em None (o front omite a parte do SO quando vazia)."""
+    u = (ua or "").lower()
+    if "edg/" in u or "edga/" in u or "edgios/" in u:
+        browser = "Edge"
+    elif "opr/" in u or "opera" in u:
+        browser = "Opera"
+    elif "samsungbrowser" in u:
+        browser = "Samsung Internet"
+    elif "firefox/" in u or "fxios/" in u:
+        browser = "Firefox"
+    elif "chrome/" in u or "crios/" in u or "chromium" in u:
+        browser = "Chrome"
+    elif "safari/" in u and "version/" in u:
+        browser = "Safari"
+    else:
+        browser = "Navegador"
+    if "windows" in u:
+        os_name = "Windows"
+    elif "iphone" in u or "ipad" in u or "ipod" in u:
+        os_name = "iOS"
+    elif "mac os x" in u or "macintosh" in u:
+        os_name = "macOS"
+    elif "android" in u:
+        os_name = "Android"
+    elif "cros" in u:
+        os_name = "ChromeOS"
+    elif "linux" in u:
+        os_name = "Linux"
+    else:
+        os_name = None
+    return browser, os_name
+
+
+def _humanize_pt(iso_ts):
+    """String pronta de last_active, espelhando o ui.timeAgo do front (mesmas faixas:
+    agora / há N min / há N h / há N d até 30 dias / depois a data). Tolerante a
+    None/lixo (devolve None). Compara aware-com-aware (last_active é UTC isoformat)."""
+    if not iso_ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso_ts)
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    secs = (datetime.now(timezone.utc) - dt).total_seconds()
+    if secs < 0:
+        secs = 0
+    if secs < 60:
+        return "agora"
+    if secs < 3600:
+        return f"há {int(secs // 60)} min"
+    if secs < 86400:
+        return f"há {int(secs // 3600)} h"
+    if secs < 2592000:                       # 30 dias, igual ao ui.timeAgo
+        return f"há {int(secs // 86400)} d"
+    return dt.astimezone(timezone.utc).strftime("%d/%m/%Y")
+
+
+def _maybe_touch_session(sid, last_active_iso):
+    """Atualiza last_active no máximo 1x por _SESSION_TOUCH_THROTTLE por sessão. O
+    throttle usa o próprio last_active gravado (sem dict em memória: nada de lock, de
+    poda, nem de vazamento; sobrevive a restart)."""
+    stale = True
+    if last_active_iso:
+        try:
+            dt = datetime.fromisoformat(last_active_iso)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            stale = (datetime.now(timezone.utc) - dt).total_seconds() >= _SESSION_TOUCH_THROTTLE
+        except (TypeError, ValueError):
+            stale = True
+    if stale:
+        try:
+            db.touch_session(sid)
+        except Exception as e:
+            log.warning("touch session falhou (%s)", e)
+
+
+def _session_email():
+    """Email do usuário SE a sessão é válida: cookie tem user + sid E o sid ainda existe
+    na tabela (não revogado/expirado) e pertence a esse user. A validação roda a CADA
+    request (sem cache), pra revogação valer no request seguinte. Devolve None se
+    inválida (o chamador limpa a sessão e devolve 401)."""
+    email = session.get("user")
+    sid = session.get("sid")
+    if not email or not sid:
+        return None
+    row = db.get_session(sid)
+    if not row or row.get("user_email") != email:
+        return None
+    _maybe_touch_session(sid, row.get("last_active"))
+    return email
+
+
 def login_required(fn):
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        if not session.get("user"):
+        if not _session_email():
+            # Sessão ausente/revogada/legada (cookie sem sid): limpa o cookie e 401 no
+            # MESMO formato de sempre, pro front cair na tela de login sem regressão.
+            session.clear()
             return jsonify({"error": "Não autenticado.", "auth": False}), 401
         return fn(*args, **kwargs)
     return wrapper
@@ -172,21 +308,47 @@ def login():
         return jsonify({"error": "Email ou senha inválidos."}), 401
 
     _login_clear(key)
+    # Limpa sessões expiradas oportunisticamente (best-effort, não bloqueia o login).
+    try:
+        db.reap_sessions(config.SESSION_DAYS)
+    except Exception as e:
+        log.warning("reap sessions falhou (%s)", e)
+    # Reusa o sid se o cookie já carrega um válido pra ESTE user (re-login no mesmo
+    # navegador não deixa linha órfã); senão gera um novo.
+    ip = _client_ip()
+    ua = (request.headers.get("User-Agent") or "")[:_MAX_UA_LEN]
+    sid = session.get("sid")
+    existing = db.get_session(sid) if sid else None
+    if existing and existing.get("user_email") == email:
+        db.refresh_session(sid, ip, ua)
+    else:
+        sid = str(uuid.uuid4())
+        db.create_session(sid, email, ip, ua)
     session.permanent = True
     session["user"] = email
+    session["sid"] = sid
     return jsonify({"email": email, "must_change_password": bool(user["must_change_password"])})
 
 
 @app.route("/api/logout", methods=["POST"])
 def logout():
+    # Captura o sid ANTES de limpar e remove a linha da sessão atual.
+    sid = session.get("sid")
+    email = session.get("user")
     session.clear()
+    if sid and email:
+        try:
+            db.delete_session(sid, email)
+        except Exception as e:
+            log.warning("logout: delete session falhou (%s)", e)
     return jsonify({"ok": True})
 
 
 @app.route("/api/me")
 def me():
-    email = session.get("user")
+    email = _session_email()
     if not email:
+        session.clear()
         return jsonify({"error": "Não autenticado.", "auth": False}), 401
     user = db.get_user(email)
     if not user:
@@ -212,6 +374,57 @@ def change_password():
         return jsonify({"error": "A nova senha não pode ser igual à atual."}), 400
 
     db.set_user_password(email, generate_password_hash(new))
+    # Trocar a senha encerra as OUTRAS sessões (mantém a atual): se a senha vazou, o
+    # dono recupera o controle deslogando os demais dispositivos.
+    try:
+        db.delete_sessions_except(email, session.get("sid"))
+    except Exception as e:
+        log.warning("change_password: revogar outras sessões falhou (%s)", e)
+    return jsonify({"ok": True})
+
+
+# ─── Sessões ativas (página de Segurança) ────────────────────────────────────
+
+@app.route("/api/sessions")
+@login_required
+def sessions_list():
+    """Sessões do usuário logado. current = a que fez esta request (sem botão de
+    encerrar no front). last_active vem humanizado; location é o IP (ou null)."""
+    cur = session.get("sid")
+    rows = db.list_sessions(session["user"], max_age_days=config.SESSION_DAYS)
+    out = []
+    for r in rows:
+        browser, os_name = _parse_ua(r.get("user_agent"))
+        out.append({
+            "id": r["id"],
+            "current": r["id"] == cur,
+            "browser": browser,
+            "os": os_name,
+            "location": r.get("ip") or None,
+            "last_active": _humanize_pt(r.get("last_active")),
+        })
+    return jsonify({"sessions": out})
+
+
+# Segmento estático: o Werkzeug pesa /revoke_all acima de /<sid>, então a ordem de
+# registro não importa; DELETE /api/sessions/revoke_all (método errado) cairia em
+# <sid>='revoke_all' e seria um no-op idempotente (uuid nunca é 'revoke_all').
+@app.route("/api/sessions/revoke_all", methods=["POST"])
+@login_required
+def sessions_revoke_all():
+    """Encerra todas as sessões do usuário MENOS a atual (num único DELETE)."""
+    db.delete_sessions_except(session["user"], session.get("sid"))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/sessions/<sid>", methods=["DELETE"])
+@login_required
+def sessions_revoke(sid):
+    """Encerra UMA sessão (escopada ao dono). Idempotente: sempre 200 {ok:true}, mesmo
+    se o id não existir ou for de outro usuário (não vira oráculo de enumeração).
+    Encerrar a PRÓPRIA sessão atual é no-op (não derruba quem está pedindo)."""
+    if sid != session.get("sid"):
+        db.delete_session(sid, session["user"])
     return jsonify({"ok": True})
 
 

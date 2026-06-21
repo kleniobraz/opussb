@@ -121,6 +121,103 @@ def init_clip_music() -> None:
         """)
 
 
+def init_sessions() -> None:
+    """Sessões server-side (lista + revogação na página de Segurança). O cookie
+    assinado guarda o id (uuid4); aqui fica a linha que o login_required valida a cada
+    request. ip é best-effort e influenciado pelo cliente: SÓ exibição, nunca decisão."""
+    with _conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                id          TEXT PRIMARY KEY,      -- uuid4 (também no cookie assinado)
+                user_email  TEXT NOT NULL,
+                ip          TEXT,                  -- best-effort, cliente influencia: só exibição
+                user_agent  TEXT,
+                created_at  TEXT,
+                last_active TEXT
+            )
+        """)
+        # Cobre o filtro+ordenação da lista (WHERE user_email ORDER BY last_active).
+        # O PK em id já cobre a validação por request e o delete por id.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user_active ON sessions(user_email, last_active)")
+
+
+def create_session(sid: str, user_email: str, ip, user_agent) -> None:
+    with _conn() as conn:
+        conn.execute(
+            "INSERT INTO sessions (id, user_email, ip, user_agent, created_at, last_active) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (sid, user_email, ip, user_agent, _now(), _now()),
+        )
+
+
+def get_session(sid: str):
+    """Linha da sessão por id (validação por request, lookup por PK). None se não existir."""
+    with _conn() as conn:
+        row = conn.execute("SELECT * FROM sessions WHERE id = ?", (sid,)).fetchone()
+        return dict(row) if row else None
+
+
+def list_sessions(user_email: str, max_age_days: int | None = None) -> list:
+    """Sessões do usuário, mais recentes primeiro. max_age_days esconde linhas velhas
+    (antes mesmo do reap) pra a lista nunca mostrar sessão morta."""
+    with _conn() as conn:
+        if max_age_days is not None:
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
+            rows = conn.execute(
+                "SELECT * FROM sessions WHERE user_email = ? AND last_active >= ? ORDER BY last_active DESC",
+                (user_email, cutoff),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM sessions WHERE user_email = ? ORDER BY last_active DESC", (user_email,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def touch_session(sid: str) -> None:
+    """Atualiza só o last_active (chamado com throttle pelo login_required)."""
+    with _conn() as conn:
+        conn.execute("UPDATE sessions SET last_active = ? WHERE id = ?", (_now(), sid))
+
+
+def refresh_session(sid: str, ip, user_agent) -> None:
+    """Re-login no mesmo navegador: atualiza ip/ua + last_active, sem criar linha nova."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE sessions SET ip = ?, user_agent = ?, last_active = ? WHERE id = ?",
+            (ip, user_agent, _now(), sid),
+        )
+
+
+def delete_session(sid: str, user_email: str) -> None:
+    """Revoga UMA sessão, escopada ao dono (WHERE id AND user_email): um usuário não
+    encerra a sessão de outro. Idempotente (0 linhas não é erro)."""
+    with _conn() as conn:
+        conn.execute("DELETE FROM sessions WHERE id = ? AND user_email = ?", (sid, user_email))
+
+
+def delete_sessions_except(user_email: str, keep_sid) -> None:
+    """Revoga todas do usuário MENOS a atual, num único DELETE (sem TOCTOU com um
+    login concorrente). keep_sid vazio = apaga todas do usuário."""
+    with _conn() as conn:
+        conn.execute("DELETE FROM sessions WHERE user_email = ? AND id <> ?", (user_email, keep_sid or ""))
+
+
+def delete_user_sessions(user_email: str) -> None:
+    """Cascade ao remover o usuário (chamado dentro da mesma transação do delete)."""
+    with _conn() as conn:
+        conn.execute("DELETE FROM sessions WHERE user_email = ?", (user_email,))
+
+
+def reap_sessions(days: int) -> int:
+    """Apaga sessões inativas há mais de `days` (cookie já teria expirado). Best-effort,
+    chamado no login. Retorna quantas removeu."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    with _conn() as conn:
+        cur = conn.execute("DELETE FROM sessions WHERE last_active < ?", (cutoff,))
+        return cur.rowcount
+
+
 def init_users() -> None:
     with _conn() as conn:
         conn.execute("""
