@@ -62,6 +62,9 @@ def init_db() -> None:
         _ensure_column(conn, "jobs", "user_email", "TEXT")
         # Legenda queimada ligada/desligada por job. Default 1 (ligada) pro piloto.
         _ensure_column(conn, "jobs", "captions", "INTEGER DEFAULT 1")
+        # Frame real do projeto (thumbnail do card). NULL = sem frame: jobs antigos
+        # degradam pra capa generativa no front, sem quebrar.
+        _ensure_column(conn, "jobs", "thumbnail_key", "TEXT")
         # Índices: list_jobs filtra por dono e ordena por created_at; count_active e
         # reap_stale filtram por status. Baratos e ajudam conforme o histórico cresce.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs(user_email, created_at)")

@@ -112,11 +112,16 @@ def run_thread2(job_id: str) -> None:
                     log.warning("[caption] clip %d: falha ao gravar segmentos (%s)", i + 1, e)
             results.append(_clip_result(key, item["meta"]))
 
+        # Thumbnail do card: frame do melhor clipe, ANTES do rmtree (arquivos ainda em
+        # disco). Best-effort: se falhar, thumbnail_key fica None e o card usa o fallback.
+        thumbnail_key = _generate_thumbnail(job_id, produced)
+
         # result_urls guarda objetos {key, title, score, reason, duration}. A key
         # agora aponta pra base SEM legenda (clip_NN_base.mp4). O /api/status monta
         # o Clip a partir disso. (Jobs antigos têm a chave do clipe já queimado.)
         _check_cancel(job_id)
-        db.update_job(job_id, status="done", progress=100, result_urls=json.dumps(results), error=None)
+        db.update_job(job_id, status="done", progress=100, result_urls=json.dumps(results),
+                      error=None, thumbnail_key=thumbnail_key)
 
         # Cleanup SÓ AQUI: base no S3 + segmentos no banco + done. Nunca antes (a
         # queima sob demanda depende da base no S3 e dos segmentos, não do disco).
@@ -155,6 +160,49 @@ def _parse_clips_json(raw):
     except (TypeError, ValueError):
         return []
     return data if isinstance(data, list) else []
+
+
+def _best_clip(produced: list):
+    """Clipe de maior score (best-effort: score ausente/inválido conta como -inf).
+    Função pura pra ser testável sem ffmpeg."""
+    if not produced:
+        return None
+
+    def _score(it):
+        try:
+            return float((it.get("meta") or {}).get("score"))
+        except (TypeError, ValueError):
+            return float("-inf")
+
+    return max(produced, key=_score)
+
+
+def _generate_thumbnail(job_id: str, produced: list):
+    """Best-effort: extrai 1 frame do clipe de maior score (no aspecto ORIGINAL do
+    corte, item['path'], pra casar com o card 16/10, não o _base.mp4 9:16), sobe em
+    jobs/{job_id}/thumb.jpg e devolve a key (ou None). NUNCA levanta: falhar aqui não
+    pode derrubar o job (o card cai no fallback de onda). Roda ANTES do rmtree, com os
+    arquivos ainda em disco."""
+    best = _best_clip(produced)
+    src = best.get("path") if best else None
+    if not src or not os.path.exists(src):
+        return None
+    thumb_path = os.path.join(config.JOB_DIR, job_id, "thumb.jpg")
+    try:
+        r = subprocess.run(
+            ["ffmpeg", "-y", "-ss", "1", "-i", src,
+             "-frames:v", "1", "-vf", "scale=640:-2", "-q:v", "4", thumb_path],
+            capture_output=True, text=True, timeout=120,
+        )
+        if r.returncode != 0 or not os.path.exists(thumb_path) or os.path.getsize(thumb_path) < 256:
+            log.warning("[thumb] job %s: ffmpeg não gerou thumbnail (%s)", job_id, r.stderr[-200:])
+            return None
+        key = f"jobs/{job_id}/thumb.jpg"
+        _s3_upload_with_retry(thumb_path, key)
+        return key
+    except Exception as e:
+        log.warning("[thumb] job %s: falha ao gerar/subir thumbnail (%s)", job_id, e)
+        return None
 
 
 def _clip_result(key: str, meta: dict) -> dict:

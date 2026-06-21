@@ -137,7 +137,8 @@ reframing, uploading_clips, done, error`.
 - **`jobs`**: `job_id, filename, status, progress, min/max_duration, local_path,
   audio_s3_url, runpod_job_id, transcript (SRT), clips_json, result_urls (JSON),
   error, created_at, updated_at, user_email (dono; NULL=legado visível a todos),
-  captions (0/1, default 1)`.
+  captions (0/1, default 1), thumbnail_key (chave S3 do frame do card; NULL=sem
+  frame, jobs antigos degradam pro fallback de onda)`.
 - **`users`**: `email, password_hash (scrypt), must_change_password, timestamps`.
 - **`favorites`**: `(user_email, clip_id)` — `clip_id = "<job_id>:<index>"`.
 - **`preferences`**: `user_email, data (JSON)`.
@@ -303,3 +304,27 @@ montava `-map [v] -c:a copy` sem mapear o áudio (ver seção 6). Corrigido com
 denied: '/var/www/.gunicorn'` no boot (HOME do www-data). É inofensivo (recurso
 opcional do gunicorn) e não tem a ver com o código Python; fica de nota pra um ajuste
 de unit/permissão no futuro, se incomodar.
+
+---
+
+## 12. Thumbnail real do card (2026-06-21)
+
+O card de projeto agora mostra um frame de verdade em vez da capa generativa (onda).
+Front já estava pronto: renderiza `<img src={thumbnail_url}>` quando vier não-nulo.
+
+- **Geração** (`processor.py`, `run_thread2`, ANTES do `rmtree`, arquivos ainda em
+  disco): `_best_clip` escolhe o clipe de maior score; `_generate_thumbnail` extrai 1
+  frame dele com ffmpeg (`-ss 1 ... -frames:v 1 -vf scale=640:-2 -q:v 4`) **no aspecto
+  ORIGINAL do corte** (`item['path']`, não o `_base.mp4` 9:16, pra casar com o card
+  16/10), sobe em `jobs/{job_id}/thumb.jpg` (reusa `_s3_upload_with_retry`) e a key vai
+  no `db.update_job(... status='done', thumbnail_key=...)`. **Best-effort**: falhar não
+  derruba o job (key fica NULL, card cai no fallback).
+- **Servir** (`app.py`): `GET /api/projects/<job_id>/thumb`, `@login_required` + dono,
+  302 pra URL presignada; 404 sem key. Mesmo padrão da rota de vídeo.
+- **Contrato**: `_project_from_job` devolve `thumbnail_url` = `/api/projects/<id>/thumb`
+  só quando há `thumbnail_key` (senão `null`). `_clip_objects` repassa a mesma URL por
+  clipe (helper `_thumb_url`). Jobs antigos sem key continuam `null` (degradação
+  graciosa, nada quebra).
+- **Validado**: `test_backend.py` (seleção do melhor + contrato) + e2e (geração real
+  640px, rota 302, 401 sem sessão) com cleanup. Migração da coluna no padrão
+  `_ensure_column`.

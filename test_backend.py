@@ -121,8 +121,46 @@ def test_captions_roundtrip():
     check(captions.build_ass_from_segments([]) is None, "lista vazia -> None")
 
 
+# ─── 5. Thumbnail: seleção do melhor clipe + URL no contrato ──────────────────
+def test_thumbnail():
+    print("[thumbnail]")
+    # _best_clip: pega o de maior score; score ausente/inválido conta como -inf.
+    check(processor._best_clip([]) is None, "lista vazia -> None")
+    produced = [
+        {"path": "a.mp4", "meta": {"score": 3}},
+        {"path": "b.mp4", "meta": {"score": 9}},
+        {"path": "c.mp4", "meta": {"score": 5}},
+    ]
+    check(processor._best_clip(produced)["path"] == "b.mp4", "escolhe o de maior score")
+    mixed = [{"path": "a.mp4", "meta": {}}, {"path": "b.mp4", "meta": {"score": 1}}]
+    check(processor._best_clip(mixed)["path"] == "b.mp4", "score ausente perde pro válido")
+
+    # _thumb_url: rota relativa quando há key, None quando não há.
+    check(app._thumb_url({"job_id": "J1", "thumbnail_key": "jobs/J1/thumb.jpg"}) == "/api/projects/J1/thumb",
+          "com key -> rota /thumb")
+    check(app._thumb_url({"job_id": "J1", "thumbnail_key": None}) is None, "sem key -> None")
+
+    # _project_from_job: popula thumbnail_url só quando há key (degradação graciosa).
+    base_job = {"job_id": "J1", "filename": "v.mp4", "status": "done",
+                "result_urls": '[{"key":"k","score":9}]', "created_at": "t", "captions": 1}
+    with_key = dict(base_job, thumbnail_key="jobs/J1/thumb.jpg")
+    no_key = dict(base_job, thumbnail_key=None)
+    check(app._project_from_job(with_key)["thumbnail_url"] == "/api/projects/J1/thumb",
+          "projeto com frame expõe a rota")
+    check(app._project_from_job(no_key)["thumbnail_url"] is None,
+          "projeto sem frame mantém None (fallback de onda)")
+
+    # _clip_objects: repassa a thumbnail_url do projeto pra cada clipe.
+    clips = app._clip_objects("J1", '[{"key":"k1"},{"key":"k2"}]', "/api/projects/J1/thumb")
+    check(all(c["thumbnail_url"] == "/api/projects/J1/thumb" for c in clips),
+          "cada clipe herda a thumbnail do projeto")
+    clips2 = app._clip_objects("J1", '[{"key":"k1"}]')
+    check(clips2[0]["thumbnail_url"] is None, "sem thumbnail -> clipe com None")
+
+
 def main():
-    for t in (test_burn_cmd, test_validate_segments, test_parse_clips_json, test_captions_roundtrip):
+    for t in (test_burn_cmd, test_validate_segments, test_parse_clips_json,
+              test_captions_roundtrip, test_thumbnail):
         t()
     print()
     if _failures:

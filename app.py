@@ -249,20 +249,27 @@ def status(job_id):
     }
 
     if job["status"] == "done" and job["result_urls"]:
-        resp["clips"] = _clip_objects(job_id, job["result_urls"])
+        resp["clips"] = _clip_objects(job_id, job["result_urls"], _thumb_url(job))
 
     if job["status"] == "error":
         resp["error"] = job["error"]
         if job["result_urls"]:
-            resp["partial_clips"] = _clip_objects(job_id, job["result_urls"])
+            resp["partial_clips"] = _clip_objects(job_id, job["result_urls"], _thumb_url(job))
 
     return jsonify(resp)
 
 
-def _clip_objects(job_id, result_urls_json):
+def _thumb_url(job):
+    """Rota relativa (com sessão, devolve 302) do thumbnail do projeto, ou None se não
+    houver frame. Jobs antigos sem thumbnail_key degradam pro fallback de onda no front."""
+    return f"/api/projects/{job['job_id']}/thumb" if job.get("thumbnail_key") else None
+
+
+def _clip_objects(job_id, result_urls_json, thumbnail_url=None):
     """Constrói a lista de Clip (score/title/reason + URL presignada) a partir do
     result_urls. Aceita o formato novo (objeto por clipe) e o antigo (só a chave),
-    pra jobs criados antes desta mudança não quebrarem."""
+    pra jobs criados antes desta mudança não quebrarem. thumbnail_url (opcional) é o
+    frame do projeto, repassado a cada clipe pra o card do clipe também ter capa real."""
     try:
         items = json.loads(result_urls_json)
     except (TypeError, ValueError):
@@ -282,6 +289,7 @@ def _clip_objects(job_id, result_urls_json):
             "reason": meta.get("reason"),
             "score": meta.get("score"),
             "duration": meta.get("duration"),
+            "thumbnail_url": thumbnail_url,
         })
     return clips
 
@@ -301,7 +309,7 @@ def _project_from_job(job):
         "filename": job["filename"],
         "created_at": job.get("created_at"),
         "status": status,
-        "thumbnail_url": None,
+        "thumbnail_url": _thumb_url(job),
         "clip_count": len(items) if job["status"] == "done" else 0,
         "avg_score": round(sum(scores) / len(scores), 1) if scores else None,
         "duration": None,
@@ -323,8 +331,22 @@ def get_project(job_id):
     if not job or (job.get("user_email") and job["user_email"] != session["user"]):
         return jsonify({"error": "Projeto não encontrado."}), 404
     proj = _project_from_job(job)
-    proj["clips"] = _clip_objects(job_id, job["result_urls"]) if job["result_urls"] else []
+    proj["clips"] = _clip_objects(job_id, job["result_urls"], _thumb_url(job)) if job["result_urls"] else []
     return jsonify(proj)
+
+
+@app.route("/api/projects/<job_id>/thumb")
+@login_required
+def project_thumb(job_id):
+    """Thumbnail do projeto (frame real do melhor clipe) via 302 pra URL presignada.
+    Mesmo padrão de auth da rota de vídeo: exige sessão e dono. 404 se não houver frame."""
+    job = db.get_job(job_id)
+    if not job or (job.get("user_email") and job["user_email"] != session["user"]):
+        abort(404)
+    key = job.get("thumbnail_key")
+    if not key:
+        abort(404)
+    return redirect(s3_client.get_presigned_url(key), code=302)
 
 
 @app.route("/api/stats")
@@ -365,7 +387,7 @@ def favorites_list():
             continue
         if jid not in cache:
             job = db.get_job(jid)
-            cache[jid] = _clip_objects(jid, job["result_urls"]) if job and job["result_urls"] else []
+            cache[jid] = _clip_objects(jid, job["result_urls"], _thumb_url(job)) if job and job["result_urls"] else []
         arr = cache[jid]
         if 0 <= idx < len(arr):
             c = dict(arr[idx])
