@@ -571,8 +571,10 @@ servidor e cai no MESMO pipeline do upload.
   unless-stopped). Stack completa do YouTube: cookies + Deno (n-sig) + bgutil (PO token) + cópia
   descartável dos cookies.
 - **Realidade operacional (manutenção):** baixar do YouTube é alvo móvel. (1) O IP de datacenter
-  (Hetzner) leva "confirme que não é um robô" de forma INTERMITENTE mesmo com cookies; a maioria passa,
-  às vezes falha e o usuário retenta. Blindagem total só com proxy residencial (decisão adiada). (2)
+  (Hetzner) leva "confirme que não é um robô" de forma INTERMITENTE mesmo com cookies+Deno+PO token; a
+  maioria passa. Quando falha, `_run_ytdlp` **retenta automaticamente** (3x, `_YT_RETRIES`, só no bot-block,
+  com cópia nova de cookies a cada tentativa) porque é intermitente. Blindagem total só com proxy
+  residencial (decisão adiada). (2)
   Os cookies EXPIRAM (reexportar de uma conta Google dedicada de tempos em tempos). (3) `yt-dlp` e o
   Deno precisam de updates conforme o YouTube muda os desafios. (4) Achados da revisão adversarial
   corrigidos (heartbeat/slot, semáforo de probe, post_live, max-filesize, socket-timeout). (5) O

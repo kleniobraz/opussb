@@ -109,6 +109,43 @@ def _rm_quiet(path) -> None:
             os.unlink(path)
         except OSError:
             pass
+
+
+# Retry no bloqueio anti-robô do YouTube: o IP de datacenter leva "confirme que não é um robô"
+# de forma INTERMITENTE mesmo com cookies+Deno+PO token; a MESMA URL costuma passar numa tentativa
+# seguinte. Só repete nesse caso (erro permanente como vídeo indisponível não adianta repetir).
+_YT_RETRIES = 3
+
+
+def _is_botblock(stderr: str) -> bool:
+    s = (stderr or "").lower()
+    return "sign in to confirm" in s or "not a bot" in s
+
+
+def _run_ytdlp(build_cmd, timeout: int, timeout_msg: str):
+    """Roda o yt-dlp com cópia descartável dos cookies e RETRY no bloqueio anti-robô intermitente.
+    build_cmd(cookie_args) monta a lista do comando. Levanta RuntimeError em timeout/yt-dlp ausente;
+    senão devolve o CompletedProcess da última tentativa (o chamador checa returncode)."""
+    last = None
+    for attempt in range(_YT_RETRIES):
+        ck_args, ck_tmp = _cookie_copy_args()
+        try:
+            last = subprocess.run(build_cmd(ck_args), capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(timeout_msg)
+        except FileNotFoundError:
+            raise RuntimeError("yt-dlp não está instalado no servidor.")
+        finally:
+            _rm_quiet(ck_tmp)
+        if last.returncode == 0 or not _is_botblock(last.stderr):
+            return last
+        if attempt < _YT_RETRIES - 1:
+            log.info("[youtube] bloqueio anti-robô intermitente (tentativa %d/%d); repetindo",
+                     attempt + 1, _YT_RETRIES)
+            time.sleep(3)
+    return last
+
+
 # Prefere h264+aac em mp4 (merge limpo, sem recode), até 1080p (reframe é 1080x1920, mais
 # que isso é desperdício). Fallbacks progressivos até o melhor disponível.
 _YT_FORMAT = (
@@ -134,17 +171,11 @@ def _yt_error_hint(stderr: str) -> str:
 def youtube_probe(url: str) -> dict:
     """Lê metadados do vídeo SEM baixar (título, duração, se é live). Levanta RuntimeError
     com mensagem amigável se o yt-dlp falhar, for bloqueado, ou o link for inválido."""
-    ck_args, ck_tmp = _cookie_copy_args()
-    cmd = [_YTDLP, *ck_args, "--socket-timeout", str(_YT_SOCKET_TIMEOUT),
-           "--dump-single-json", "--no-playlist", "--skip-download", "--no-warnings", url]
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=_YT_PROBE_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("Tempo esgotado ao ler o link do YouTube.")
-    except FileNotFoundError:
-        raise RuntimeError("yt-dlp não está instalado no servidor.")
-    finally:
-        _rm_quiet(ck_tmp)
+    r = _run_ytdlp(
+        lambda ck: [_YTDLP, *ck, "--socket-timeout", str(_YT_SOCKET_TIMEOUT),
+                    "--dump-single-json", "--no-playlist", "--skip-download", "--no-warnings", url],
+        _YT_PROBE_TIMEOUT, "Tempo esgotado ao ler o link do YouTube.",
+    )
     if r.returncode != 0:
         raise RuntimeError(_yt_error_hint(r.stderr))
     try:
@@ -163,19 +194,13 @@ def _download_youtube(url: str, out_path: str, job_id: str) -> None:
     """Baixa o vídeo do YouTube pra out_path (mp4). Levanta RuntimeError em falha/bloqueio/
     timeout (o subprocess é morto no estouro) ou se o arquivo sair vazio."""
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    ck_args, ck_tmp = _cookie_copy_args()
-    cmd = [_YTDLP, *ck_args, "-f", _YT_FORMAT, "--merge-output-format", "mp4",
-           "--no-playlist", "--no-part", "--no-warnings", "--retries", "3",
-           "--socket-timeout", str(_YT_SOCKET_TIMEOUT), "--max-filesize", _YT_MAX_FILESIZE,
-           "-o", out_path, url]
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=_YT_DOWNLOAD_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("Tempo esgotado ao baixar o vídeo do YouTube.")
-    except FileNotFoundError:
-        raise RuntimeError("yt-dlp não está instalado no servidor.")
-    finally:
-        _rm_quiet(ck_tmp)
+    r = _run_ytdlp(
+        lambda ck: [_YTDLP, *ck, "-f", _YT_FORMAT, "--merge-output-format", "mp4",
+                    "--no-playlist", "--no-part", "--no-warnings", "--retries", "3",
+                    "--socket-timeout", str(_YT_SOCKET_TIMEOUT), "--max-filesize", _YT_MAX_FILESIZE,
+                    "-o", out_path, url],
+        _YT_DOWNLOAD_TIMEOUT, "Tempo esgotado ao baixar o vídeo do YouTube.",
+    )
     if r.returncode != 0:
         raise RuntimeError(_yt_error_hint(r.stderr))
     if not os.path.exists(out_path) or os.path.getsize(out_path) < 10240:
