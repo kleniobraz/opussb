@@ -674,6 +674,8 @@
 .src-seg-btn:not([data-on="true"]):hover { color: var(--ink); }
 .src-seg-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: 999px; }
 .src-seg-ico { width: 16px; height: 16px; }
+.src-seg-btn:disabled { cursor: not-allowed; opacity: 0.5; }
+.src-seg-soon { margin-left: 8px; font-size: 0.6rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--gold); background: rgba(245,197,24,0.15); border: 1px solid rgba(245,197,24,0.4); border-radius: 999px; padding: 1px 7px; white-space: nowrap; }
 @media (prefers-reduced-motion: reduce) { .src-seg-thumb { transition: none; } }
 .yt-input-wrap { display: flex; flex-direction: column; gap: 8px; padding: 4px 0 0; }
 .editor-style { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 12px; }

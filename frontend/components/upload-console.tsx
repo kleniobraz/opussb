@@ -33,6 +33,10 @@ const ASPECTS = [
   { value: "16:9", label: "16:9 · Horizontal" },
 ];
 
+// YouTube temporariamente OFF (bloqueio anti-robô intermitente do IP de datacenter; ver
+// BACKEND §17). A stack funciona, mas não é confiável ainda. Flip pra true reativa tudo.
+const YOUTUBE_ENABLED = false;
+
 function extOk(name: string) {
   const m = /\.([a-z0-9]+)$/i.exec(name || "");
   return !!m && ACCEPT_EXT.includes(m[1].toLowerCase());
@@ -207,13 +211,17 @@ export function UploadConsole({ onStarted }: { onStarted: (jobId: string, filena
               className="src-seg-btn"
               data-on={mode === "youtube"}
               aria-pressed={mode === "youtube"}
+              disabled={!YOUTUBE_ENABLED}
+              title={!YOUTUBE_ENABLED ? "Em breve" : undefined}
               onClick={() => {
+                if (!YOUTUBE_ENABLED) return;
                 setMode("youtube");
                 setError("");
               }}
             >
               <YoutubeGlyph className="src-seg-ico" />
               Link do YouTube
+              {!YOUTUBE_ENABLED && <span className="src-seg-soon">Em breve</span>}
             </button>
           </div>
         </div>
