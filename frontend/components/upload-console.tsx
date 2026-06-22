@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
+import { Upload, Sparkles } from "lucide-react";
 import * as api from "@/lib/api";
 import { fmtBytes } from "@/lib/format";
 import { usePrefs } from "@/hooks/use-prefs";
@@ -17,34 +17,20 @@ import {
   SelectValue,
 } from "./ui/select";
 
-// Faíscas do botão "Gerar clipes": 6 estrelas absolutas que disparam pra fora no hover.
-// Posições/animação ficam em .btn-stars (app/brand.css). São position:absolute, então
-// não entram no layout flex do botão.
-const STAR_PATH =
-  "M392.05 0c-20.9,210.08 -184.06,378.41 -392.05,407.78 207.96,29.37 371.12,197.68 392.05,407.74 20.93,-210.06 184.09,-378.37 392.05,-407.74 -207.98,-29.38 -371.16,-197.69 -392.06,-407.78z";
-
-function Sparkles() {
-  return (
-    <>
-      {[1, 2, 3, 4, 5, 6].map((n) => (
-        <span key={n} className={`star star-${n}`} aria-hidden="true">
-          <svg viewBox="0 0 784.11 815.53" xmlns="http://www.w3.org/2000/svg">
-            <path d={STAR_PATH} />
-          </svg>
-        </span>
-      ))}
-    </>
-  );
-}
-
 const ACCEPT_EXT = ["mp4", "mov", "avi", "mkv", "webm"];
 const MAX_BYTES = 15 * 1024 * 1024 * 1024; // 15GB
 
 const PRESETS = [
-  { label: "Shorts 15-30s", min: 15, max: 30, aspect: "9:16" },
-  { label: "Reels 20-60s", min: 20, max: 60, aspect: "9:16" },
-  { label: "TikTok 30-90s", min: 30, max: 90, aspect: "9:16" },
-  { label: "Longo 1-3min", min: 60, max: 180, aspect: "16:9" },
+  { name: "Shorts", dur: "15-30s", min: 15, max: 30, aspect: "9:16" },
+  { name: "Reels", dur: "20-60s", min: 20, max: 60, aspect: "9:16" },
+  { name: "TikTok", dur: "30-90s", min: 30, max: 90, aspect: "9:16" },
+  { name: "Longo", dur: "1-3min", min: 60, max: 180, aspect: "16:9" },
+];
+
+const ASPECTS = [
+  { value: "9:16", label: "9:16 · Vertical" },
+  { value: "1:1", label: "1:1 · Quadrado" },
+  { value: "16:9", label: "16:9 · Horizontal" },
 ];
 
 function extOk(name: string) {
@@ -76,10 +62,22 @@ const DropIcon = () => (
   </svg>
 );
 
+// Glifo do YouTube (lucide desta versão não exporta Youtube). Monocromático: herda a cor
+// do segmento (escuro sobre o thumb dourado quando ativo, cinza quando inativo).
+function YoutubeGlyph({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" />
+    </svg>
+  );
+}
+
 export function UploadConsole({ onStarted }: { onStarted: (jobId: string, filename: string) => void }) {
   const [file, setFile] = useState<File | null>(null);
   const [meta, setMeta] = useState<{ text: string; error: boolean }>({ text: "", error: false });
   const [drag, setDrag] = useState(false);
+  const [mode, setMode] = useState<"file" | "youtube">("file");
+  const [ytUrl, setYtUrl] = useState("");
   const [minD, setMinD] = useState(30);
   const [maxD, setMaxD] = useState(90);
   const [aspect, setAspect] = useState("9:16");
@@ -137,6 +135,27 @@ export function UploadConsole({ onStarted }: { onStarted: (jobId: string, filena
     e.preventDefault();
     setError("");
     if (minD >= maxD) return setError("A duração mínima deve ser menor que a máxima.");
+
+    if (mode === "youtube") {
+      const url = ytUrl.trim();
+      if (!url) return setError("Cole um link do YouTube.");
+      setSubmitting(true);
+      try {
+        const res = await api.uploadYoutube(url, {
+          minDuration: minD,
+          maxDuration: maxD,
+          aspectRatio: aspect,
+          language,
+          captions,
+        });
+        onStarted(res.job_id, res.title || "Vídeo do YouTube");
+      } catch (ex) {
+        setError((ex as Error)?.message || "Erro ao iniciar o link do YouTube.");
+        setSubmitting(false);
+      }
+      return;
+    }
+
     if (!file) return setError("Selecione um vídeo.");
     setSubmitting(true);
     setProg({ pct: 0, loaded: 0, total: file.size, eta: null });
@@ -163,52 +182,111 @@ export function UploadConsole({ onStarted }: { onStarted: (jobId: string, filena
   return (
     <section className="upload-card">
       <form onSubmit={onSubmit}>
-        <label
-          className={cn("dropzone", drag && "is-dragover")}
-          htmlFor="video-file"
-          onDragEnter={(e) => {
-            e.preventDefault();
-            setDrag(true);
-          }}
-          onDragOver={(e) => {
-            e.preventDefault();
-            setDrag(true);
-          }}
-          onDragLeave={() => setDrag(false)}
-          onDrop={(e) => {
-            e.preventDefault();
-            setDrag(false);
-            pickFile(e.dataTransfer.files?.[0] ?? null);
-          }}
-        >
-          <span className="dropzone-icon" aria-hidden="true">
-            <DropIcon />
-          </span>
-          <span className="dropzone-title">Arraste seu vídeo ou clique para enviar</span>
-          <span className="dropzone-hint">mp4, mov, avi, mkv, webm · até 15GB</span>
-          {file && <span className="dropzone-meta">{file.name}</span>}
-          {meta.text && (
-            <span className={cn("dropzone-meta", meta.error && "meta-error")}>{meta.text}</span>
+        <div className="console-head">
+          <div className="console-head-text">
+            <h3 className="console-title">Gerar novos clipes</h3>
+            <p className="console-sub">Escolha a origem do vídeo e ajuste o formato de saída.</p>
+          </div>
+          <div className="src-seg" role="group" aria-label="Fonte do vídeo" data-mode={mode}>
+            <span className="src-seg-thumb" aria-hidden="true" />
+            <button
+              type="button"
+              className="src-seg-btn"
+              data-on={mode === "file"}
+              aria-pressed={mode === "file"}
+              onClick={() => {
+                setMode("file");
+                setError("");
+              }}
+            >
+              <Upload className="src-seg-ico" aria-hidden="true" />
+              Enviar arquivo
+            </button>
+            <button
+              type="button"
+              className="src-seg-btn"
+              data-on={mode === "youtube"}
+              aria-pressed={mode === "youtube"}
+              onClick={() => {
+                setMode("youtube");
+                setError("");
+              }}
+            >
+              <YoutubeGlyph className="src-seg-ico" />
+              Link do YouTube
+            </button>
+          </div>
+        </div>
+
+        <div className="console-input">
+          {mode === "file" ? (
+            <label
+              className={cn("dropzone", drag && "is-dragover")}
+              htmlFor="video-file"
+              onDragEnter={(e) => {
+                e.preventDefault();
+                setDrag(true);
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDrag(true);
+              }}
+              onDragLeave={() => setDrag(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDrag(false);
+                pickFile(e.dataTransfer.files?.[0] ?? null);
+              }}
+            >
+              <span className="dropzone-icon" aria-hidden="true">
+                <DropIcon />
+              </span>
+              <span className="dropzone-title">Arraste seu vídeo ou clique para enviar</span>
+              <span className="dropzone-hint">mp4, mov, avi, mkv, webm · até 15GB</span>
+              {file && <span className="dropzone-meta">{file.name}</span>}
+              {meta.text && (
+                <span className={cn("dropzone-meta", meta.error && "meta-error")}>{meta.text}</span>
+              )}
+              <input
+                type="file"
+                id="video-file"
+                name="video"
+                accept=".mp4,.mov,.avi,.mkv,.webm"
+                onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
+              />
+            </label>
+          ) : (
+            <div className="yt-input-wrap">
+              <Input
+                type="url"
+                inputMode="url"
+                placeholder="Cole o link do YouTube (vídeo ou live já encerrada)"
+                value={ytUrl}
+                onChange={(e) => {
+                  setYtUrl(e.target.value);
+                  setError("");
+                }}
+                aria-label="Link do YouTube"
+              />
+              <span className="dropzone-hint">
+                Vídeos e lives já encerradas. O servidor baixa e gera os clipes automaticamente.
+              </span>
+            </div>
           )}
-          <input
-            type="file"
-            id="video-file"
-            name="video"
-            accept=".mp4,.mov,.avi,.mkv,.webm"
-            onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
-          />
-        </label>
+        </div>
 
         <div className="console-body">
-          <div className="presets" role="group" aria-label="Presets de formato">
+          <p className="console-eyebrow">Predefinição</p>
+          <div className="presets" role="group" aria-label="Predefinições de formato">
             {PRESETS.map((p, i) => (
               <button
-                key={p.label}
+                key={p.name}
                 type="button"
-                className={cn("chip", activePreset === i && "is-active")}
+                className={cn("chip", "chip-preset", activePreset === i && "is-active")}
                 onClick={() => applyPreset(i)}
               >
-                {p.label}
+                <span>{p.name}</span>
+                <span className="chip-sub">{p.dur}</span>
               </button>
             ))}
           </div>
@@ -225,7 +303,6 @@ export function UploadConsole({ onStarted }: { onStarted: (jobId: string, filena
                 min={5}
                 max={300}
                 onChange={(e) => setMinD(parseInt(e.target.value, 10) || 0)}
-                required
               />
             </div>
             <div>
@@ -239,7 +316,6 @@ export function UploadConsole({ onStarted }: { onStarted: (jobId: string, filena
                 min={10}
                 max={600}
                 onChange={(e) => setMaxD(parseInt(e.target.value, 10) || 0)}
-                required
               />
             </div>
             <div>
@@ -249,9 +325,11 @@ export function UploadConsole({ onStarted }: { onStarted: (jobId: string, filena
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="9:16">9:16</SelectItem>
-                  <SelectItem value="1:1">1:1</SelectItem>
-                  <SelectItem value="16:9">16:9</SelectItem>
+                  {ASPECTS.map((a) => (
+                    <SelectItem key={a.value} value={a.value}>
+                      {a.label}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -273,45 +351,50 @@ export function UploadConsole({ onStarted }: { onStarted: (jobId: string, filena
 
           <div className="console-foot">
             {submitting ? (
-              <div className="upload-progress">
-                <div className="upload-progress-head">
-                  <span>
-                    {(prog?.pct ?? 0) >= 100 ? "Quase lá — preparando o processamento" : "Enviando vídeo"}
-                  </span>
-                  <strong>{prog?.pct ?? 0}%</strong>
+              mode === "youtube" ? (
+                <div className="upload-progress">
+                  <div className="upload-progress-head">
+                    <span>Validando o link e baixando do YouTube…</span>
+                    <span className="clip-prep-spin" aria-hidden="true" />
+                  </div>
                 </div>
-                <div className="upload-track">
-                  <div className="upload-bar" style={{ width: `${prog?.pct ?? 0}%` }} />
+              ) : (
+                <div className="upload-progress">
+                  <div className="upload-progress-head">
+                    <span>{(prog?.pct ?? 0) >= 100 ? "Quase lá, preparando o processamento" : "Enviando vídeo"}</span>
+                    <strong>{prog?.pct ?? 0}%</strong>
+                  </div>
+                  <div className="upload-track">
+                    <div className="upload-bar" style={{ width: `${prog?.pct ?? 0}%` }} />
+                  </div>
+                  <div className="upload-progress-meta">
+                    <span>{prog ? `${fmtBytes(prog.loaded)} / ${fmtBytes(prog.total)}` : ""}</span>
+                    <span>
+                      {(prog?.pct ?? 0) >= 100
+                        ? "processando…"
+                        : prog?.eta != null
+                          ? `~${fmtEta(prog.eta)} restante`
+                          : "calculando tempo…"}
+                    </span>
+                  </div>
                 </div>
-                <div className="upload-progress-meta">
-                  <span>
-                    {prog ? `${fmtBytes(prog.loaded)} / ${fmtBytes(prog.total)}` : ""}
-                  </span>
-                  <span>
-                    {(prog?.pct ?? 0) >= 100
-                      ? "processando…"
-                      : prog?.eta != null
-                        ? `~${fmtEta(prog.eta)} restante`
-                        : "calculando tempo…"}
-                  </span>
-                </div>
-              </div>
+              )
             ) : (
               <>
                 <label className="flex cursor-pointer items-center gap-3 text-[0.9rem] text-ink-soft">
                   <Switch checked={captions} onCheckedChange={setCaptions} />
                   <span>Gerar legendas embutidas</span>
                 </label>
-                <Button type="submit" variant="gold" size="brand" className="btn-stars">
-                  Gerar clipes
-                  <Sparkles />
+                <Button type="submit" variant="gold" size="brand">
+                  <Sparkles className="size-4" aria-hidden="true" />
+                  Gerar Clipes
                 </Button>
               </>
             )}
           </div>
         </div>
       </form>
-      {error && <div className="error px-[18px] pb-3.5">{error}</div>}
+      {error && <div className="error px-[24px] pb-3.5">{error}</div>}
     </section>
   );
 }

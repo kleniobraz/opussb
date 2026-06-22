@@ -181,25 +181,77 @@ def segments_for_clip(srt_text: str, clip_start: float, clip_end: float) -> list
     return out
 
 
-def build_ass_from_segments(segments: list, caption_y=None):
+def _hex_to_ass(color):
+    """'#RRGGBB' (ou 'RRGGBB') -> cor de preenchimento ASS '&H00BBGGRR'. None se inválido.
+    O ASS guarda a cor como AABBGGRR (ordem invertida do RGB), alpha 00 = opaco."""
+    if not isinstance(color, str):
+        return None
+    c = color.strip().lstrip("#")
+    if len(c) != 6:
+        return None
+    try:
+        r, g, b = int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+    except ValueError:
+        return None
+    return f"&H00{b:02X}{g:02X}{r:02X}"
+
+
+def _resolve_style(style):
+    """Mescla os overrides do clipe (dict possivelmente parcial vindo do editor) com o estilo
+    SB padrão. Retorna (font_size, tracking_px, fill, glow_alpha). Valor inválido ou fora de
+    faixa cai no padrão SB. style None/{} = padrão SB puro.
+
+    shadow é a INTENSIDADE da sombra (0..1) = opacidade do halo; vira o alpha do glow
+    (alpha = (1-shadow)*255). O padrão SB (GLOW_ALPHA 0x24) equivale a shadow ≈ 0.86."""
+    size, tracking, fill, glow_alpha = FONT_SIZE, TRACKING_PX, FILL, GLOW_ALPHA
+    if isinstance(style, dict):
+        try:
+            v = float(style.get("size"))
+            if math.isfinite(v):
+                size = int(min(160, max(24, v)))
+        except (TypeError, ValueError):
+            pass
+        try:
+            v = float(style.get("tracking"))
+            if math.isfinite(v):
+                tracking = min(40.0, max(-20.0, v))
+        except (TypeError, ValueError):
+            pass
+        a = _hex_to_ass(style.get("color"))
+        if a:
+            fill = a
+        try:
+            v = float(style.get("shadow"))
+            if math.isfinite(v):
+                glow_alpha = int(round((1.0 - min(1.0, max(0.0, v))) * 255))
+        except (TypeError, ValueError):
+            pass
+    return size, tracking, fill, glow_alpha
+
+
+def build_ass_from_segments(segments: list, caption_y=None, style=None):
     """Renderiza o .ass no estilo SB a partir de uma lista de {start, end, text}
     (tempos relativos ao clipe). Retorna a string .ass ou None se vazia. O texto
     é re-sanitizado aqui porque pode ter vindo editado pelo usuário (Parte 3).
 
     caption_y (fração 0..1 do centro, a partir do topo) reposiciona a legenda na
     vertical via \\an5\\pos (centralizada). None = posição padrão do estilo SB
-    (alignment 2 + MARGIN_V). O usuário define isso arrastando no editor do front."""
+    (alignment 2 + MARGIN_V). O usuário define isso arrastando no editor do front.
+
+    style (dict opcional {size, tracking, color, shadow}) sobrescreve a fonte por clipe
+    (painel "Estilo" do editor); chaves ausentes/invalidas usam o padrão SB. Ver _resolve_style."""
     if not segments:
         return None
 
-    glow = f"&H{GLOW_ALPHA:02X}000000"
+    size, tracking, fill, glow_alpha = _resolve_style(style)
+    glow = f"&H{glow_alpha:02X}000000"
     # Spacing do estilo fica 0 de propósito: o libass ignora esse campo. O aperto
     # entre letras é aplicado por evento via \fsp no prefixo (ver abaixo).
-    style = (
+    style_line = (
         "Style: SB,{font},{size},{fill},{fill},{glow},{glow},"
         "0,0,0,0,100,100,0,0,1,{outline},0,{align},{ml},{mr},{mv},1"
     ).format(
-        font=FONT_NAME, size=FONT_SIZE, fill=FILL, glow=glow,
+        font=FONT_NAME, size=size, fill=fill, glow=glow,
         outline=GLOW_OUTLINE, align=ALIGNMENT, ml=MARGIN_LR, mr=MARGIN_LR, mv=MARGIN_V,
     )
     header = (
@@ -214,7 +266,7 @@ def build_ass_from_segments(segments: list, caption_y=None):
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
         "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
         "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        f"{style}\n\n"
+        f"{style_line}\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
@@ -228,7 +280,7 @@ def build_ass_from_segments(segments: list, caption_y=None):
                 pos_tag = f"\\an5\\pos({PLAY_W // 2},{round(cy * PLAY_H)})"
         except (TypeError, ValueError):
             pos_tag = ""
-    prefix = f"{{\\blur{GLOW_BLUR}\\fsp{TRACKING_PX:g}{pos_tag}}}"
+    prefix = f"{{\\blur{GLOW_BLUR}\\fsp{tracking:g}{pos_tag}}}"
     lines = []
     for s in segments:
         # Defesa: um segmento salvo com tempo inválido (NaN/inf, end<=start) não pode

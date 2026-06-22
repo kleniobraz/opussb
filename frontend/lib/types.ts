@@ -34,6 +34,7 @@ export interface UploadResponse {
 
 export type JobState =
   | "queued"
+  | "downloading"
   | "extracting_audio"
   | "uploading_audio"
   | "transcribing"
@@ -106,11 +107,20 @@ export interface Music {
   volume?: number;
 }
 
+// Personalização básica da fonte da legenda por clipe. Campos ausentes/null = padrão SB.
+export interface CaptionStyle {
+  size?: number; // tamanho da fonte (px na resolução 1080x1920); padrão 70
+  tracking?: number; // espaçamento entre letras (px, \fsp); padrão -3
+  color?: string; // cor do texto em #RRGGBB; padrão #FFFFFF
+  shadow?: number; // intensidade da sombra (0..1 = opacidade do halo); padrão 0.86
+}
+
 export interface Captions {
   editable: boolean;
   segments?: Segment[];
   music?: Music | null;
   caption_y?: number | null; // posição vertical (fração 0..1); null = padrão SB
+  style?: CaptionStyle | null; // estilo da fonte; null = padrão SB
 }
 
 export interface Preferences {

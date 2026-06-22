@@ -58,6 +58,11 @@ app.config.update(
 # com 4 threads, então um lock de processo fecha a race de uploads simultâneos.
 _upload_lock = threading.Lock()
 
+# Limita probes simultâneos do yt-dlp (cada um é um subprocess de até 45s). Com 1 worker /
+# 4 threads, sem isto um usuário poderia prender as 4 threads em probes e travar TODAS as
+# rotas (login, status, /health). 2 deixa metade das threads livres pro resto do app.
+_yt_probe_sem = threading.BoundedSemaphore(2)
+
 db.init_db()
 db.init_users()
 db.init_favorites()
@@ -1060,6 +1065,11 @@ def clip_video(clip_id):
     segments_json = db.get_clip_captions(clip_id)
     music = db.get_clip_music(clip_id)
     caption_y = db.get_clip_caption_y(clip_id)
+    raw_style = db.get_clip_caption_style(clip_id)
+    try:
+        caption_style = json.loads(raw_style) if raw_style else None
+    except (TypeError, ValueError):
+        caption_style = None
     cap_key = base_key.replace("_base.mp4", "_cap.mp4")
     is_new = cap_key != base_key                         # _base (novo) vs _9x16 (antigo, já queimado)
     use_caps = bool(job.get("captions", 1)) and bool(segments_json)
@@ -1081,7 +1091,7 @@ def clip_video(clip_id):
             s3_client.download_file(base_key, base_path)
             ass_path = None
             if use_caps:
-                ass = captions.build_ass_from_segments(json.loads(segments_json), caption_y)
+                ass = captions.build_ass_from_segments(json.loads(segments_json), caption_y, caption_style)
                 if ass:
                     ass_path = os.path.join(tmp, "cap.ass")
                     with open(ass_path, "w", encoding="utf-8") as f:
@@ -1178,6 +1188,46 @@ def _validate_segments(data):
     return out
 
 
+def _validate_caption_style(data):
+    """Limpa/normaliza o estilo da fonte vindo do cliente (size, tracking, color, shadow).
+    Retorna um dict só com as chaves válidas (faixas clampadas) ou None se vazio. Levanta
+    ValueError com mensagem amigável se um valor presente vier num tipo/formato impossível."""
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        raise ValueError("style inválido.")
+    out = {}
+    if data.get("size") is not None:
+        try:
+            v = float(data["size"])
+        except (TypeError, ValueError):
+            raise ValueError("size inválido.")
+        if not math.isfinite(v):
+            raise ValueError("size inválido.")
+        out["size"] = int(min(160, max(24, v)))
+    if data.get("tracking") is not None:
+        try:
+            v = float(data["tracking"])
+        except (TypeError, ValueError):
+            raise ValueError("tracking inválido.")
+        if not math.isfinite(v):
+            raise ValueError("tracking inválido.")
+        out["tracking"] = round(min(40.0, max(-20.0, v)), 2)
+    if data.get("color") is not None:
+        if captions._hex_to_ass(data["color"]) is None:
+            raise ValueError("color inválida (use #RRGGBB).")
+        out["color"] = "#" + str(data["color"]).strip().lstrip("#").upper()
+    if data.get("shadow") is not None:
+        try:
+            v = float(data["shadow"])
+        except (TypeError, ValueError):
+            raise ValueError("shadow inválido.")
+        if not math.isfinite(v):
+            raise ValueError("shadow inválido.")
+        out["shadow"] = round(min(1.0, max(0.0, v)), 3)
+    return out or None
+
+
 @app.route("/api/clips/<path:clip_id>/captions", methods=["GET"])
 @login_required
 def clip_captions_get(clip_id):
@@ -1195,7 +1245,13 @@ def clip_captions_get(clip_id):
     if music and music.get("music_key"):
         music_info = {"filename": os.path.basename(music["music_key"]), "volume": music.get("volume")}
     caption_y = db.get_clip_caption_y(clip_id)
-    return jsonify({"segments": segs, "editable": editable, "music": music_info, "caption_y": caption_y})
+    raw_style = db.get_clip_caption_style(clip_id)
+    try:
+        style_obj = json.loads(raw_style) if raw_style else None
+    except (TypeError, ValueError):
+        style_obj = None
+    return jsonify({"segments": segs, "editable": editable, "music": music_info,
+                    "caption_y": caption_y, "style": style_obj})
 
 
 @app.route("/api/clips/<path:clip_id>/captions", methods=["PUT"])
@@ -1224,7 +1280,13 @@ def clip_captions_put(clip_id):
             if not math.isfinite(cyf):
                 return jsonify({"error": "caption_y inválido."}), 400
             db.set_clip_caption_y(clip_id, max(0.05, min(0.95, cyf)))
-    _invalidate_cap(base_key)   # próxima abertura re-renderiza com o texto corrigido
+    if "style" in data:
+        try:
+            st = _validate_caption_style(data.get("style"))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        db.set_clip_caption_style(clip_id, json.dumps(st, ensure_ascii=False) if st else None)
+    _invalidate_cap(base_key)   # próxima abertura re-renderiza com o texto/estilo corrigido
     return jsonify({"ok": True, "segments": segs})
 
 
@@ -1414,6 +1476,19 @@ def put_preferences():
     return jsonify({"ok": True})
 
 
+def _pref_captions_default(user_email) -> int:
+    """Legenda padrão a partir da preferência salva do usuário (default ligada). O override por
+    requisição (form do upload ou JSON do YouTube) é aplicado por cada rota em cima disto."""
+    captions_on = 1
+    try:
+        _p = json.loads(db.get_preferences(user_email) or "{}")
+        if isinstance(_p, dict) and "captions" in _p:
+            captions_on = 1 if _p["captions"] else 0
+    except (TypeError, ValueError):
+        pass
+    return captions_on
+
+
 @app.route("/api/upload", methods=["POST"])
 @login_required
 def upload():
@@ -1446,13 +1521,7 @@ def upload():
 
     # Legenda queimada: default ligada; respeita a preferência salva do usuário e
     # um override opcional no form do upload (frontend).
-    captions_on = 1
-    try:
-        _p = json.loads(db.get_preferences(session["user"]) or "{}")
-        if isinstance(_p, dict) and "captions" in _p:
-            captions_on = 1 if _p["captions"] else 0
-    except (TypeError, ValueError):
-        pass
+    captions_on = _pref_captions_default(session["user"])
     _form_cap = request.form.get("captions")
     if _form_cap is not None:
         captions_on = 1 if _form_cap.strip().lower() in ("1", "true", "on", "yes", "sim") else 0
@@ -1482,6 +1551,99 @@ def upload():
     threading.Thread(target=processor.run_thread1, args=(job_id,), daemon=True).start()
 
     return jsonify({"job_id": job_id}), 202
+
+
+def _is_youtube_url(url: str) -> bool:
+    """Aceita só URLs de vídeo do YouTube (não qualquer host): evita apontar o yt-dlp pra
+    destinos arbitrários (abuso/SSRF) e mantém a feature no escopo pedido."""
+    try:
+        p = urllib.parse.urlparse(url)
+    except (ValueError, AttributeError):
+        return False
+    if p.scheme not in ("http", "https"):
+        return False
+    host = (p.hostname or "").lower()
+    return host == "youtu.be" or host == "youtube.com" or host.endswith(".youtube.com")
+
+
+@app.route("/api/upload/youtube", methods=["POST"])
+@login_required
+def upload_youtube():
+    """Mesma geração de clipes, mas a fonte é um link do YouTube (VOD). Valida o link e a
+    duração (teto de custo) ANTES de reservar a vaga; depois baixa via yt-dlp e cai no mesmo
+    pipeline do upload (ver processor.run_youtube_thread1)."""
+    user = db.get_user(session["user"])
+    if not user:
+        session.clear()
+        return jsonify({"error": "Sessão inválida.", "auth": False}), 401
+    if user["must_change_password"]:
+        return jsonify({"error": "Troque a senha do primeiro acesso antes de processar vídeos."}), 403
+
+    data = request.get_json(silent=True) or {}
+    url = (data.get("url") or "").strip()
+    if not url or not _is_youtube_url(url):
+        return jsonify({"error": "Cole um link válido do YouTube."}), 400
+
+    try:
+        min_duration = int(data.get("min_duration"))
+        max_duration = int(data.get("max_duration"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "min_duration e max_duration são obrigatórios."}), 400
+    if min_duration >= max_duration:
+        return jsonify({"error": "A duração mínima deve ser menor que a máxima."}), 400
+    if not (_MIN_CLIP_SECONDS <= min_duration < max_duration <= _MAX_CLIP_SECONDS):
+        return jsonify({
+            "error": f"Duração fora do intervalo permitido ({_MIN_CLIP_SECONDS} a {_MAX_CLIP_SECONDS}s)."
+        }), 400
+
+    # Metadados ANTES de reservar a vaga: confirma que não é live em andamento e respeita o
+    # teto de duração (sem isso, uma live de horas custaria caro e travaria o único slot). O
+    # probe (subprocess yt-dlp de até 45s) roda sob um semáforo pra não esgotar as threads.
+    if not _yt_probe_sem.acquire(blocking=False):
+        return jsonify({"error": "Muitas validações de link em andamento. Tente de novo em instantes."}), 429
+    try:
+        info = processor.youtube_probe(url)
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 400
+    finally:
+        _yt_probe_sem.release()
+    # Recusa live em andamento, agendada E recém-encerrada (post_live: VOD ainda processando,
+    # duração instável/parcial). Só VOD totalmente pronto segue.
+    if info.get("is_live") or info.get("live_status") in ("is_live", "is_upcoming", "post_live"):
+        return jsonify({
+            "error": "Transmissões ao vivo (ou recém-encerradas, ainda processando) não são suportadas. Use o vídeo depois que a live terminar e o VOD ficar pronto."
+        }), 400
+    dur = info.get("duration")
+    if not dur or dur <= 0:
+        return jsonify({"error": "Não consegui ler a duração do vídeo (pode ser live ou estar indisponível)."}), 400
+    if dur > config.YOUTUBE_MAX_DURATION:
+        lim = config.YOUTUBE_MAX_DURATION // 60
+        return jsonify({"error": f"Vídeo muito longo ({round(dur / 60)} min). O limite é {lim} min."}), 400
+
+    # Legenda: mesma lógica do upload (preferência salva + override opcional no corpo).
+    captions_on = _pref_captions_default(session["user"])
+    if "captions" in data:
+        captions_on = 1 if data.get("captions") else 0
+
+    title = info.get("title") or "Vídeo do YouTube"
+    job_id = str(uuid.uuid4())
+    job_dir = os.path.join(config.JOB_DIR, job_id)
+    local_path = os.path.join(job_dir, "original.mp4")
+
+    # Admissão atômica, idêntica ao upload (reap + check de vaga + reserva sob o lock).
+    with _upload_lock:
+        reaped = db.reap_stale_jobs(config.JOB_STALE_MINUTES)
+        if reaped:
+            log.info("[watchdog] %d job(s) preso(s) liberado(s) por timeout", reaped)
+        if db.count_active_jobs() >= config.MAX_CONCURRENT_JOBS:
+            return jsonify({
+                "error": "Um vídeo já está em processamento! Vai tomar uma água, respirar e aguardar a conclusão antes de enviar novo vídeo :)"
+            }), 429
+        db.create_job(job_id, title[:200], min_duration, max_duration, local_path,
+                      session["user"], captions=captions_on)
+
+    threading.Thread(target=processor.run_youtube_thread1, args=(job_id, url), daemon=True).start()
+    return jsonify({"job_id": job_id, "title": title}), 202
 
 
 # ─── Rotas internas (N8N) ────────────────────────────────────────────────────

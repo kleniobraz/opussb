@@ -121,6 +121,64 @@ def test_captions_roundtrip():
     check(captions.build_ass_from_segments([]) is None, "lista vazia -> None")
 
 
+# ─── 4a. Estilo customizado da fonte (size/tracking/color/shadow) ─────────────
+def test_caption_style():
+    print("[captions: estilo customizado da fonte]")
+    segs = [{"start": 0.0, "end": 2.0, "text": "Olá mundo"}]
+    # Padrão SB (sem style): Fontsize 70, branco, \fsp -3, glow alpha 0x24.
+    base = captions.build_ass_from_segments(segs)
+    check("Style: SB,Inter Medium,70," in base, "padrão usa Fontsize 70")
+    check("&H00FFFFFF" in base, "padrão usa branco")
+    check("\\fsp-3" in base, "padrão usa tracking -3")
+    check("&H24000000" in base, "padrão usa glow alpha 0x24")
+
+    # Override: size 90, tracking 5, vermelho (#FF0000 -> &H000000FF), sombra 0 (alpha 0xFF).
+    style = {"size": 90, "tracking": 5, "color": "#FF0000", "shadow": 0.0}
+    ass = captions.build_ass_from_segments(segs, None, style)
+    check("Style: SB,Inter Medium,90," in ass, "size override -> Fontsize 90")
+    check("&H000000FF" in ass, "cor #FF0000 -> &H000000FF (BGR)")
+    check("\\fsp5" in ass, "tracking override -> \\fsp5")
+    check("&HFF000000" in ass, "sombra 0 -> glow alpha 0xFF (transparente)")
+
+    # Sombra cheia (1.0) -> alpha 0x00 (opaco).
+    ass2 = captions.build_ass_from_segments(segs, None, {"shadow": 1.0})
+    check("&H00000000" in ass2, "sombra 1.0 -> glow alpha 0x00 (opaco)")
+
+    # _hex_to_ass: válido (BGR) e inválido.
+    check(captions._hex_to_ass("#00FF00") == "&H0000FF00", "hex verde -> &H0000FF00")
+    check(captions._hex_to_ass("xyz") is None and captions._hex_to_ass("#12345") is None,
+          "hex inválido -> None")
+
+    # Override fora de faixa é clampado, não quebra.
+    huge = captions.build_ass_from_segments(segs, None, {"size": 9999, "shadow": 5})
+    check("Style: SB,Inter Medium,160," in huge, "size absurdo clampa em 160")
+    check("&H00000000" in huge, "shadow > 1 clampa em opaco")
+    # caption_y + style juntos continuam compondo (não se anulam).
+    both = captions.build_ass_from_segments(segs, 0.5, {"size": 80})
+    check("\\pos(" in both and "Inter Medium,80," in both, "caption_y e style coexistem")
+
+
+# ─── 4c. YouTube: validação de URL + tradução de erro do yt-dlp ───────────────
+def test_youtube_helpers():
+    print("[youtube: url + erro]")
+    ok = ["https://www.youtube.com/watch?v=abc123", "https://youtu.be/abc123",
+          "https://youtube.com/live/xyz", "https://m.youtube.com/watch?v=q",
+          "http://music.youtube.com/watch?v=q"]
+    bad = ["https://vimeo.com/123", "http://evil.com/x", "not a url", "",
+           "https://youtube.com.evil.com/x", "ftp://youtube.com/x"]
+    check(all(app._is_youtube_url(u) for u in ok), "aceita URLs do YouTube (incl. subdomínios)")
+    check(not any(app._is_youtube_url(u) for u in bad), "rejeita não-YouTube e host forjado")
+
+    import processor
+    check("anti-robô" in processor._yt_error_hint("ERROR: Sign in to confirm you're not a bot").lower()
+          or "anti" in processor._yt_error_hint("Sign in to confirm you're not a bot"),
+          "erro de bot vira dica de cookies")
+    check("indisponível" in processor._yt_error_hint("ERROR: Private video").lower(),
+          "private video vira indisponível")
+    check(processor._yt_error_hint("algo aleatório") == "Não consegui baixar este vídeo do YouTube.",
+          "erro desconhecido tem mensagem padrão")
+
+
 # ─── 4b. Auto-snap do corte: não terminar/começar no meio da fala ─────────────
 def test_snap_clip_bounds():
     print("[snap clip bounds]")
@@ -328,7 +386,8 @@ def test_sessions_extra():
 
 def main():
     for t in (test_burn_cmd, test_validate_segments, test_parse_clips_json,
-              test_captions_roundtrip, test_snap_clip_bounds, test_thumbnail,
+              test_captions_roundtrip, test_caption_style, test_youtube_helpers,
+              test_snap_clip_bounds, test_thumbnail,
               test_sessions_helpers, test_sessions_ownership, test_sessions_flow,
               test_sessions_extra):
         t()

@@ -500,3 +500,56 @@ são de sessões). Verificação e2e descartável (DB temporário + test client,
 excluir/cancelar, o projeto sobrevive; dono e admin excluem com 200; legado só pelo admin.
 Deploy: backup (db + código) + `systemctl restart opussb` (active_jobs=0) + build do front +
 restart do `opussb-web`. Sem push na master (regra 9).
+
+---
+
+## 16. Personalização de fonte da legenda por clipe (2026-06-22)
+
+Editor ganhou controles básicos de fonte (tamanho, espaçamento, cor, intensidade da sombra) por
+clipe, queimados sob demanda. Aditivo, sem mudar o estilo SB padrão de quem não personaliza.
+
+- **`db.py`**: coluna `caption_style` (TEXT JSON) em `clip_captions` (migração `_ensure_column`,
+  igual ao `caption_y`). `get/set_clip_caption_style`. NULL = padrão SB.
+- **`captions.py`**: `build_ass_from_segments(segments, caption_y=None, style=None)` aplica os
+  overrides; helpers `_hex_to_ass` (#RRGGBB -> &H00BBGGRR) e `_resolve_style` (mescla com o padrão,
+  clampa faixas; **shadow 0..1 = opacidade do glow**, alpha = (1-shadow)*255; 0.86 ≈ o GLOW_ALPHA
+  0x24 padrão). Retrocompatível (style=None mantém o estilo SB).
+- **`app.py`**: `GET/PUT /api/clips/<id>/captions` leem/gravam `style` (validado por
+  `_validate_caption_style`); o cache `_cap.mp4` é invalidado no PUT (já era). A queima em
+  `clip_video` passa o `style` pro `build_ass_from_segments`.
+- Validado: `test_caption_style` (size/tracking/cor/sombra + clamp + `_hex_to_ass`) + e2e com job
+  TEST (PUT/GET persistem e normalizam, queima reflete, cor inválida 400, style:null limpa).
+
+## 17. Importar do YouTube (yt-dlp) (2026-06-22)
+
+Além do upload, o usuário cola um link do YouTube (VOD; live em andamento é recusada). Baixa no
+servidor e cai no MESMO pipeline do upload.
+
+- **`config.py`**: `YOUTUBE_MAX_DURATION` (default 7200s = 2h, env-tunável) = teto de duração
+  (controla custo de transcrição e tempo que um job segura o único slot).
+- **`processor.py`**: seção YouTube. `youtube_probe(url)` (metadados, sem baixar), `_download_youtube`
+  (baixa pra `original.mp4`, `--max-filesize 12G`, `--socket-timeout 30`, `--merge-output-format mp4`),
+  `run_youtube_thread1(job_id, url)` (estado novo **`downloading`** -> `run_thread1`). yt-dlp chamado
+  por subprocess (lista de args, sem shell) via path absoluto do venv. `_yt_error_hint` traduz erros.
+  **Heartbeat** (`db.heartbeat_job(job_id,'downloading')` a cada 60s durante o download) impede o
+  watchdog de 30min de ceifar um download longo (que liberaria a vaga -> 2 jobs em paralelo). Cookies
+  opcionais: se existir `/opt/opussb/.youtube_cookies.txt`, passa `--cookies`.
+- **`db.py`**: `heartbeat_job(job_id, expected_status)` (UPDATE só do `updated_at`, com `WHERE status`
+  pra não ressuscitar cancelado).
+- **`app.py`**: `POST /api/upload/youtube` (`@login_required`). Valida URL (`_is_youtube_url`, só
+  hosts youtube, anti-bypass), duração/min-max, probe (recusa `is_live`/`is_upcoming`/**`post_live`**),
+  teto de duração, ANTES de reservar a vaga. Probe roda sob `_yt_probe_sem` (BoundedSemaphore(2),
+  429 se exceder) pra não esgotar as 4 threads do gunicorn. Helper `_pref_captions_default` (DRY
+  com a rota de upload).
+- **Dependências de SISTEMA (já instaladas na VPS, NÃO no repo):** `yt-dlp` + `yt-dlp-ejs` no venv;
+  **Deno** em `/usr/local/bin` (runtime JS sandboxed pro desafio do YouTube; node 20 do nvm é velho
+  demais, exige >= 23.5). O `opussb.service` enxerga `/usr/local/bin` (PATH padrão do systemd, `.env`
+  não seta PATH). Cookies em `/opt/opussb/.youtube_cookies.txt` (600, gitignored).
+- **Realidade operacional (manutenção):** baixar do YouTube é alvo móvel. (1) O IP de datacenter
+  (Hetzner) leva "confirme que não é um robô" de forma INTERMITENTE mesmo com cookies; a maioria passa,
+  às vezes falha e o usuário retenta. Blindagem total só com proxy residencial (decisão adiada). (2)
+  Os cookies EXPIRAM (reexportar de uma conta Google dedicada de tempos em tempos). (3) `yt-dlp` e o
+  Deno precisam de updates conforme o YouTube muda os desafios. (4) Achados da revisão adversarial
+  corrigidos (heartbeat/slot, semáforo de probe, post_live, max-filesize, socket-timeout).
+- Validado: `test_youtube_helpers` (URL anti-bypass + tradução de erro). E2e do download real (32MB
+  em ~3s com cookies+Deno). Deploy: backup + restart `opussb` (active_jobs=0) + build/restart `opussb-web`.

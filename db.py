@@ -108,6 +108,9 @@ def init_clip_captions() -> None:
         # Posicao vertical da legenda (fracao 0..1 do centro, do topo). NULL = posicao
         # padrao do estilo SB (alignment 2 + MARGIN_V). O usuario arrasta no editor.
         _ensure_column(conn, "clip_captions", "caption_y", "REAL")
+        # Estilo da fonte por clipe (JSON: {size, tracking, color, shadow}). NULL = estilo SB
+        # padrao (constantes do captions.py). O usuario ajusta no painel "Estilo" do editor.
+        _ensure_column(conn, "clip_captions", "caption_style", "TEXT")
 
 
 def init_clip_music() -> None:
@@ -357,6 +360,25 @@ def set_clip_caption_y(clip_id: str, caption_y) -> None:
         )
 
 
+def get_clip_caption_style(clip_id: str):
+    """Estilo da fonte do clipe (JSON string {size,tracking,color,shadow}) ou None (= padrão SB)."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT caption_style FROM clip_captions WHERE clip_id = ?", (clip_id,)
+        ).fetchone()
+        return row["caption_style"] if row else None
+
+
+def set_clip_caption_style(clip_id: str, style_json) -> None:
+    """Grava o estilo da fonte (JSON serializado, ou None p/ voltar ao padrão SB). Só atualiza a
+    coluna (a linha já existe quando há segmentos salvos)."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE clip_captions SET caption_style = ?, updated_at = ? WHERE clip_id = ?",
+            (style_json, _now(), clip_id),
+        )
+
+
 def get_clip_music(clip_id: str):
     """Devolve {music_key, volume} do clipe, ou None se não houver música."""
     with _conn() as conn:
@@ -396,6 +418,18 @@ def update_job(job_id: str, **kwargs) -> None:
     values = list(kwargs.values()) + [job_id]
     with _conn() as conn:
         conn.execute(f"UPDATE jobs SET {fields} WHERE job_id = ?", values)
+
+
+def heartbeat_job(job_id: str, expected_status: str) -> None:
+    """Atualiza só `updated_at` (sinal de vida), e SÓ se o job ainda estiver no status
+    esperado. Usado durante etapas longas sem progresso (ex.: download do YouTube) pra o
+    watchdog (reap_stale_jobs) não marcar como stale um job que está vivo. O WHERE status
+    garante que um cancelamento concorrente (status='error') NÃO é ressuscitado."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE jobs SET updated_at = ? WHERE job_id = ? AND status = ?",
+            (_now(), job_id, expected_status),
+        )
 
 
 def count_active_jobs() -> int:

@@ -4,6 +4,7 @@
 import type {
   AdminUser,
   Captions,
+  CaptionStyle,
   Clip,
   JobStatus,
   LoginResponse,
@@ -92,6 +93,22 @@ export function upload(file: File, opts: UploadOptions): Promise<UploadResponse>
   return request("/api/upload", { method: "POST", body: fd }).then((r) => asJson<UploadResponse>(r));
 }
 
+// Mesma geração de clipes a partir de um link do YouTube (VOD). O servidor baixa via yt-dlp
+// e cai no mesmo pipeline. Devolve o job_id + o título do vídeo (pro nome do projeto).
+export function uploadYoutube(
+  url: string,
+  opts: UploadOptions,
+): Promise<UploadResponse & { title?: string }> {
+  return postJson<UploadResponse & { title?: string }>("/api/upload/youtube", {
+    url,
+    min_duration: opts.minDuration,
+    max_duration: opts.maxDuration,
+    aspect_ratio: opts.aspectRatio,
+    language: opts.language,
+    captions: opts.captions,
+  });
+}
+
 // Upload com progresso real (XHR expõe upload.onprogress; o fetch não). Mesma origem,
 // então o cookie de sessão vai junto. Mantém a semântica de erro/401 do resto da API.
 export function uploadWithProgress(
@@ -167,11 +184,16 @@ export const downloadAllUrl = (id: string) =>
 // ── Editor: legenda + musica ────────────────────────────────────────────────
 export const getCaptions = (id: string) =>
   getJson<Captions>("/api/clips/" + encodeURIComponent(id) + "/captions");
-export const putCaptions = (id: string, segments: Segment[], captionY: number | null = null) =>
+export const putCaptions = (
+  id: string,
+  segments: Segment[],
+  captionY: number | null = null,
+  style: CaptionStyle | null = null,
+) =>
   request("/api/clips/" + encodeURIComponent(id) + "/captions", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ segments, caption_y: captionY }),
+    body: JSON.stringify({ segments, caption_y: captionY, style }),
   }).then((r) => asJson<{ ok?: boolean }>(r));
 
 export function uploadMusic(id: string, file: File, volume?: number): Promise<{ music?: Music }> {

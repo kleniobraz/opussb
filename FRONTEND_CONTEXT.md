@@ -387,3 +387,35 @@ antigo `clip-max`). Agora tem controles PRÓPRIOS, claros:
   renderiza quando `canDelete`. O backend reforça (403), então esconder o botão é só cosmético.
   **Reprocessar** e **Baixar todos** seguem visíveis pra todos (não destrutivos / no-op por ora).
 - Não mexe em favoritos/preferências (seguem individuais). `tsc --noEmit` e `next build` limpos.
+
+---
+
+## 14. Personalização de legenda + importar do YouTube + console estilo OpusClip (2026-06-22)
+
+Três frentes, deployadas juntas (backend correspondente: §16 e §17 do `BACKEND_CONTEXT.md`).
+
+### Personalização de fonte da legenda (editor)
+Painel **"Estilo da legenda"** em `editor/clip-editor.tsx` (Tamanho, Espaçamento, Sombra, Cor +
+"Resetar estilo"), refletido AO VIVO no overlay (`editor/preview-stage.tsx`, mapeado pra mesma
+referência 1080x1920 da queima). `lib/types.ts` ganhou `CaptionStyle`; `api.putCaptions` aceita o
+`style`. CSS `.editor-style*` em `brand.css`.
+
+### Importar do YouTube (`upload-console.tsx`)
+Seletor de fonte **"Enviar arquivo / Link do YouTube"** (segmented control com thumb dourado
+deslizante, `.src-seg*`); modo YouTube troca a dropzone por um campo de link. `api.uploadYoutube`
+(`lib/api.ts`); estado novo **`downloading`** em `JobState` (types) e no `STATUS_LABELS`
+(`job-progress.tsx`, "Baixando do YouTube..."). Glifo do YouTube inline (lucide desta versão, 1.21,
+não exporta `Youtube`).
+
+### Console estilo OpusClip + hero (seguindo mockup do dono)
+`upload-console.tsx` redesenhado: cabeçalho "Gerar novos clipes" + subtítulo com o seletor de fonte
+à direita; eyebrow "Predefinição"; presets em duas tonalidades (nome + duração); Formato com
+descritor ("9:16 · Vertical"); alinhamento uniforme; botão **dourado "✦ Gerar Clipes"** (`Button`
+variant gold + `Sparkles`). O hero (`home/hero.tsx`) tem eyebrow com traço dourado (`.hero-eyebrow`)
+e título em duas linhas (saudação + nome em dourado, `.hero-greeting`). O `.hero` agora preenche a
+viewport (`min-height: 100vh`, puxado sob a navbar com `margin-top: -5rem`) pra arte ir até o topo
+(sem barra preta) e a parte branca ("Como funciona") ficar abaixo da dobra.
+
+> Nota: o botão animado escuro (sparkle/shimmer, `.gen-btn` em `brand.css`) chegou a ser feito mas o
+> mockup final pediu o botão dourado; o `.gen-btn` segue no CSS, sem uso (rollback fácil). Subtítulo
+> do hero mantido SEM travessão (regra do dono), apesar do mockup ter um.

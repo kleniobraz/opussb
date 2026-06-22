@@ -1,9 +1,11 @@
 import os
+import sys
 import json
 import math
 import logging
 import shutil
 import subprocess
+import threading
 import time
 import requests
 import config
@@ -56,6 +58,138 @@ def run_thread1(job_id: str) -> None:
         shutil.rmtree(os.path.join(config.JOB_DIR, job_id), ignore_errors=True)
     except Exception as e:
         _fail_job(job_id, str(e))
+
+
+# ─── Fonte YouTube (yt-dlp): baixa e cai no MESMO pipeline do upload ──────────
+# O yt-dlp vive no mesmo venv do app (pip install yt-dlp -> venv/bin/yt-dlp). Chamamos
+# por subprocess (não importamos o módulo) pra isolar falhas e aplicar timeout matando o
+# processo travado, igual aos ffmpeg do pipeline. Só VOD (live encerrada/normal); live em
+# andamento é recusada na rota (sem duração definida).
+_YTDLP = os.path.join(os.path.dirname(sys.executable), "yt-dlp")
+_YT_PROBE_TIMEOUT = 45       # ler metadados (sem baixar)
+_YT_DOWNLOAD_TIMEOUT = 3600  # baixar o vídeo (até 2h de vídeo cabe com folga)
+_YT_SOCKET_TIMEOUT = 30      # aborta socket morto em vez de pendurar até o teto global
+_YT_MAX_FILESIZE = "12G"     # teto de bytes (o teto de duração não limita bitrate): trava
+                             # vídeo curto porém pesado de estourar o disco/banda
+_YT_HEARTBEAT_SECONDS = 60   # de quanto em quanto tempo marca "sinal de vida" no download
+# O YouTube bloqueia download de IP de datacenter ("confirme que não é um robô"). A saída é
+# autenticar com cookies de uma conta Google. Se este arquivo existir (Netscape cookies.txt,
+# fora do repo, 600), passamos --cookies; senão, segue sem (funciona só fora do bloqueio).
+# Use uma conta DEDICADA: cookies de download server-side podem fazer o Google flaggar a conta.
+_YT_COOKIES = os.environ.get(
+    "YOUTUBE_COOKIES_FILE",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), ".youtube_cookies.txt"),
+)
+
+
+def _yt_auth_args() -> list:
+    """--cookies <arquivo> quando há cookies configurados (e o arquivo existe); senão vazio."""
+    return ["--cookies", _YT_COOKIES] if _YT_COOKIES and os.path.exists(_YT_COOKIES) else []
+# Prefere h264+aac em mp4 (merge limpo, sem recode), até 1080p (reframe é 1080x1920, mais
+# que isso é desperdício). Fallbacks progressivos até o melhor disponível.
+_YT_FORMAT = (
+    "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/"
+    "best[height<=1080][ext=mp4]/"
+    "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
+)
+
+
+def _yt_error_hint(stderr: str) -> str:
+    """Traduz o erro do yt-dlp pra uma mensagem amigável (o stderr cru é técnico)."""
+    s = (stderr or "").lower()
+    if "sign in to confirm" in s or "not a bot" in s or "confirm your age" in s:
+        return ("O YouTube bloqueou o download a partir deste servidor (proteção anti-robô). "
+                "Precisamos configurar cookies do navegador no servidor.")
+    if "private video" in s or "video unavailable" in s or "been removed" in s or "members-only" in s:
+        return "Vídeo indisponível, privado, removido ou só para membros."
+    if "unsupported url" in s or "is not a valid url" in s or "no video" in s:
+        return "Link não suportado. Cole a URL de um vídeo do YouTube."
+    return "Não consegui baixar este vídeo do YouTube."
+
+
+def youtube_probe(url: str) -> dict:
+    """Lê metadados do vídeo SEM baixar (título, duração, se é live). Levanta RuntimeError
+    com mensagem amigável se o yt-dlp falhar, for bloqueado, ou o link for inválido."""
+    cmd = [_YTDLP, *_yt_auth_args(), "--socket-timeout", str(_YT_SOCKET_TIMEOUT),
+           "--dump-single-json", "--no-playlist", "--skip-download", "--no-warnings", url]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=_YT_PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Tempo esgotado ao ler o link do YouTube.")
+    except FileNotFoundError:
+        raise RuntimeError("yt-dlp não está instalado no servidor.")
+    if r.returncode != 0:
+        raise RuntimeError(_yt_error_hint(r.stderr))
+    try:
+        info = json.loads(r.stdout or "{}")
+    except (TypeError, ValueError):
+        raise RuntimeError("Não consegui ler os dados do vídeo.")
+    return {
+        "title": (info.get("title") or "").strip() or "Vídeo do YouTube",
+        "duration": info.get("duration"),
+        "is_live": bool(info.get("is_live")),
+        "live_status": info.get("live_status"),
+    }
+
+
+def _download_youtube(url: str, out_path: str, job_id: str) -> None:
+    """Baixa o vídeo do YouTube pra out_path (mp4). Levanta RuntimeError em falha/bloqueio/
+    timeout (o subprocess é morto no estouro) ou se o arquivo sair vazio."""
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    cmd = [_YTDLP, *_yt_auth_args(), "-f", _YT_FORMAT, "--merge-output-format", "mp4",
+           "--no-playlist", "--no-part", "--no-warnings", "--retries", "3",
+           "--socket-timeout", str(_YT_SOCKET_TIMEOUT), "--max-filesize", _YT_MAX_FILESIZE,
+           "-o", out_path, url]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=_YT_DOWNLOAD_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Tempo esgotado ao baixar o vídeo do YouTube.")
+    except FileNotFoundError:
+        raise RuntimeError("yt-dlp não está instalado no servidor.")
+    if r.returncode != 0:
+        raise RuntimeError(_yt_error_hint(r.stderr))
+    if not os.path.exists(out_path) or os.path.getsize(out_path) < 10240:
+        raise RuntimeError("O download do YouTube saiu vazio.")
+
+
+def run_youtube_thread1(job_id: str, url: str) -> None:
+    """Thread 1 do fluxo YouTube: baixa o vídeo (estado 'downloading') e então cai no MESMO
+    pipeline do upload (run_thread1: extrai áudio → S3 → dispara N8N). Mantém a máquina de
+    estados; só adiciona 'downloading' antes de 'extracting_audio'."""
+    job = db.get_job(job_id)
+    try:
+        _check_cancel(job_id)
+        db.update_job(job_id, status="downloading", progress=8)
+        # O download é um subprocess bloqueante de até 1h sem progresso intermediário; um
+        # heartbeat periódico mantém updated_at fresco pra o watchdog (JOB_STALE_MINUTES, 30min)
+        # NÃO marcar como stale um download legítimo em andamento (o que liberaria a vaga e deixaria
+        # um 2º job pesado rodar em paralelo). O heartbeat usa WHERE status='downloading', então um
+        # cancelamento concorrente não é ressuscitado.
+        stop = threading.Event()
+        hb = threading.Thread(target=_download_heartbeat, args=(job_id, stop), daemon=True)
+        hb.start()
+        try:
+            _download_youtube(url, job["local_path"], job_id)
+        finally:
+            stop.set()
+        _check_cancel(job_id)
+    except _Cancelled:
+        log.info("[cancel] job %s cancelado no download; limpando disco", job_id)
+        shutil.rmtree(os.path.join(config.JOB_DIR, job_id), ignore_errors=True)
+        return
+    except Exception as e:
+        _fail_job(job_id, str(e))
+        return
+    run_thread1(job_id)
+
+
+def _download_heartbeat(job_id: str, stop: threading.Event) -> None:
+    """Marca sinal de vida (updated_at) enquanto o download roda, até `stop` ser sinalizado."""
+    while not stop.wait(_YT_HEARTBEAT_SECONDS):
+        try:
+            db.heartbeat_job(job_id, "downloading")
+        except Exception as e:
+            log.warning("[heartbeat] job %s: %s", job_id, e)
 
 
 def run_thread2(job_id: str) -> None:

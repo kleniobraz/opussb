@@ -21,12 +21,14 @@ export function Hero() {
   return (
     <div className="hero-inner">
       <div className="hero-text">
-        <p className="eyebrow">Central de clipes</p>
+        <p className="eyebrow hero-eyebrow">Central de clipes</p>
         <h1
-          className="page-title"
+          className="page-title hero-greeting"
           style={{ fontSize: "clamp(40px,5.6vw,72px)", letterSpacing: "-0.035em" }}
         >
-          {greeting}, <span className="grad-text">{name}</span>.
+          {greeting},
+          <br />
+          <span className="grad-text">{name}</span>.
         </h1>
         <p className="page-sub">
           Solte um vídeo longo abaixo e o SB Clips devolve os melhores momentos cortados,

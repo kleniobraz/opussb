@@ -38,6 +38,11 @@ JOB_DIR: str = os.environ.get("JOB_DIR", "/opt/opussb/jobs")
 # Acima da janela do Whisper (5-15min) com folga. Job preso passa disso vira error.
 JOB_STALE_MINUTES: int = int(os.environ.get("JOB_STALE_MINUTES", "30"))
 
+# YouTube (yt-dlp): teto de duração do vídeo de entrada, em segundos. Controla custo de
+# transcrição (RunPod escala com a duração) e quanto tempo um job segura o único slot da
+# fila (MAX_CONCURRENT_JOBS=1). Default 2h. Ajustável por env sem mexer no código.
+YOUTUBE_MAX_DURATION: int = int(os.environ.get("YOUTUBE_MAX_DURATION", str(2 * 60 * 60)))
+
 # ─── Auth: Zoho SSO + cadastro com aprovação ─────────────────────────────────
 # Tudo OPCIONAL de propósito: sem ZOHO_CLIENT_ID/SECRET o login Zoho fica desligado
 # e só o login por senha (incl. break-glass) funciona — o app sobe normal.

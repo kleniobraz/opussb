@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 
 const STATUS_LABELS: Record<string, string> = {
   queued: "Na fila...",
+  downloading: "Baixando do YouTube...",
   extracting_audio: "Extraindo áudio...",
   uploading_audio: "Enviando áudio para transcrição...",
   transcribing: "Transcrevendo... (pode levar alguns minutos)",

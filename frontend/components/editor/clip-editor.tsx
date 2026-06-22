@@ -118,6 +118,89 @@ function MusicControl({
 // do estilo SB no backend (alignment 2 + MARGIN_V 580 de 1920 => legenda na parte baixa).
 const SB_DEFAULT_Y = 0.67;
 
+// Estilo padrão SB da fonte (espelha as constantes do captions.py). No backend, null = isto.
+const SB_STYLE = { size: 70, tracking: -3, color: "#FFFFFF", shadow: 0.86 };
+type CapStyle = typeof SB_STYLE;
+
+// Personalização básica da fonte. Reflete AO VIVO no preview e é queimada no Exportar/play.
+function StyleControl({
+  value,
+  changed,
+  onChange,
+  onReset,
+}: {
+  value: CapStyle;
+  changed: boolean;
+  onChange: (patch: Partial<CapStyle>) => void;
+  onReset: () => void;
+}) {
+  return (
+    <div className="editor-style">
+      <div className="editor-sec-head">
+        <strong className="text-[0.85rem]">Estilo da legenda</strong>
+        {changed && (
+          <button
+            type="button"
+            className="text-gold text-[0.78rem] underline-offset-2 hover:underline"
+            onClick={onReset}
+          >
+            Resetar estilo
+          </button>
+        )}
+      </div>
+      <label className="editor-style-row">
+        <span>Tamanho</span>
+        <Slider
+          min={40}
+          max={110}
+          step={1}
+          value={[value.size]}
+          onValueChange={(v) => onChange({ size: v[0] })}
+          className="flex-1"
+        />
+        <span className="editor-style-val">{value.size}</span>
+      </label>
+      <label className="editor-style-row">
+        <span>Espaçamento</span>
+        <Slider
+          min={-8}
+          max={14}
+          step={1}
+          value={[value.tracking]}
+          onValueChange={(v) => onChange({ tracking: v[0] })}
+          className="flex-1"
+        />
+        <span className="editor-style-val">{value.tracking}</span>
+      </label>
+      <label className="editor-style-row">
+        <span>Sombra</span>
+        <Slider
+          min={0}
+          max={100}
+          step={1}
+          value={[Math.round(value.shadow * 100)]}
+          onValueChange={(v) => onChange({ shadow: v[0] / 100 })}
+          className="flex-1"
+        />
+        <span className="editor-style-val">{Math.round(value.shadow * 100)}%</span>
+      </label>
+      <label className="editor-style-row">
+        <span>Cor</span>
+        <input
+          type="color"
+          className="editor-color-input"
+          value={value.color.toLowerCase()}
+          onChange={(e) => onChange({ color: e.target.value.toUpperCase() })}
+          aria-label="Cor da legenda"
+        />
+        <span className="editor-style-val" style={{ width: "auto" }}>
+          {value.color.toUpperCase()}
+        </span>
+      </label>
+    </div>
+  );
+}
+
 export function ClipEditor({ clipId, title }: { clipId: string; title?: string }) {
   const qc = useQueryClient();
   const router = useRouter();
@@ -140,6 +223,8 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
   const [captionsOn, setCaptionsOn] = useState(true);
   const [captionY, setCaptionY] = useState(SB_DEFAULT_Y);
   const [captionMoved, setCaptionMoved] = useState(false);
+  const [capStyle, setCapStyle] = useState<CapStyle>(SB_STYLE);
+  const [styleChanged, setStyleChanged] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [usingBurned, setUsingBurned] = useState(false);
@@ -176,6 +261,18 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
     } else {
       setCaptionY(SB_DEFAULT_Y);
       setCaptionMoved(false);
+    }
+    if (data.style) {
+      setCapStyle({
+        size: data.style.size ?? SB_STYLE.size,
+        tracking: data.style.tracking ?? SB_STYLE.tracking,
+        color: data.style.color ?? SB_STYLE.color,
+        shadow: data.style.shadow ?? SB_STYLE.shadow,
+      });
+      setStyleChanged(true);
+    } else {
+      setCapStyle(SB_STYLE);
+      setStyleChanged(false);
     }
   }, [data]);
 
@@ -269,6 +366,17 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
     if (!v) return;
     if (v.paused) v.play().catch(() => {});
     else v.pause();
+  }
+
+  function patchStyle(patch: Partial<CapStyle>) {
+    setCapStyle((s) => ({ ...s, ...patch }));
+    setStyleChanged(true);
+    setDirty(true);
+  }
+  function resetStyle() {
+    setCapStyle(SB_STYLE);
+    setStyleChanged(false);
+    setDirty(true);
   }
 
   const r2 = (x: number) => Math.round(x * 100) / 100;
@@ -443,7 +551,7 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
     setSaving(true);
     try {
       const tasks: Promise<unknown>[] = [
-        api.putCaptions(clipId, out, captionMoved ? captionY : null),
+        api.putCaptions(clipId, out, captionMoved ? captionY : null, styleChanged ? capStyle : null),
       ];
       if (music) tasks.push(api.setMusicVolume(clipId, Math.max(0, Math.min(1, volume / 100))));
       await Promise.all(tasks);
@@ -578,6 +686,12 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
                   setDirty(true);
                 }}
               />
+              <StyleControl
+                value={capStyle}
+                changed={styleChanged}
+                onChange={patchStyle}
+                onReset={resetStyle}
+              />
             </div>
 
             <PreviewStage
@@ -585,6 +699,7 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
               src={previewSrc}
               captionText={activeText}
               captionY={captionY}
+              captionStyle={capStyle}
               onChangeY={
                 captionsOn && !usingBurned
                   ? (y) => {
