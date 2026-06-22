@@ -562,11 +562,23 @@ servidor e cai no MESMO pipeline do upload.
   **Deno** em `/usr/local/bin` (runtime JS sandboxed pro desafio do YouTube; node 20 do nvm é velho
   demais, exige >= 23.5). O `opussb.service` enxerga `/usr/local/bin` (PATH padrão do systemd, `.env`
   não seta PATH). Cookies em `/opt/opussb/.youtube_cookies.txt` (600, gitignored).
+  **Provedor de PO token (bgutil):** desde 2026-06-22 o YouTube exige um GVS PO token (sem ele o
+  download dá 403, mesmo com cookies+Deno). Resolvido com o provedor padrão da comunidade: container
+  Docker `brainicism/bgutil-ytdlp-pot-provider` (nome `bgutil-provider`, `-p 127.0.0.1:4416:4416`,
+  `--restart unless-stopped`) + plugin `bgutil-ytdlp-pot-provider==1.3.1` no venv (**as versões do
+  server e do plugin TÊM que casar**). O yt-dlp auto-descobre o provedor em 127.0.0.1:4416 e gera o
+  token (`[pot:bgutil:http] Retrieved a gvs PO Token`). Persiste no boot (docker enabled + restart
+  unless-stopped). Stack completa do YouTube: cookies + Deno (n-sig) + bgutil (PO token) + cópia
+  descartável dos cookies.
 - **Realidade operacional (manutenção):** baixar do YouTube é alvo móvel. (1) O IP de datacenter
   (Hetzner) leva "confirme que não é um robô" de forma INTERMITENTE mesmo com cookies; a maioria passa,
   às vezes falha e o usuário retenta. Blindagem total só com proxy residencial (decisão adiada). (2)
   Os cookies EXPIRAM (reexportar de uma conta Google dedicada de tempos em tempos). (3) `yt-dlp` e o
   Deno precisam de updates conforme o YouTube muda os desafios. (4) Achados da revisão adversarial
-  corrigidos (heartbeat/slot, semáforo de probe, post_live, max-filesize, socket-timeout).
+  corrigidos (heartbeat/slot, semáforo de probe, post_live, max-filesize, socket-timeout). (5) O
+  container `bgutil-provider` (PO token) é mais uma peça que quebra/precisa update quando o YouTube
+  muda; se o download voltar a dar **403**, checar `docker ps` do `bgutil-provider`, atualizar a imagem
+  + o plugin (versões casadas), e reexportar cookies. (6) Bug já corrigido: o yt-dlp REESCREVIA o
+  arquivo `--cookies` e destruía o master (SID/LOGIN_INFO); agora usa cópia descartável (`_cookie_copy_args`).
 - Validado: `test_youtube_helpers` (URL anti-bypass + tradução de erro). E2e do download real (32MB
   em ~3s com cookies+Deno). Deploy: backup + restart `opussb` (active_jobs=0) + build/restart `opussb-web`.
