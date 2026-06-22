@@ -410,6 +410,12 @@ referência 1080x1920 da queima). `lib/types.ts` ganhou `CaptionStyle`; `api.put
 `style`. CSS `.editor-style*` em `brand.css`.
 
 ### Importar do YouTube (`upload-console.tsx`)
+> **STATUS (2026-06-22): DESATIVADO na UI.** O segmento "Link do YouTube" aparece com selo
+> **"Em breve"** e desabilitado (cursor not-allowed), via `const YOUTUBE_ENABLED = false` no topo
+> de `upload-console.tsx`, porque o bloqueio anti-robô do IP de datacenter deixa o download instável
+> (ver BACKEND §17). **Reativar = flip pra `true` + rebuild**; todo o código abaixo e o backend
+> continuam intactos. CSS do estado: `.src-seg-btn:disabled` + `.src-seg-soon` em `brand.css`.
+
 Seletor de fonte **"Enviar arquivo / Link do YouTube"** (segmented control com thumb dourado
 deslizante, `.src-seg*`); modo YouTube troca a dropzone por um campo de link. `api.uploadYoutube`
 (`lib/api.ts`); estado novo **`downloading`** em `JobState` (types) e no `STATUS_LABELS`

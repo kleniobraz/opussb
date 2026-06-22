@@ -536,6 +536,13 @@ clipe, queimados sob demanda. Aditivo, sem mudar o estilo SB padrão de quem nã
 
 ## 17. Importar do YouTube (yt-dlp) (2026-06-22)
 
+> **STATUS: DESATIVADO na UI (2026-06-22).** O front esconde o botão "Link do YouTube" (selo
+> "Em breve", flag `YOUTUBE_ENABLED=false` em `upload-console.tsx`, ver FRONTEND §14) por causa
+> da instabilidade do bloqueio anti-robô do IP de datacenter. O endpoint `/api/upload/youtube`
+> e TODA a stack abaixo (cookies, Deno, bgutil, retry) seguem funcionais e deployados; reativar
+> é só o flip do flag no front + rebuild. Decisão de produto: liberar de novo provavelmente exige
+> um proxy residencial pra confiabilidade.
+
 Além do upload, o usuário cola um link do YouTube (VOD; live em andamento é recusada). Baixa no
 servidor e cai no MESMO pipeline do upload.
 
