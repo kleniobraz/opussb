@@ -121,6 +121,31 @@ def test_captions_roundtrip():
     check(captions.build_ass_from_segments([]) is None, "lista vazia -> None")
 
 
+# ─── 4b. Auto-snap do corte: não terminar/começar no meio da fala ─────────────
+def test_snap_clip_bounds():
+    print("[snap clip bounds]")
+    srt = ("1\n00:00:05,000 --> 00:00:10,000\nPrimeira fala completa aqui.\n\n"
+           "2\n00:00:11,000 --> 00:00:14,000\nSegunda fala curtinha.\n")
+    # Corte termina no MEIO da 1a fala (9s): estende até o fim dela (10s).
+    _s, e = captions.snap_clip_bounds(srt, 5.0, 9.0)
+    check(abs(e - 10.0) < 1e-6, "fim no meio da fala estende até o fim do trecho")
+    # Faltando mais que o teto pra terminar a fala: mantém o corte como veio.
+    _s, e2 = captions.snap_clip_bounds(srt, 5.0, 6.0, max_tail=1.0)
+    check(abs(e2 - 6.0) < 1e-6, "fala longa demais além do teto não estende")
+    # Entrada no MEIO da 2a fala (12s): puxa o início pro começo dela (11s).
+    s3, _e = captions.snap_clip_bounds(srt, 12.0, 13.5, max_head=2.0)
+    check(abs(s3 - 11.0) < 1e-6, "início no meio da fala puxa pro começo do trecho")
+    # Corte em silêncio (gap 10-11s): não mexe no fim.
+    _s, e4 = captions.snap_clip_bounds(srt, 5.0, 10.5)
+    check(abs(e4 - 10.5) < 1e-6, "corte em silêncio não estende")
+    # Sem transcript: devolve os limites originais.
+    s5, e5 = captions.snap_clip_bounds("", 5.0, 9.0)
+    check(abs(s5 - 5.0) < 1e-6 and abs(e5 - 9.0) < 1e-6, "sem transcript mantém os limites")
+    # Bounds inválidos (end <= start): devolve igual, sem quebrar.
+    s6, e6 = captions.snap_clip_bounds(srt, 9.0, 9.0)
+    check(s6 == 9.0 and e6 == 9.0, "intervalo inválido não quebra")
+
+
 # ─── 5. Thumbnail: seleção do melhor clipe + URL no contrato ──────────────────
 def test_thumbnail():
     print("[thumbnail]")
@@ -303,7 +328,7 @@ def test_sessions_extra():
 
 def main():
     for t in (test_burn_cmd, test_validate_segments, test_parse_clips_json,
-              test_captions_roundtrip, test_thumbnail,
+              test_captions_roundtrip, test_snap_clip_bounds, test_thumbnail,
               test_sessions_helpers, test_sessions_ownership, test_sessions_flow,
               test_sessions_extra):
         t()

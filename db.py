@@ -105,6 +105,9 @@ def init_clip_captions() -> None:
                 updated_at TEXT
             )
         """)
+        # Posicao vertical da legenda (fracao 0..1 do centro, do topo). NULL = posicao
+        # padrao do estilo SB (alignment 2 + MARGIN_V). O usuario arrasta no editor.
+        _ensure_column(conn, "clip_captions", "caption_y", "REAL")
 
 
 def init_clip_music() -> None:
@@ -229,6 +232,11 @@ def init_users() -> None:
                 updated_at           TEXT
             )
         """)
+        # Migração aditiva (idempotente). DEFAULT 'active' garante que usuários
+        # legados continuam logando; novos cadastros manuais nascem 'pending'.
+        _ensure_column(conn, "users", "status", "TEXT NOT NULL DEFAULT 'active'")
+        _ensure_column(conn, "users", "is_admin", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "users", "auth_provider", "TEXT")
 
 
 def _now() -> str:
@@ -330,6 +338,25 @@ def set_clip_captions(clip_id: str, segments: str) -> None:
         )
 
 
+def get_clip_caption_y(clip_id: str):
+    """Posição vertical da legenda do clipe (fração 0..1) ou None (= padrão SB)."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT caption_y FROM clip_captions WHERE clip_id = ?", (clip_id,)
+        ).fetchone()
+        return row["caption_y"] if row else None
+
+
+def set_clip_caption_y(clip_id: str, caption_y) -> None:
+    """Grava a posição vertical da legenda (fração 0..1, ou None p/ voltar ao padrão).
+    Só atualiza a coluna (a linha já existe quando há segmentos salvos)."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE clip_captions SET caption_y = ?, updated_at = ? WHERE clip_id = ?",
+            (caption_y, _now(), clip_id),
+        )
+
+
 def get_clip_music(clip_id: str):
     """Devolve {music_key, volume} do clipe, ou None se não houver música."""
     with _conn() as conn:
@@ -416,6 +443,95 @@ def list_users() -> list:
     with _conn() as conn:
         rows = conn.execute(
             "SELECT email, must_change_password, created_at FROM users ORDER BY email"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def create_pending_user(email: str, password_hash: str) -> bool:
+    """Cadastro manual: cria a conta como 'pending' (aguardando aprovação de admin).
+    NÃO mexe em conta já existente — retorna False se o email já está cadastrado."""
+    email = email.strip().lower()
+    with _conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO users (email, password_hash, must_change_password, status, is_admin, auth_provider, created_at, updated_at)
+               VALUES (?, ?, 0, 'pending', 0, 'manual', ?, ?)
+               ON CONFLICT(email) DO NOTHING""",
+            (email, password_hash, _now(), _now()),
+        )
+        return cur.rowcount > 0
+
+
+def upsert_user_oauth(email: str, auth_provider: str = "zoho") -> None:
+    """Login via SSO (Zoho): provisiona como 'active' (auto-aprovado — domínio confiável).
+    Senha fica inutilizável ('!', nunca casa em check_password_hash). Em conflito NÃO mexe
+    em password_hash nem is_admin (preserva break-glass e admin) e PRESERVA status
+    'rejected'/'inactive' — decisão de admin não é revertida por um login Zoho; os demais
+    estados (pending/legado) viram 'active'."""
+    email = email.strip().lower()
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO users (email, password_hash, must_change_password, status, is_admin, auth_provider, created_at, updated_at)
+               VALUES (?, '!', 0, 'active', 0, ?, ?, ?)
+               ON CONFLICT(email) DO UPDATE SET
+                   status = CASE WHEN status IN ('rejected', 'inactive') THEN status ELSE 'active' END,
+                   auth_provider = excluded.auth_provider,
+                   updated_at = excluded.updated_at""",
+            (email, auth_provider, _now(), _now()),
+        )
+
+
+def ensure_admin(email: str) -> None:
+    """Semeia um admin no boot (config ADMIN_EMAILS): garante a linha com is_admin=1 e
+    status='active'. Cria sem senha utilizável se não existir; se existir, só promove
+    (preserva a senha — ele pode também ser o break-glass via manage_users.py)."""
+    email = email.strip().lower()
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO users (email, password_hash, must_change_password, status, is_admin, auth_provider, created_at, updated_at)
+               VALUES (?, '!', 0, 'active', 1, 'bootstrap', ?, ?)
+               ON CONFLICT(email) DO UPDATE SET
+                   is_admin = 1,
+                   status = 'active',
+                   updated_at = excluded.updated_at""",
+            (email, _now(), _now()),
+        )
+
+
+def set_user_status(email: str, status: str) -> None:
+    """Estados: 'active' (loga) | 'pending' | 'rejected' | 'inactive' (não logam)."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE users SET status = ?, updated_at = ? WHERE email = ?",
+            (status, _now(), email.strip().lower()),
+        )
+
+
+def set_user_admin(email: str, is_admin: bool) -> None:
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE users SET is_admin = ?, updated_at = ? WHERE email = ?",
+            (1 if is_admin else 0, _now(), email.strip().lower()),
+        )
+
+
+def count_active_admins() -> int:
+    """Quantos admins ativos existem — usado pra impedir derrubar o último admin."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM users WHERE is_admin = 1 AND status = 'active'"
+        ).fetchone()
+        return row["n"] if row else 0
+
+
+def list_all_users() -> list:
+    """Painel admin: todos os usuários, pendentes primeiro. Sem password_hash."""
+    with _conn() as conn:
+        rows = conn.execute(
+            """SELECT email, status, is_admin, auth_provider, created_at, updated_at
+               FROM users
+               ORDER BY
+                 CASE status WHEN 'pending' THEN 0 WHEN 'active' THEN 1 ELSE 2 END,
+                 email"""
         ).fetchall()
         return [dict(r) for r in rows]
 

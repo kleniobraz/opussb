@@ -6,7 +6,70 @@
   var NS = (window.OpusSB = window.OpusSB || {});
   var ui = NS.ui, api = NS.api, store = NS.store;
 
-  var HEART = '♥', EXPAND = '⤢', COPY = '⧉', DL = '⤓', PLAY = '▶';
+  var HEART = '♥', EXPAND = '⤢', PLAY = '▶';
+  // Ícones Lucide (fill=none + stroke=currentColor herdam a cor do botão; 16px casa
+  // com os labels). Substituem os glifos unicode crus (⤓ ⧉ ✎), que destoavam.
+  function icon(paths) {
+    return '<svg class="ic" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + '</svg>';
+  }
+  var DL = icon('<path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/>');
+  var COPY = icon('<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>');
+  var EDIT = icon('<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>');
+
+  // O vídeo é renderizado sob demanda (a rota /video só faz 302 depois de queimar a
+  // legenda), então o 1o load de cada clipe demora alguns segundos. Este overlay fica
+  // por cima do <video> até ele ficar pronto, pra não parecer travado. Depois é cache.
+  var PREP_OVERLAY = '<div class="clip-prep" aria-hidden="true"><span class="clip-prep-spin"></span><span class="clip-prep-note">preparando legenda…</span></div>';
+
+  // clip.url é rota relativa que exige login (/api/clips/<id>/video). Pra "copiar link"
+  // devolvemos o absoluto; abrir ainda depende de sessão (avisado no toast).
+  function shareableUrl(clip) {
+    var u = (clip && clip.url) || '';
+    if (!u) return '';
+    if (/^https?:\/\//i.test(u)) return u;
+    return location.origin + u;
+  }
+  function copyClipLink(clip) {
+    var u = shareableUrl(clip);
+    if (!u) return;
+    ui.copyToClipboard(u).then(
+      function () { ui.toast('Link copiado — abrir exige login na sua conta.', 'success'); },
+      function () { ui.toast('Não consegui copiar', 'error'); }
+    );
+  }
+
+  // Pós-save: re-renderiza o <video> do card com cache-buster. O backend invalidou o
+  // _cap.mp4; sem isto o card ficaria na versão antiga até um F5. Também reexibe o
+  // overlay "preparando" enquanto a nova versão re-renderiza.
+  function bustClipVideo(clipId) {
+    var cards = document.querySelectorAll('.clip-card');
+    for (var i = 0; i < cards.length; i++) {
+      if (String(cards[i].getAttribute('data-clip-id')) !== String(clipId)) continue;
+      var v = cards[i].querySelector('video');
+      if (!v) return;
+      var src = (v.getAttribute('src') || '').replace(/([?&])t=\d+/, '$1').replace(/[?&]$/, '');
+      if (!src) return;
+      v.src = src + (src.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now();
+      var box = v.closest ? v.closest('.clip-video') : null;
+      if (box) box.classList.remove('is-ready');
+      v.load();
+      return;
+    }
+  }
+
+  // Eventos de mídia não borbulham, então delegamos na fase de captura: assim o
+  // wiring sobrevive ao re-render do grid (filtro/ordenação refazem o innerHTML).
+  // Marca o container com .is-ready quando o vídeo dá pra tocar; remove no "waiting".
+  function wirePrepDelegation(container, sel) {
+    function ready(e) { var c = e.target.closest && e.target.closest(sel); if (c) c.classList.add('is-ready'); }
+    function wait(e) { var c = e.target.closest && e.target.closest(sel); if (c) c.classList.remove('is-ready'); }
+    container.addEventListener('loadedmetadata', ready, true);   // 302 resolveu (burn pronto)
+    container.addEventListener('loadeddata', ready, true);
+    container.addEventListener('canplay', ready, true);
+    container.addEventListener('playing', ready, true);
+    container.addEventListener('error', ready, true);   // em erro, deixa os controls nativos aparecerem
+    container.addEventListener('waiting', wait, true);
+  }
 
   // arrow-burst decorativo (empty de favoritos), cinza + gradiente dourado
   function arrowBurst(gradId, baseFill) {
@@ -66,14 +129,14 @@
     var favBtn = '<button class="clip-fav' + (favOn ? ' is-on' : '') + '" type="button" data-act="fav" title="Favoritar" aria-pressed="' + (favOn ? 'true' : 'false') + '">' + HEART + '</button>';
     var maxBtn = '<button class="clip-max" type="button" data-act="max" title="Abrir" aria-label="Abrir clipe">' + EXPAND + '</button>';
     var media = clip.url
-      ? '<video src="' + safeUrl + '" controls playsinline preload="metadata"></video>'
+      ? '<video src="' + safeUrl + '" controls playsinline preload="metadata"></video>' + PREP_OVERLAY
       : '<div class="clip-ph" data-act="max"><span class="clip-ph-glyph" aria-hidden="true">' + PLAY + '</span><span class="clip-ph-note">prévia no modo demonstração</span></div>';
     var reason = clip.reason ? '<p class="clip-reason">' + ui.escapeHtml(clip.reason) + '</p>' : '';
     var dl = clip.url
-      ? '<a class="clip-download" href="' + safeUrl + '" download>' + DL + ' Baixar</a>'
-      : '<button class="clip-download" type="button" disabled>' + DL + ' Baixar</button>';
+      ? '<a class="clip-download" href="' + safeUrl + '" download>' + DL + 'Baixar</a>'
+      : '<button class="clip-download" type="button" disabled>' + DL + 'Baixar</button>';
     var copy = '<button class="clip-copy" type="button" data-act="copy" title="Copiar link"' + (clip.url ? '' : ' disabled') + '>' + COPY + '</button>';
-    var edit = clip.url ? '<button class="clip-edit" type="button" data-act="edit" title="Editar legenda e música">✎ Editar</button>' : '';
+    var edit = clip.url ? '<button class="clip-edit" type="button" data-act="edit" title="Editar legenda e música" aria-label="Editar legenda e música">' + EDIT + '</button>' : '';
     return '<article class="clip-card" data-clip-id="' + ui.attr(clip.id) + '">' +
         '<div class="clip-video">' + media + badge + dur + favBtn + maxBtn + '</div>' +
         '<div class="clip-body"><h3 class="clip-title">' + title + '</h3>' + reason + '</div>' +
@@ -84,7 +147,7 @@
   // ── Player modal ──────────────────────────────────────────────────────
   function openClipModal(clip) {
     var media = clip.url
-      ? '<video src="' + ui.escapeHtml(clip.url) + '" controls playsinline autoplay></video>'
+      ? '<video src="' + ui.escapeHtml(clip.url) + '" controls playsinline autoplay></video>' + PREP_OVERLAY
       : '<div class="clip-ph clip-ph-lg"><span class="clip-ph-glyph" aria-hidden="true">' + PLAY + '</span><span class="clip-ph-note">Prévia indisponível no modo demonstração</span></div>';
     var badge = clip.score != null ? '<span class="score-badge ' + ui.scoreClass(clip.score) + '">' + ui.fmtScore(clip.score) + '</span>' : '';
     var title = clip.title ? ui.escapeHtml(clip.title) : ('Clipe ' + ((clip.index || 0) + 1));
@@ -96,18 +159,20 @@
         '<div class="clipmodal-head"><h3 class="modal-title">' + title + '</h3>' + badge + '</div>' +
         reason +
         '<div class="clipmodal-actions">' +
-          (clip.url ? '<a class="btn btn-gold" href="' + ui.escapeHtml(clip.url) + '" download>' + DL + ' Baixar</a>' : '<button class="btn btn-gold" disabled>' + DL + ' Baixar</button>') +
-          '<button class="btn btn-ghost" data-act="copy"' + (clip.url ? '' : ' disabled') + '>' + COPY + ' Copiar link</button>' +
+          (clip.url ? '<a class="btn btn-gold" href="' + ui.escapeHtml(clip.url) + '" download>' + DL + 'Baixar</a>' : '<button class="btn btn-gold" disabled>' + DL + 'Baixar</button>') +
+          '<button class="btn btn-ghost" data-act="copy"' + (clip.url ? '' : ' disabled') + '>' + COPY + 'Copiar link</button>' +
           '<button class="btn btn-ghost clip-fav-btn' + (favOn ? ' is-on' : '') + '" data-act="fav">' + HEART + ' ' + (favOn ? 'Favorito' : 'Favoritar') + '</button>' +
         '</div>' +
       '</div></div>';
     ui.modalOpen(html, { cardClass: 'modal-clip' });
     var root = document.getElementById('modal-root');
     if (!root) return;
+    if (clip.url) {
+      var vbox = root.querySelector('.clipmodal-video');
+      if (vbox) wirePrepDelegation(vbox, '.clipmodal-video');
+    }
     var copyBtn = root.querySelector('[data-act="copy"]');
-    if (copyBtn && clip.url) copyBtn.addEventListener('click', function () {
-      ui.copyToClipboard(clip.url).then(function () { ui.toast('Link copiado', 'success'); }, function () { ui.toast('Não consegui copiar', 'error'); });
-    });
+    if (copyBtn && clip.url) copyBtn.addEventListener('click', function () { copyClipLink(clip); });
     var favBtn = root.querySelector('[data-act="fav"]');
     if (favBtn) favBtn.addEventListener('click', function () {
       var now = toggleFavorite(clip); clip.favorite = now;
@@ -140,7 +205,7 @@
     }
     return head +
       '<label class="btn btn-ghost btn-sm editor-music-add">+ Adicionar música' +
-        '<input type="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg" data-music-file hidden></label>' +
+        '<input type="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg" data-music-file></label>' +
       '<p class="editor-hint">mp3, m4a, aac, wav ou ogg. Entra de fundo, em loop, abaixo da fala.</p>';
   }
 
@@ -174,7 +239,7 @@
     var previewUrl = clip.url ? (clip.url + (clip.url.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now()) : '';
     body.innerHTML = '<div class="editor">' +
       '<h3 class="modal-title">Editar clipe</h3>' +
-      (previewUrl ? '<div class="editor-preview"><video src="' + ui.escapeHtml(previewUrl) + '" controls playsinline preload="metadata"></video></div>' : '') +
+      (previewUrl ? '<div class="editor-preview"><video src="' + ui.escapeHtml(previewUrl) + '" controls playsinline preload="metadata"></video>' + PREP_OVERLAY + '</div>' : '') +
       '<div class="editor-section">' +
         '<div class="editor-sec-head"><strong>Legenda</strong>' +
           '<button class="btn btn-ghost btn-sm" type="button" data-act="add-seg">+ Linha</button></div>' +
@@ -189,6 +254,8 @@
 
     var segsBox = body.querySelector('[data-segs]');
     var musicSec = body.querySelector('[data-music-sec]');
+    var prevBox = body.querySelector('.editor-preview');
+    if (prevBox) wirePrepDelegation(prevBox, '.editor-preview');
 
     body.querySelector('[data-act="add-seg"]').addEventListener('click', function () {
       segsBox.insertAdjacentHTML('beforeend', segRowHtml({ start: 0, end: 2, text: '' }));
@@ -241,6 +308,7 @@
       Promise.all(tasks).then(function () {
         ui.toast('Salvo! O vídeo re-renderiza no próximo play.', 'success');
         ui.modalClose();
+        bustClipVideo(clip.id);   // reflete a nova versão no card sem F5
       }, function (er) {
         saveBtn.disabled = false;
         ui.toast((er && er.message) || 'Falha ao salvar.', 'error');
@@ -280,6 +348,7 @@
       '<div class="clips-grid" data-grid></div>';
 
     var grid = container.querySelector('[data-grid]');
+    wirePrepDelegation(grid, '.clip-video');
 
     function apply() {
       var list = clips.slice();
@@ -337,7 +406,7 @@
         actEl.setAttribute('aria-pressed', now ? 'true' : 'false');
       } else if (act === 'copy') {
         e.preventDefault();
-        if (clip.url) ui.copyToClipboard(clip.url).then(function () { ui.toast('Link copiado', 'success'); }, function () { ui.toast('Não consegui copiar', 'error'); });
+        if (clip.url) copyClipLink(clip);
       } else if (act === 'edit') {
         e.preventDefault();
         openEditorModal(clip);
@@ -349,17 +418,77 @@
   }
 
   // ── Cards de projeto ──────────────────────────────────────────────────
-  function projectCard(p) {
+  // O backend não gera thumbnail (thumbnail_url sempre null), então a capa seria um
+  // retângulo cinza idêntico em todo card. No lugar, geramos uma capa por projeto:
+  // hash do id -> matiz do brilho + uma "assinatura de onda" única. Vira identidade
+  // visual sem depender de imagem.
+  function hashStr(s) {
+    var h = 2166136261; s = String(s || '');
+    for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = (h * 16777619) >>> 0; }
+    return h >>> 0;
+  }
+  function projectWave(seed) {
+    var n = 32, bars = '', h = seed || 1;
+    for (var i = 0; i < n; i++) {
+      h = (h * 1103515245 + 12345) >>> 0;
+      var amp = 0.16 + (h % 1000) / 1000 * 0.84;          // 0.16..1.0
+      var bh = Math.max(2, Math.round(amp * 46));
+      var y = ((60 - bh) / 2).toFixed(1);
+      bars += '<rect x="' + (4 + i * 6) + '" y="' + y + '" width="3" height="' + bh + '" rx="1.5"/>';
+    }
+    return '<svg class="project-wave" viewBox="0 0 200 60" preserveAspectRatio="none" aria-hidden="true">' + bars + '</svg>';
+  }
+  function projectPill(p) {
+    if (p.status === 'processing') return '<span class="project-pill is-proc"><span class="pill-dot"></span>processando</span>';
+    if (p.status === 'error') return '<span class="project-pill is-err">falhou</span>';
+    if (p.clip_count != null) return '<span class="project-pill">' + PLAY + ' ' + p.clip_count + ' ' + (p.clip_count === 1 ? 'clipe' : 'clipes') + '</span>';
+    return '';
+  }
+  function projectCover(p) {
     var avg = p.avg_score != null ? '<span class="score-badge ' + ui.scoreClass(p.avg_score) + '">' + ui.fmtScore(p.avg_score) + '</span>' : '';
-    var thumb = p.thumbnail_url
-      ? '<img class="project-thumb-img" src="' + ui.attr(p.thumbnail_url) + '" alt="">'
-      : '<span class="project-thumb-mark" aria-hidden="true">OpusSB</span>';
-    var meta = (p.clip_count != null ? p.clip_count + ' clipes · ' : '') + ui.timeAgo(p.created_at);
+    var pill = projectPill(p);
+    if (p.thumbnail_url) {
+      return '<div class="project-thumb"><img class="project-thumb-img" src="' + ui.attr(p.thumbnail_url) + '" alt="">' + avg + pill + '</div>';
+    }
+    var seed = hashStr(p.id || p.title || p.filename);
+    var hue = seed % 360, hue2 = (hue + 38) % 360;
+    var bg = 'background:' +
+      'radial-gradient(115% 120% at 82% 12%, hsla(' + hue + ',62%,56%,0.20), transparent 58%),' +
+      'radial-gradient(120% 120% at 12% 92%, hsla(' + hue2 + ',55%,50%,0.13), transparent 55%),' +
+      'linear-gradient(150deg,#17171b,#0f1012)';
+    return '<div class="project-thumb project-thumb-gen" style="' + bg + '">' +
+      projectWave(seed) +
+      '<span class="project-mark-sm" aria-hidden="true">OpusSB</span>' +
+      avg + pill +
+    '</div>';
+  }
+  function projectCard(p) {
     return '<a class="project-card" href="#/projetos/' + ui.attr(p.id) + '">' +
-      '<div class="project-thumb">' + thumb + avg + '</div>' +
-      '<div class="project-body"><p class="project-title">' + ui.escapeHtml(p.title || p.filename || 'Projeto') + '</p>' +
-      '<p class="project-meta">' + ui.escapeHtml(meta) + '</p></div>' +
+      projectCover(p) +
+      '<div class="project-body">' +
+        '<p class="project-title">' + ui.escapeHtml(p.title || p.filename || 'Projeto') + '</p>' +
+        '<p class="project-meta">' + ui.escapeHtml(ui.timeAgo(p.created_at)) + '</p>' +
+        '<span class="project-open">Abrir <span aria-hidden="true">→</span></span>' +
+      '</div>' +
     '</a>';
+  }
+
+  // Reel de mini-capas generativas (mesma linguagem dos project cards, em dourado)
+  // preenchendo a área antes vazia do card em destaque. O nº de tiles reflete a
+  // contagem de clipes do projeto (2–4).
+  function featuredReel(p) {
+    var n = Math.max(2, Math.min(p.clip_count || 3, 4));
+    var tiles = '';
+    for (var i = 0; i < n; i++) {
+      var seed = hashStr((p.id || 'p') + ':' + i);
+      var hue = seed % 360, hue2 = (hue + 38) % 360;
+      var bg = 'background:' +
+        'radial-gradient(120% 90% at 50% 12%, hsla(' + hue + ',62%,56%,0.22), transparent 60%),' +
+        'radial-gradient(120% 120% at 12% 92%, hsla(' + hue2 + ',55%,50%,0.13), transparent 55%),' +
+        'linear-gradient(150deg,#17171b,#0f1012)';
+      tiles += '<div class="featured-tile" style="' + bg + '">' + projectWave(seed) + '</div>';
+    }
+    return '<div class="featured-reel">' + tiles + '</div>';
   }
 
   // Card "featured" (último projeto, em destaque)
@@ -371,47 +500,67 @@
     var href = '#/projetos/' + ui.attr(p.id);
     var thumb = p.thumbnail_url
       ? '<img class="project-thumb-img" src="' + ui.attr(p.thumbnail_url) + '" alt="">'
-      : '<span class="featured-mark" aria-hidden="true">OpusSB</span>';
+      : featuredReel(p);
     return '<div class="featured-card">' +
       '<a class="featured-thumb" href="' + href + '">' + thumb + '<span class="featured-tag">Último projeto</span></a>' +
       '<div class="featured-body">' +
         '<div class="featured-score-row"><span class="featured-score" style="color:' + scoreColor + '">' + score + '</span><span class="featured-score-label">nota média dos clipes</span></div>' +
         '<div class="featured-title">' + ui.escapeHtml(p.title || p.filename || 'Projeto') + '</div>' +
         '<div class="featured-meta">' + ui.escapeHtml(meta) + '</div>' +
-        '<a class="btn btn-ghost" href="' + href + '">Abrir projeto →</a>' +
+        '<a class="btn btn-gold" href="' + href + '">Abrir projeto →</a>' +
       '</div></div>';
   }
 
   // ── Dashboard / Início ────────────────────────────────────────────────
-  function statsHtml(s) {
-    function card(label, value) { return '<div class="stat-card"><p class="stat-value">' + value + '</p><p class="stat-label">' + label + '</p></div>'; }
-    return '<div class="stats-grid">' +
-      card('Vídeos processados', s.videos_processed != null ? s.videos_processed : '—') +
-      card('Clipes gerados', s.clips_generated != null ? s.clips_generated : '—') +
-      card('Nota média', s.avg_score != null ? ui.fmtScore(s.avg_score) : '—') +
-      card('Em processamento', s.processing_count != null ? s.processing_count : '0') +
-    '</div>';
+  // Ícones + card de estatística. Usados na aba Config › Conta (produção da conta).
+  var STAT_ICONS = {
+    videos: icon('<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/><path d="M17 7.5h4"/><path d="M17 16.5h4"/>'),
+    clips: icon('<circle cx="6" cy="6" r="3"/><path d="M8.12 8.12 12 12"/><path d="M20 4 8.12 15.88"/><circle cx="6" cy="18" r="3"/><path d="M14.8 14.8 20 20"/>'),
+    star: icon('<path d="M11.5 2.6a.5.5 0 0 1 .95 0l2.3 4.66 5.15.75a.53.53 0 0 1 .3.9l-3.73 3.64.88 5.12a.53.53 0 0 1-.77.56L12 16.4l-4.6 2.42a.53.53 0 0 1-.77-.56l.88-5.12-3.73-3.64a.53.53 0 0 1 .3-.9l5.15-.75z"/>')
+  };
+  function statCardHtml(ic, label, num, opts) {
+    opts = opts || {};
+    var disc = '<span class="stat-ic' + (opts.accent ? ' is-gold' : '') + '" aria-hidden="true">' + ic + '</span>';
+    if (num == null) return '<div class="stat-card">' + disc + '<p class="stat-value">—</p><p class="stat-label">' + label + '</p></div>';
+    var disp = opts.decimals ? ui.fmtScore(num) : String(num);
+    return '<div class="stat-card">' + disc +
+      '<p class="stat-value' + (opts.accent ? ' is-gold' : '') + '" data-count="' + num + '"' + (opts.decimals ? ' data-decimals="1"' : '') + '>' + disp + '</p>' +
+      '<p class="stat-label">' + label + '</p></div>';
+  }
+  // Contador animado (0 → valor).
+  function countUpStats(root) {
+    var els = root.querySelectorAll('.stat-value[data-count]');
+    Array.prototype.forEach.call(els, function (el) {
+      var target = parseFloat(el.getAttribute('data-count'));
+      if (isNaN(target)) return;
+      var dec = el.getAttribute('data-decimals') ? 1 : 0, dur = 1000, t0 = null;
+      function fmt(v) { return dec ? v.toFixed(1) : String(Math.round(v)); }
+      function step(ts) {
+        if (t0 === null) t0 = ts;
+        var p = Math.min(1, (ts - t0) / dur), e = 1 - Math.pow(1 - p, 3);
+        el.textContent = fmt(target * e);
+        if (p < 1) requestAnimationFrame(step); else el.textContent = fmt(target);
+      }
+      el.textContent = fmt(0);
+      requestAnimationFrame(step);
+    });
   }
   function renderHome() {
-    var statsEl = document.getElementById('home-stats');
     var recentEl = document.getElementById('home-recent');
-    if (statsEl) statsEl.innerHTML = ui.skeletonGrid(4, 'skel-stat');
     if (recentEl) recentEl.innerHTML = '';
     if (!api) return;
+    // getStats ainda alimenta o "Recentes" (s.recent); os números de produção foram
+    // pro Config › Conta (faziam sentido como dado de conta, não como vitrine na Home).
     api.getStats().then(function (s) {
-      if (!s) { if (statsEl) statsEl.innerHTML = ''; return; }
-      if (statsEl) statsEl.innerHTML = statsHtml(s);
-      if (recentEl) {
-        var recent = s.recent || [];
-        if (!recent.length) { recentEl.innerHTML = ''; return; }
-        var head = '<div class="section-head"><div><p class="eyebrow">Recentes</p><h2 class="results-title">Seus projetos</h2></div><a class="link-gold" href="#/projetos">Ver todos →</a></div>';
-        var rest = recent.slice(1);
-        var grid = rest.length ? '<div class="projects-grid">' + rest.map(projectCard).join('') + '</div>' : '';
-        recentEl.innerHTML = head + featuredCard(recent[0]) + grid;
-      }
+      if (!s || !recentEl) return;
+      var recent = s.recent || [];
+      if (!recent.length) { recentEl.innerHTML = ''; return; }
+      var head = '<div class="section-head"><div><p class="eyebrow">Recentes</p><h2 class="results-title">Seus projetos</h2></div><a class="link-gold" href="#/projetos">Ver todos →</a></div>';
+      var rest = recent.slice(1);
+      var grid = rest.length ? '<div class="projects-grid">' + rest.map(projectCard).join('') + '</div>' : '';
+      recentEl.innerHTML = head + featuredCard(recent[0]) + grid;
     }, function (e) {
       if (e && e.status === 401) { if (NS.core) NS.core.requireAuth(); return; }
-      if (statsEl) statsEl.innerHTML = '';
     });
   }
 
@@ -435,8 +584,10 @@
       }
       function chip(key, label) { return '<button class="chip' + (projSort === key ? ' is-active' : '') + '" type="button" data-projsort="' + key + '">' + label + '</button>'; }
       function draw() {
-        el.innerHTML = '<div class="clip-bands" style="margin-bottom:24px;">' +
-          chip('all', 'Todos · ' + list.length) + chip('score', 'Melhores notas') + chip('recent', 'Mais recentes') + '</div>' +
+        el.innerHTML = '<div class="projects-toolbar">' +
+            '<span class="projects-count">' + list.length + ' projeto' + (list.length === 1 ? '' : 's') + '</span>' +
+            '<div class="clip-bands">' + chip('all', 'Todos') + chip('score', 'Melhores notas') + chip('recent', 'Mais recentes') + '</div>' +
+          '</div>' +
           '<div class="projects-grid">' + sorted().map(projectCard).join('') + '</div>';
         var chips = el.querySelectorAll('[data-projsort]');
         Array.prototype.forEach.call(chips, function (c) {
@@ -457,7 +608,7 @@
       '<div class="section-head"><div><p class="eyebrow">Projeto</p><h2 class="results-title">' + ui.escapeHtml(p.title || p.filename || 'Projeto') + '</h2>' +
       '<p class="project-meta">' + ui.escapeHtml(meta) + '</p></div>' +
       '<div class="head-actions">' +
-        '<button class="btn btn-gold" type="button" data-act="dlall">' + DL + ' Baixar todos</button>' +
+        '<button class="btn btn-gold" type="button" data-act="dlall">' + DL + 'Baixar todos</button>' +
         '<button class="btn btn-ghost" type="button" data-act="reprocess">↻ Reprocessar</button>' +
         '<button class="btn btn-danger" type="button" data-act="delete">Excluir</button>' +
       '</div></div>';
@@ -568,6 +719,75 @@
   }
 
   // ── Configurações ─────────────────────────────────────────────────────
+  // ── Segurança › Sessões ativas ────────────────────────────────────────
+  function parseUA() {
+    var ua = navigator.userAgent || '';
+    var browser = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Firefox\//.test(ua) ? 'Firefox'
+      : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : 'Navegador';
+    var os = /Windows/.test(ua) ? 'Windows' : /(Macintosh|Mac OS X)/.test(ua) ? 'macOS' : /Android/.test(ua) ? 'Android'
+      : /(iPhone|iPad|iPod)/.test(ua) ? 'iOS' : /Linux/.test(ua) ? 'Linux' : '';
+    return { browser: browser, os: os };
+  }
+  function deviceIcon(os) {
+    var mobile = /iOS|Android/i.test(os || '');
+    return mobile
+      ? icon('<rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/>')
+      : icon('<rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/>');
+  }
+  function sessionRowHtml(s) {
+    var dev = ui.escapeHtml((s.browser || 'Navegador') + (s.os ? ' · ' + s.os : ''));
+    var meta = ui.escapeHtml([s.location, s.last_active].filter(Boolean).join(' · '));
+    var right = s.current
+      ? '<span class="session-current">esta sessão</span>'
+      : '<button class="btn btn-ghost btn-sm" type="button" data-act="revoke" data-id="' + ui.attr(s.id || '') + '">Encerrar</button>';
+    return '<div class="session-row"><span class="session-ic" aria-hidden="true">' + deviceIcon(s.os) + '</span>' +
+      '<div class="session-info"><p class="session-dev">' + dev + '</p>' + (meta ? '<p class="session-meta">' + meta + '</p>' : '') + '</div>' +
+      right + '</div>';
+  }
+  function currentSession() { var u = parseUA(); return { current: true, browser: u.browser, os: u.os, last_active: 'agora' }; }
+  function loadSessions(container) {
+    if (!container || container.dataset.loaded) return;
+    container.dataset.loaded = '1';
+    container.innerHTML = '<div class="skel" style="height:56px;margin-bottom:8px"></div><div class="skel" style="height:56px"></div>';
+    api.getSessions().then(function (res) {
+      var list = (res && res.sessions && res.sessions.length) ? res.sessions : [currentSession()];
+      container.innerHTML = list.map(sessionRowHtml).join('');
+    }, function (e) {
+      if (e && e.status === 401) { if (NS.core) NS.core.requireAuth(); return; }
+      // backend ainda não tem a rota: mostra só a sessão atual (real) + nota honesta
+      container.innerHTML = sessionRowHtml(currentSession()) +
+        '<p class="editor-hint">Outros dispositivos aparecem aqui quando o backend implementar <code>GET /api/sessions</code>.</p>';
+      container.dataset.loaded = '';   // permite retry numa próxima abertura da aba
+    });
+  }
+
+  // Aba Conta: email da conta + "Sua produção" (os números que saíram da Home).
+  function loadAccount(emailEl, statsBox) {
+    if (emailEl && emailEl.textContent === '—') {
+      var ue = document.getElementById('user-email');
+      var em = ue && ue.textContent ? ue.textContent : '';
+      if (em) emailEl.textContent = em;
+      else if (api.me) api.me().then(function (m) { if (m && m.email) emailEl.textContent = m.email; }, function () {});
+    }
+    if (!statsBox || statsBox.dataset.loaded) return;
+    statsBox.dataset.loaded = '1';
+    statsBox.innerHTML = '<div class="skel" style="height:78px"></div>';
+    api.getStats().then(function (s) {
+      if (!s) { statsBox.innerHTML = ''; statsBox.dataset.loaded = ''; return; }
+      statsBox.innerHTML = '<div class="stats-grid">' +
+        statCardHtml(STAT_ICONS.videos, 'Vídeos processados', s.videos_processed != null ? s.videos_processed : null) +
+        statCardHtml(STAT_ICONS.clips, 'Clipes gerados', s.clips_generated != null ? s.clips_generated : null) +
+        statCardHtml(STAT_ICONS.star, 'Nota média', s.avg_score != null ? s.avg_score : null, { decimals: true, accent: true }) +
+      '</div>';
+      var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (!reduce) countUpStats(statsBox);
+    }, function (e) {
+      if (e && e.status === 401) { if (NS.core) NS.core.requireAuth(); return; }
+      statsBox.innerHTML = '<p class="editor-hint">Não consegui carregar agora.</p>';
+      statsBox.dataset.loaded = '';
+    });
+  }
+
   function configHtml(p) {
     function opt(v, l, sel) { return '<option value="' + v + '"' + (sel ? ' selected' : '') + '>' + l + '</option>'; }
     var langs = [['pt', 'Português'], ['en', 'Inglês'], ['es', 'Espanhol'], ['auto', 'Detectar automaticamente']];
@@ -575,30 +795,48 @@
     var aspects = [['9:16', '9:16 (Reels/Shorts/TikTok)'], ['1:1', '1:1 (Feed)'], ['16:9', '16:9 (YouTube)']];
     var aspectOpts = aspects.map(function (x) { return opt(x[0], x[1], p.aspect === x[0]); }).join('');
     return '<div class="config-layout">' +
-      '<div class="config-subnav">' +
-        '<div class="config-subnav-item is-active">Padrões de clipe</div>' +
-        '<div class="config-subnav-item">Segurança</div>' +
-        '<div class="config-subnav-item">Conta e equipe</div>' +
+      '<div class="config-subnav" data-subnav>' +
+        '<button class="config-subnav-item is-active" type="button" data-tab="prefs">Padrões de clipe</button>' +
+        '<button class="config-subnav-item" type="button" data-tab="security">Segurança</button>' +
+        '<button class="config-subnav-item" type="button" data-tab="account">Conta e equipe</button>' +
       '</div>' +
       '<div class="config-cards">' +
-      '<section class="card-block"><p class="eyebrow">Preferências de geração</p><h2 class="results-title">Padrões de clipe</h2>' +
-        '<div class="field row"><div><label for="cfg-min">Duração mínima (s)</label><input type="number" id="cfg-min" value="' + p.defaultMin + '" min="5" max="300"></div>' +
-        '<div><label for="cfg-max">Duração máxima (s)</label><input type="number" id="cfg-max" value="' + p.defaultMax + '" min="10" max="600"></div></div>' +
-        '<div class="field"><label for="cfg-aspect">Formato padrão</label><select id="cfg-aspect">' + aspectOpts + '</select></div>' +
-        '<div class="field"><label for="cfg-lang">Idioma da transcrição</label><select id="cfg-lang">' + langOpts + '</select></div>' +
-        '<label class="switch"><input type="checkbox" id="cfg-cap" ' + (p.captions ? 'checked' : '') + '><span>Gerar legendas por padrão</span></label>' +
-        '<label class="switch"><input type="checkbox" id="cfg-autoplay" ' + (p.autoplayPreview ? 'checked' : '') + '><span>Tocar prévia automaticamente</span></label>' +
-        '<button class="btn btn-gold" id="cfg-save" type="button">Salvar preferências</button>' +
-      '</section>' +
-      '<section class="card-block"><p class="eyebrow">Segurança</p><h2 class="results-title">Trocar senha</h2>' +
-        '<form id="cfg-pass-form">' +
-          '<div class="field"><label for="cfg-cur">Senha atual</label><input type="password" id="cfg-cur" autocomplete="current-password" required></div>' +
-          '<div class="field"><label for="cfg-new">Nova senha (mín. 8)</label><input type="password" id="cfg-new" autocomplete="new-password" minlength="8" required></div>' +
-          '<div class="field"><label for="cfg-new2">Repita a nova senha</label><input type="password" id="cfg-new2" autocomplete="new-password" minlength="8" required></div>' +
-          '<button class="btn btn-gold btn-block" type="submit">Salvar nova senha</button>' +
-          '<div id="cfg-pass-error" class="error hidden"></div>' +
-        '</form>' +
-      '</section>' +
+      '<div class="config-panel" data-panel="prefs">' +
+        '<section class="card-block"><p class="eyebrow">Preferências de geração</p><h2 class="results-title">Padrões de clipe</h2>' +
+          '<div class="field row"><div><label for="cfg-min">Duração mínima (s)</label><input type="number" id="cfg-min" value="' + p.defaultMin + '" min="5" max="300"></div>' +
+          '<div><label for="cfg-max">Duração máxima (s)</label><input type="number" id="cfg-max" value="' + p.defaultMax + '" min="10" max="600"></div></div>' +
+          '<div class="field"><label for="cfg-aspect">Formato padrão</label><select id="cfg-aspect">' + aspectOpts + '</select></div>' +
+          '<div class="field"><label for="cfg-lang">Idioma da transcrição</label><select id="cfg-lang">' + langOpts + '</select></div>' +
+          '<label class="switch"><input type="checkbox" id="cfg-cap" ' + (p.captions ? 'checked' : '') + '><span>Gerar legendas por padrão</span></label>' +
+          '<label class="switch"><input type="checkbox" id="cfg-autoplay" ' + (p.autoplayPreview ? 'checked' : '') + '><span>Tocar prévia automaticamente</span></label>' +
+          '<button class="btn btn-gold" id="cfg-save" type="button">Salvar preferências</button>' +
+        '</section>' +
+      '</div>' +
+      '<div class="config-panel hidden" data-panel="security">' +
+        '<section class="card-block"><p class="eyebrow">Segurança</p><h2 class="results-title">Trocar senha</h2>' +
+          '<form id="cfg-pass-form">' +
+            '<div class="field"><label for="cfg-cur">Senha atual</label><input type="password" id="cfg-cur" autocomplete="current-password" required></div>' +
+            '<div class="field"><label for="cfg-new">Nova senha (mín. 8)</label><input type="password" id="cfg-new" autocomplete="new-password" minlength="8" required></div>' +
+            '<div class="field"><label for="cfg-new2">Repita a nova senha</label><input type="password" id="cfg-new2" autocomplete="new-password" minlength="8" required></div>' +
+            '<button class="btn btn-gold btn-block" type="submit">Salvar nova senha</button>' +
+            '<div id="cfg-pass-error" class="error hidden"></div>' +
+          '</form>' +
+        '</section>' +
+        '<section class="card-block"><p class="eyebrow">Segurança</p><h2 class="results-title">Sessões ativas</h2>' +
+          '<p class="modal-text">Onde sua conta está conectada. Encerre qualquer sessão que você não reconhece.</p>' +
+          '<div class="sessions" data-sessions></div>' +
+          '<button class="btn btn-ghost" type="button" data-act="revoke-all">Sair de todos os outros dispositivos</button>' +
+        '</section>' +
+      '</div>' +
+      '<div class="config-panel hidden" data-panel="account">' +
+        '<section class="card-block"><p class="eyebrow">Conta</p><h2 class="results-title">Sua conta</h2>' +
+          '<p class="account-email" data-account-email>—</p>' +
+          '<p class="eyebrow account-prod-eyebrow">Sua produção</p>' +
+          '<div class="account-stats" data-account-stats></div>' +
+        '</section>' +
+        '<section class="card-block"><p class="eyebrow">Equipe</p><h2 class="results-title">Equipe</h2>' +
+          '<p class="modal-text">Em breve: convidar membros e definir papéis.</p></section>' +
+      '</div>' +
       '</div>' +
     '</div>';
   }
@@ -631,6 +869,46 @@
       if (n1 !== n2) { showErr('As senhas novas não coincidem.'); return; }
       if (n1.length < 8) { showErr('A nova senha precisa ter ao menos 8 caracteres.'); return; }
       api.changePassword(cur, n1).then(function () { ui.toast('Senha alterada', 'success'); form.reset(); }, function (ex) { showErr((ex && ex.message) || 'Falha ao trocar a senha.'); });
+    });
+
+    // Abas da subnav (antes eram decorativas): troca o painel visível.
+    var body = document.getElementById('config-body');
+    var subnav = body && body.querySelector('[data-subnav]');
+    var panels = body ? body.querySelectorAll('[data-panel]') : [];
+    var sessionsBox = body && body.querySelector('[data-sessions]');
+    function showTab(tab) {
+      if (subnav) Array.prototype.forEach.call(subnav.querySelectorAll('[data-tab]'), function (it) {
+        it.classList.toggle('is-active', it.getAttribute('data-tab') === tab);
+      });
+      Array.prototype.forEach.call(panels, function (pn) {
+        pn.classList.toggle('hidden', pn.getAttribute('data-panel') !== tab);
+      });
+      if (tab === 'security') loadSessions(sessionsBox);
+      if (tab === 'account') loadAccount(body.querySelector('[data-account-email]'), body.querySelector('[data-account-stats]'));
+    }
+    if (subnav) subnav.addEventListener('click', function (e) {
+      var it = e.target.closest ? e.target.closest('[data-tab]') : null;
+      if (it) showTab(it.getAttribute('data-tab'));
+    });
+
+    // Sessões: encerrar uma (delegação) e sair de todas as outras.
+    if (sessionsBox) sessionsBox.addEventListener('click', function (e) {
+      var b = e.target.closest ? e.target.closest('[data-act="revoke"]') : null;
+      if (!b) return;
+      api.revokeSession(b.getAttribute('data-id')).then(function () {
+        var row = b.closest('.session-row'); if (row) row.parentNode.removeChild(row);
+        ui.toast('Sessão encerrada', 'success');
+      }, function () { ui.toast('Encerrar sessão aguarda o backend (DELETE /api/sessions/:id).', 'info', { ttl: 6000 }); });
+    });
+    var revAll = body && body.querySelector('[data-act="revoke-all"]');
+    if (revAll) revAll.addEventListener('click', function () {
+      ui.confirm({ title: 'Sair dos outros dispositivos?', message: 'As outras sessões serão encerradas. Esta continua ativa.', okLabel: 'Sair das outras' }).then(function (yes) {
+        if (!yes) return;
+        api.revokeAllSessions().then(function () {
+          ui.toast('Outras sessões encerradas', 'success');
+          if (sessionsBox) { sessionsBox.dataset.loaded = ''; loadSessions(sessionsBox); }
+        }, function () { ui.toast('Sair de todos aguarda o backend (POST /api/sessions/revoke_all).', 'info', { ttl: 6000 }); });
+      });
     });
   }
   function renderConfig() {

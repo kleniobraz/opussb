@@ -1,6 +1,6 @@
 /* OpusSB · howit.js
-   Anima a faixa "Como funciona" (.howb): destaca um passo por vez, em loop.
-   Autoiniciável, idempotente, respeita prefers-reduced-motion. */
+   Faixa "Como funciona" (.howb): entra no scroll (bloco sobe) e então destaca um
+   passo por vez, em loop. Autoiniciável, idempotente, respeita prefers-reduced-motion. */
 (function () {
   'use strict';
 
@@ -10,8 +10,12 @@
     var steps = Array.prototype.slice.call(root.querySelectorAll('.howb-step'));
     if (!steps.length) return;
 
-    var n = steps.length, STEP_MS = 1100, HOLD_MS = 1100, current = 0;
     var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduce) return;  // cards estáticos e visíveis; sem entrada nem loop
+
+    root.classList.add('howb--reveal');   // esconde o bloco até a entrada (CSS)
+
+    var n = steps.length, STEP_MS = 1100, HOLD_MS = 1100, current = 0, started = false;
 
     function paint() {
       for (var i = 0; i < steps.length; i++) {
@@ -19,8 +23,6 @@
         else steps[i].classList.remove('is-active');
       }
     }
-    if (reduce) return; // cards estáticos já estilizados; sem animação
-
     function advance() {
       if (current < n - 1) {
         current++; paint(); setTimeout(advance, STEP_MS);
@@ -28,8 +30,21 @@
         setTimeout(function () { current = 0; paint(); setTimeout(advance, STEP_MS); }, HOLD_MS);
       }
     }
-    paint();
-    setTimeout(advance, STEP_MS);
+    function start() {
+      if (started) return;
+      started = true;
+      root.classList.add('howb--in');                 // dispara a entrada do bloco (CSS)
+      // O loop de destaque começa depois da entrada terminar.
+      setTimeout(function () { paint(); setTimeout(advance, STEP_MS); }, 750);
+    }
+
+    if (typeof IntersectionObserver === 'undefined') { start(); return; }
+    var io = new IntersectionObserver(function (entries) {
+      for (var i = 0; i < entries.length; i++) {
+        if (entries[i].isIntersecting) { start(); io.disconnect(); break; }
+      }
+    }, { threshold: 0.25 });
+    io.observe(root);
   }
 
   function boot() {

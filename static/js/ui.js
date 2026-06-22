@@ -54,7 +54,8 @@
     var el = document.createElement('div');
     el.className = 'toast toast-' + (type || 'info');
     el.setAttribute('role', 'status');
-    el.innerHTML = '<span class="toast-msg">' + escapeHtml(message) + '</span>';
+    var ic = { success: '✓', error: '!', info: 'i' }[type || 'info'] || 'i';
+    el.innerHTML = '<span class="toast-ic" aria-hidden="true">' + ic + '</span><span class="toast-msg">' + escapeHtml(message) + '</span>';
     if (opts.actionLabel) {
       var b = document.createElement('button');
       b.className = 'toast-action'; b.type = 'button'; b.textContent = opts.actionLabel;

@@ -4,6 +4,8 @@ import math
 import time
 import uuid
 import json
+import base64
+import secrets
 import logging
 import ipaddress
 import functools
@@ -11,8 +13,10 @@ import threading
 import subprocess
 import tempfile
 import shutil
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 
+import requests
 from flask import Flask, request, jsonify, abort, session, redirect
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.exceptions import HTTPException
@@ -39,9 +43,11 @@ app = Flask(__name__, static_folder="static", static_url_path="")
 app.secret_key = config.FLASK_SECRET_KEY
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
+    # SameSite=Lax (não Strict) de propósito: o cookie precisa viajar no retorno
+    # top-level do OAuth do Zoho (accounts.zoho.com -> nosso /callback) p/ validar o state.
     SESSION_COOKIE_SAMESITE="Lax",
-    # secure=False porque ainda não há HTTPS. Quando subir TLS, virar True.
-    SESSION_COOKIE_SECURE=False,
+    # HTTPS ativo (Let's Encrypt em sbclips.space) -> cookie só por TLS.
+    SESSION_COOKIE_SECURE=True,
     PERMANENT_SESSION_LIFETIME=timedelta(days=config.SESSION_DAYS),
     # Teto de upload. Secundário ao Nginx (client_max_body_size 15G), protege
     # o caminho direto :5001. 16 GiB fica acima do Nginx pra ele ser o 1o gate.
@@ -59,6 +65,15 @@ db.init_preferences()
 db.init_clip_captions()
 db.init_clip_music()
 db.init_sessions()
+
+# Semeia admins iniciais (config ADMIN_EMAILS) como is_admin + active. Idempotente:
+# cria a linha se não existir (sem senha utilizável; ele entra via Zoho) ou só promove.
+for _admin_email in config.ADMIN_EMAILS:
+    try:
+        db.ensure_admin(_admin_email)
+        log.info("admin semeado: %s", _admin_email)
+    except Exception as e:
+        log.warning("falha ao semear admin %s (%s)", _admin_email, e)
 
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 MIN_PASSWORD_LEN = 8
@@ -280,13 +295,77 @@ def _session_email():
 def login_required(fn):
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        if not _session_email():
+        email = _session_email()
+        if not email:
             # Sessão ausente/revogada/legada (cookie sem sid): limpa o cookie e 401 no
             # MESMO formato de sempre, pro front cair na tela de login sem regressão.
             session.clear()
             return jsonify({"error": "Não autenticado.", "auth": False}), 401
+        # Status conferido a CADA request: se um admin desativar/recusar a conta, o acesso
+        # cai no próximo request (não espera a sessão ser revogada/expirar).
+        user = db.get_user(email)
+        if not user or (user.get("status") or "active") != "active":
+            session.clear()
+            return jsonify({"error": "Sua conta não está ativa.", "auth": False}), 401
         return fn(*args, **kwargs)
     return wrapper
+
+
+def admin_required(fn):
+    """Como login_required, mas exige is_admin + status active no banco (nunca confia
+    só no cliente). Protege todos os endpoints /api/admin/*."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        email = _session_email()
+        if not email:
+            session.clear()
+            return jsonify({"error": "Não autenticado.", "auth": False}), 401
+        user = db.get_user(email)
+        if not user or not user.get("is_admin") or (user.get("status") or "active") != "active":
+            return jsonify({"error": "Acesso restrito a administradores."}), 403
+        return fn(*args, **kwargs)
+    return wrapper
+
+
+def _is_last_active_admin(user: dict) -> bool:
+    """True se `user` for admin ativo E o único admin ativo. Guarda contra lockout:
+    impede recusar/desativar/rebaixar o último administrador."""
+    if not user or not user.get("is_admin") or (user.get("status") or "active") != "active":
+        return False
+    return db.count_active_admins() <= 1
+
+
+def _open_session(email: str) -> str:
+    """Abre (ou reaproveita) a sessão server-side pro email e grava no cookie assinado.
+    Compartilhado por /api/login (senha) e /api/auth/zoho/callback (SSO) — as duas vias
+    produzem exatamente a mesma sessão, então login_required/Segurança funcionam igual."""
+    # Limpa sessões expiradas oportunisticamente (best-effort, não bloqueia o login).
+    try:
+        db.reap_sessions(config.SESSION_DAYS)
+    except Exception as e:
+        log.warning("reap sessions falhou (%s)", e)
+    # Reusa o sid se o cookie já carrega um válido pra ESTE user (re-login no mesmo
+    # navegador não deixa linha órfã); senão gera um novo.
+    ip = _client_ip()
+    ua = (request.headers.get("User-Agent") or "")[:_MAX_UA_LEN]
+    sid = session.get("sid")
+    existing = db.get_session(sid) if sid else None
+    if existing and existing.get("user_email") == email:
+        db.refresh_session(sid, ip, ua)
+    else:
+        # Cookie carrega sid de OUTRO usuário (ou inexistente): remove a linha antiga pra
+        # não deixar sessão órfã e gera um sid novo.
+        if existing and sid:
+            try:
+                db.delete_session(sid, existing.get("user_email"))
+            except Exception as e:
+                log.warning("open_session: limpar sessão antiga falhou (%s)", e)
+        sid = str(uuid.uuid4())
+        db.create_session(sid, email, ip, ua)
+    session.permanent = True
+    session["user"] = email
+    session["sid"] = sid
+    return sid
 
 
 @app.route("/api/login", methods=["POST"])
@@ -307,27 +386,26 @@ def login():
         _login_record_failure(key)
         return jsonify({"error": "Email ou senha inválidos."}), 401
 
+    # Conta precisa estar ATIVA. pending/rejected/inactive não logam (a senha até
+    # confere, mas o acesso é barrado com mensagem específica).
+    st = user.get("status") or "active"
+    if st != "active":
+        _login_clear(key)
+        msg = {
+            "pending": "Sua conta está aguardando aprovação de um administrador.",
+            "rejected": "Seu cadastro não foi aprovado. Fale com um administrador.",
+            "inactive": "Sua conta está desativada. Fale com um administrador.",
+        }.get(st, "Sua conta não está ativa.")
+        return jsonify({"error": msg}), 403
+
     _login_clear(key)
-    # Limpa sessões expiradas oportunisticamente (best-effort, não bloqueia o login).
-    try:
-        db.reap_sessions(config.SESSION_DAYS)
-    except Exception as e:
-        log.warning("reap sessions falhou (%s)", e)
-    # Reusa o sid se o cookie já carrega um válido pra ESTE user (re-login no mesmo
-    # navegador não deixa linha órfã); senão gera um novo.
-    ip = _client_ip()
-    ua = (request.headers.get("User-Agent") or "")[:_MAX_UA_LEN]
-    sid = session.get("sid")
-    existing = db.get_session(sid) if sid else None
-    if existing and existing.get("user_email") == email:
-        db.refresh_session(sid, ip, ua)
-    else:
-        sid = str(uuid.uuid4())
-        db.create_session(sid, email, ip, ua)
-    session.permanent = True
-    session["user"] = email
-    session["sid"] = sid
-    return jsonify({"email": email, "must_change_password": bool(user["must_change_password"])})
+    _open_session(email)
+    return jsonify({
+        "email": email,
+        "must_change_password": bool(user["must_change_password"]),
+        "is_admin": bool(user.get("is_admin")),
+        "status": st,
+    })
 
 
 @app.route("/api/logout", methods=["POST"])
@@ -351,10 +429,15 @@ def me():
         session.clear()
         return jsonify({"error": "Não autenticado.", "auth": False}), 401
     user = db.get_user(email)
-    if not user:
+    if not user or (user.get("status") or "active") != "active":
         session.clear()
         return jsonify({"error": "Não autenticado.", "auth": False}), 401
-    return jsonify({"email": email, "must_change_password": bool(user["must_change_password"])})
+    return jsonify({
+        "email": email,
+        "must_change_password": bool(user["must_change_password"]),
+        "is_admin": bool(user.get("is_admin")),
+        "status": user.get("status") or "active",
+    })
 
 
 @app.route("/api/change_password", methods=["POST"])
@@ -380,6 +463,243 @@ def change_password():
         db.delete_sessions_except(email, session.get("sid"))
     except Exception as e:
         log.warning("change_password: revogar outras sessões falhou (%s)", e)
+    return jsonify({"ok": True})
+
+
+# ─── Cadastro manual (com aprovação por admin) ───────────────────────────────
+
+@app.route("/api/signup", methods=["POST"])
+def signup():
+    """Auto-cadastro: cria a conta como 'pending'. Só loga depois que um admin aprovar
+    no painel. Qualquer e-mail é aceito — a aprovação é o filtro."""
+    key = _login_key()
+    if _login_blocked(key):
+        return jsonify({"error": "Tentativas demais. Espere alguns minutos e tente de novo."}), 429
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    password = data.get("password") or ""
+    email_ok = "@" in email and "." in email.rsplit("@", 1)[-1] and 3 <= len(email) <= 254
+    if not email_ok:
+        return jsonify({"error": "Informe um e-mail válido."}), 400
+    if len(password) < MIN_PASSWORD_LEN:
+        return jsonify({"error": f"A senha precisa ter ao menos {MIN_PASSWORD_LEN} caracteres."}), 400
+    _login_record_failure(key)  # conta a tentativa só pra limitar volume de spam
+    # Resposta NEUTRA (mesma mensagem se o e-mail é novo ou já existe) pra não permitir
+    # enumeração de contas. create_pending_user usa ON CONFLICT DO NOTHING, então nunca
+    # sobrescreve conta existente.
+    if db.get_user(email):
+        log.info("signup ignorado (e-mail já cadastrado): %s", email)
+    else:
+        db.create_pending_user(email, generate_password_hash(password))
+        log.info("signup pendente criado: %s", email)
+    return jsonify({
+        "ok": True,
+        "message": "Cadastro recebido. Se o e-mail ainda não tiver conta, ela será liberada após a aprovação de um administrador.",
+    })
+
+
+# ─── Login com Zoho (OAuth2 / OpenID Connect) ────────────────────────────────
+# SSO restrito por domínio (config.ALLOWED_EMAIL_DOMAINS): contas @seubone.com /
+# @grupoquatro5.com entram direto (auto-aprovadas, active). O callback abre a MESMA
+# sessão do login por senha, então login_required e a página de Segurança valem igual.
+# A rota é /api/auth/zoho/callback (não /api/callback) de propósito — o Nginx bloqueia
+# ^/api/(callback|internal); /auth/zoho/ no meio não casa com esse bloco.
+
+def _decode_jwt_payload(token: str) -> dict:
+    """Decodifica o payload de um JWT SEM validar a assinatura. Seguro aqui porque o
+    id_token vem direto do endpoint de token do Zoho via TLS (back-channel autenticado
+    com o client_secret) — não passa pelo navegador, não dá pra forjar de fora."""
+    try:
+        payload_b64 = token.split(".")[1]
+        payload_b64 += "=" * (-len(payload_b64) % 4)  # restaura padding base64url
+        return json.loads(base64.urlsafe_b64decode(payload_b64))
+    except Exception as e:
+        log.warning("zoho: falha ao decodificar id_token (%s)", e)
+        return {}
+
+
+@app.route("/api/auth/providers")
+def auth_providers():
+    """Público: o front decide se mostra o botão 'Entrar com Zoho'."""
+    return jsonify({"zoho": config.ZOHO_ENABLED})
+
+
+@app.route("/api/auth/zoho/login")
+def zoho_login():
+    if not config.ZOHO_ENABLED:
+        return redirect("/login?error=zoho_off")
+    state = secrets.token_urlsafe(24)
+    session["oauth_state"] = state
+    session.permanent = True
+    params = urllib.parse.urlencode({
+        "response_type": "code",
+        "client_id": config.ZOHO_CLIENT_ID,
+        "scope": "openid email profile",  # OIDC, delimitado por espaço (verificado na doc Zoho)
+        "redirect_uri": config.ZOHO_REDIRECT_URI,
+        "state": state,
+        "access_type": "online",  # só identidade; não precisamos de refresh_token
+    })
+    return redirect(f"{config.ZOHO_ACCOUNTS_BASE}/oauth/v2/auth?{params}")
+
+
+@app.route("/api/auth/zoho/callback")
+def zoho_callback():
+    if not config.ZOHO_ENABLED:
+        return redirect("/login?error=zoho_off")
+    if request.args.get("error"):
+        log.info("zoho callback erro do provedor: %s", request.args.get("error"))
+        return redirect("/login?error=zoho_denied")
+    # CSRF: o state do retorno tem que bater com o guardado na sessão (compare_digest).
+    state = request.args.get("state") or ""
+    saved = session.pop("oauth_state", None)
+    if not saved or not secrets.compare_digest(state, saved):
+        return redirect("/login?error=state")
+    code = request.args.get("code") or ""
+    if not code:
+        return redirect("/login?error=nocode")
+
+    # Troca o code por token (back-channel server-to-server, form-urlencoded).
+    try:
+        resp = requests.post(
+            f"{config.ZOHO_ACCOUNTS_BASE}/oauth/v2/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "client_id": config.ZOHO_CLIENT_ID,
+                "client_secret": config.ZOHO_CLIENT_SECRET,
+                "redirect_uri": config.ZOHO_REDIRECT_URI,
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        token_data = resp.json()
+    except Exception as e:
+        log.warning("zoho token exchange falhou (%s)", e)
+        return redirect("/login?error=zoho_token")
+
+    # Email do id_token (OIDC traz email + email_verified). Fallback no userinfo se faltar.
+    claims = _decode_jwt_payload(token_data.get("id_token") or "")
+    email = (claims.get("email") or "").strip().lower()
+    email_verified = claims.get("email_verified")
+    access_token = token_data.get("access_token") or ""
+    if not email and access_token:
+        try:
+            ui = requests.get(
+                f"{config.ZOHO_ACCOUNTS_BASE}/oauth/v2/userinfo",
+                headers={"Authorization": f"Zoho-oauthtoken {access_token}"},  # esquema Zoho, não Bearer
+                timeout=15,
+            )
+            if ui.ok:
+                info = ui.json()
+                email = (info.get("email") or "").strip().lower()
+                if email_verified is None:
+                    email_verified = info.get("email_verified")
+        except Exception as e:
+            log.warning("zoho userinfo fallback falhou (%s)", e)
+
+    if not email or "@" not in email:
+        return redirect("/login?error=zoho_email")
+    # email_verified existe e é boolean no Zoho: fail-closed se vier explicitamente
+    # falso; se ausente, confia no gate de domínio (conta corporativa criada por admin).
+    if email_verified is not None and not (email_verified is True or str(email_verified).lower() == "true"):
+        log.info("zoho login negado (e-mail não verificado): %s", email)
+        return redirect("/login?error=naoverificado")
+    # Defesa extra: confere o emissor do id_token (hostname EXATO == host do DC config),
+    # não substring (substring deixaria passar "accounts.zoho.com.evil.com").
+    if claims:
+        expected_host = urllib.parse.urlparse(config.ZOHO_ACCOUNTS_BASE).hostname
+        iss_host = urllib.parse.urlparse(str(claims.get("iss", ""))).hostname
+        if iss_host != expected_host:
+            log.warning("zoho id_token com iss suspeito: %s", claims.get("iss"))
+            return redirect("/login?error=zoho_token")
+    domain = email.rsplit("@", 1)[-1]
+    if domain not in config.ALLOWED_EMAIL_DOMAINS:
+        log.info("zoho login negado (domínio fora da lista): %s", email)
+        return redirect("/login?error=dominio")
+
+    db.upsert_user_oauth(email, "zoho")
+    # Respeita decisão de admin: rejeitado/desativado não entra nem via Zoho.
+    u = db.get_user(email)
+    st = (u.get("status") if u else "active") or "active"
+    if st != "active":
+        log.info("zoho login bloqueado (status=%s): %s", st, email)
+        return redirect("/login?error=" + ("rejeitado" if st == "rejected" else "inativo"))
+    _open_session(email)
+    log.info("zoho login ok: %s", email)
+    return redirect("/")
+
+
+# ─── Admin: aprovação de cadastros e gestão de usuários ───────────────────────
+
+@app.route("/api/admin/users")
+@admin_required
+def admin_users():
+    return jsonify({"users": db.list_all_users()})
+
+
+@app.route("/api/admin/approve", methods=["POST"])
+@admin_required
+def admin_approve():
+    email = ((request.get_json(silent=True) or {}).get("email") or "").strip().lower()
+    if not db.get_user(email):
+        return jsonify({"error": "Usuário não encontrado."}), 404
+    db.set_user_status(email, "active")
+    log.info("admin %s aprovou %s", session["user"], email)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/reject", methods=["POST"])
+@admin_required
+def admin_reject():
+    email = ((request.get_json(silent=True) or {}).get("email") or "").strip().lower()
+    target = db.get_user(email)
+    if not target:
+        return jsonify({"error": "Usuário não encontrado."}), 404
+    if email == session["user"]:
+        return jsonify({"error": "Você não pode recusar a si mesmo."}), 400
+    if _is_last_active_admin(target):
+        return jsonify({"error": "Não é possível recusar o último administrador ativo."}), 400
+    db.set_user_status(email, "rejected")
+    db.delete_user_sessions(email)  # corta sessões ativas do recusado na hora
+    log.info("admin %s recusou %s", session["user"], email)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/set_active", methods=["POST"])
+@admin_required
+def admin_set_active():
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    active = bool(data.get("active"))
+    target = db.get_user(email)
+    if not target:
+        return jsonify({"error": "Usuário não encontrado."}), 404
+    if not active and email == session["user"]:
+        return jsonify({"error": "Você não pode desativar a si mesmo."}), 400
+    if not active and _is_last_active_admin(target):
+        return jsonify({"error": "Não é possível desativar o último administrador ativo."}), 400
+    db.set_user_status(email, "active" if active else "inactive")
+    if not active:
+        db.delete_user_sessions(email)
+    log.info("admin %s set_active(%s) %s", session["user"], active, email)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/set_admin", methods=["POST"])
+@admin_required
+def admin_set_admin():
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    make_admin = bool(data.get("is_admin"))
+    target = db.get_user(email)
+    if not target:
+        return jsonify({"error": "Usuário não encontrado."}), 404
+    if not make_admin and email == session["user"]:
+        return jsonify({"error": "Você não pode remover seu próprio acesso de admin."}), 400
+    if not make_admin and _is_last_active_admin(target):
+        return jsonify({"error": "Não é possível remover o último administrador ativo."}), 400
+    db.set_user_admin(email, make_admin)
+    log.info("admin %s set_admin(%s) %s", session["user"], make_admin, email)
     return jsonify({"ok": True})
 
 
@@ -732,6 +1052,7 @@ def clip_video(clip_id):
 
     segments_json = db.get_clip_captions(clip_id)
     music = db.get_clip_music(clip_id)
+    caption_y = db.get_clip_caption_y(clip_id)
     cap_key = base_key.replace("_base.mp4", "_cap.mp4")
     is_new = cap_key != base_key                         # _base (novo) vs _9x16 (antigo, já queimado)
     use_caps = bool(job.get("captions", 1)) and bool(segments_json)
@@ -753,7 +1074,7 @@ def clip_video(clip_id):
             s3_client.download_file(base_key, base_path)
             ass_path = None
             if use_caps:
-                ass = captions.build_ass_from_segments(json.loads(segments_json))
+                ass = captions.build_ass_from_segments(json.loads(segments_json), caption_y)
                 if ass:
                     ass_path = os.path.join(tmp, "cap.ass")
                     with open(ass_path, "w", encoding="utf-8") as f:
@@ -772,6 +1093,17 @@ def clip_video(clip_id):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
     return redirect(s3_client.get_presigned_url(cap_key), code=302)
+
+
+@app.route("/api/clips/<path:clip_id>/base")
+@login_required
+def clip_base(clip_id):
+    """Entrega o clipe SEM a legenda queimada (302 pra base no S3). Usado pelo editor
+    de timeline do front: a legenda e sobreposta AO VIVO no preview (sem duplicar com a
+    queimada), e a queima final continua acontecendo sob demanda em /video. So faz sentido
+    pra clipe novo (_base.mp4); clipe antigo (_9x16.mp4) cai na propria base mesmo."""
+    _job, _idx, base_key = _clip_lookup(clip_id)
+    return redirect(s3_client.get_presigned_url(base_key), code=302)
 
 
 # ─── Legenda editável do clipe (correção pelo usuário; base do mini editor) ───
@@ -854,7 +1186,8 @@ def clip_captions_get(clip_id):
     music_info = None
     if music and music.get("music_key"):
         music_info = {"filename": os.path.basename(music["music_key"]), "volume": music.get("volume")}
-    return jsonify({"segments": segs, "editable": editable, "music": music_info})
+    caption_y = db.get_clip_caption_y(clip_id)
+    return jsonify({"segments": segs, "editable": editable, "music": music_info, "caption_y": caption_y})
 
 
 @app.route("/api/clips/<path:clip_id>/captions", methods=["PUT"])
@@ -871,6 +1204,18 @@ def clip_captions_put(clip_id):
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     db.set_clip_captions(clip_id, json.dumps(segs, ensure_ascii=False))
+    if "caption_y" in data:
+        cy = data.get("caption_y")
+        if cy is None:
+            db.set_clip_caption_y(clip_id, None)   # volta ao padrão do estilo SB
+        else:
+            try:
+                cyf = float(cy)
+            except (TypeError, ValueError):
+                return jsonify({"error": "caption_y inválido."}), 400
+            if not math.isfinite(cyf):
+                return jsonify({"error": "caption_y inválido."}), 400
+            db.set_clip_caption_y(clip_id, max(0.05, min(0.95, cyf)))
     _invalidate_cap(base_key)   # próxima abertura re-renderiza com o texto corrigido
     return jsonify({"ok": True, "segments": segs})
 

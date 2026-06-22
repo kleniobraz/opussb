@@ -75,6 +75,18 @@ def run_thread2(job_id: str) -> None:
         # limpa); a queima acontece sob demanda a partir da base + dos segmentos.
         transcript = job.get("transcript")
 
+        # Auto-ajuste do corte pra não terminar/começar no meio da fala: usa o SRT pra
+        # estender o fim até o fim do trecho falado (e puxar o início pro começo dele),
+        # com teto. Roda ANTES do corte, então o ffmpeg, a legenda (que herda o `meta`)
+        # e a duração usam os limites ajustados. Sem transcript, mantém tudo igual.
+        if transcript:
+            for clip in clips_data:
+                try:
+                    clip["start"], clip["end"] = captions.snap_clip_bounds(
+                        transcript, clip["start"], clip["end"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+
         _check_cancel(job_id)
         db.update_job(job_id, status="cutting", progress=70)
         produced = _cut_clips(job["local_path"], clips_data, job_clips_dir)

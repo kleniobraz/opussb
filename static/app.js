@@ -27,6 +27,7 @@
   var currentJobId = null;
   var routerStarted = false;
   var fileValid = false;
+  var heroShader = null;   // controlador do shader de fundo da Home (montado só na home)
 
   function byId(id) { return document.getElementById(id); }
 
@@ -50,12 +51,21 @@
     if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
     return local.slice(0, 2).toUpperCase() || 'SB';
   }
+  // Saudação pelo horário do PC do usuário: 5–11 manhã, 12–17 tarde, resto noite.
+  function greetingForHour(h) {
+    if (h >= 5 && h < 12) return 'Bom dia';
+    if (h >= 12 && h < 18) return 'Boa tarde';
+    return 'Boa noite';
+  }
   function setUser(email) {
     var v = email || '';
     var ue = byId('user-email'); if (ue) ue.textContent = v;
     var un = byId('user-name'); if (un) un.textContent = firstNameFromEmail(v);
     var gn = byId('greeting-name'); if (gn) gn.textContent = firstNameFromEmail(v);
+    var gt = byId('greeting-time'); if (gt) gt.textContent = greetingForHour(new Date().getHours());
     var av = byId('user-avatar'); if (av) av.textContent = initialsFromEmail(v);
+    var unm = byId('user-name-m'); if (unm) unm.textContent = firstNameFromEmail(v);
+    var avm = byId('user-avatar-m'); if (avm) avm.textContent = initialsFromEmail(v);
   }
 
   // ── Camadas de tela / view ────────────────────────────────────────────
@@ -63,13 +73,40 @@
     [authSection, changeSection, appSection].forEach(function (s) { if (s) s.classList.add('hidden'); });
     if (section) section.classList.remove('hidden');
   }
+  // ── Shader de fundo da Home (porta vanilla do componente Three.js) ─────
+  // Montado SÓ na home e destruído ao sair (anti-leak de WebGL/RAF). Respeita
+  // prefers-reduced-motion (nem monta). mountHeroShader é idempotente.
+  function canRunShader() {
+    return !!(window.OpusSB && OpusSB.shaderAnimation &&
+      !(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches));
+  }
+  function mountHeroShader() {
+    if (heroShader || !canRunShader()) return;
+    var host = document.getElementById('hero-shader');
+    if (!host) return;
+    heroShader = OpusSB.shaderAnimation.mount('#hero-shader', {
+      maxPixelRatio: 1.5, pauseWhenHidden: true,
+      onError: function () { heroShader = null; }
+    });
+    // fade-in 1 RAF após montar, pra não "piscar" o retângulo preto do canvas.
+    requestAnimationFrame(function () { if (host && heroShader) host.classList.add('is-on'); });
+  }
+  function destroyHeroShader() {
+    if (heroShader) { heroShader.destroy(); heroShader = null; }
+    var host = document.getElementById('hero-shader');
+    if (host) host.classList.remove('is-on');
+  }
+
   function showView(name) {
     var nodes = document.querySelectorAll('.view');
     Array.prototype.forEach.call(nodes, function (v) { v.classList.add('hidden'); });
     var target = byId('view-' + name);
     if (target) target.classList.remove('hidden');
-    var main = document.querySelector('.main');
-    if (main) main.scrollTop = 0;
+    window.scrollTo(0, 0);   // o documento rola na window (não há .main) — corrige o scroll-to-top
+    if (name === 'home') {
+      var gt = byId('greeting-time'); if (gt) gt.textContent = greetingForHour(new Date().getHours());
+      mountHeroShader();
+    } else destroyHeroShader();
   }
   function updateNav() {
     var segs = router.current();
@@ -80,9 +117,10 @@
       if (it.getAttribute('data-nav') === active) it.classList.add('is-active');
       else it.classList.remove('is-active');
     });
+    closeMenu();   // toda troca de rota (link, atalho de teclado, back/forward) fecha o drawer
   }
 
-  function requireAuth() { stopPolling(); showScreen(authSection); }
+  function requireAuth() { stopPolling(); destroyHeroShader(); showScreen(authSection); }
 
   // ── Boot ──────────────────────────────────────────────────────────────
   function boot() {
@@ -152,14 +190,77 @@
   });
 
   // ── Logout ────────────────────────────────────────────────────────────
-  var logoutBtn = byId('logout-btn');
-  if (logoutBtn) logoutBtn.addEventListener('click', function () {
+  function doLogout() {
     stopPolling();
+    destroyHeroShader();
+    closeMenu();
     api.logout().then(function () {
       resetUpload();
       showScreen(authSection);
     });
+  }
+  var logoutBtn = byId('logout-btn'); if (logoutBtn) logoutBtn.addEventListener('click', doLogout);
+  var logoutBtnM = byId('logout-btn-m'); if (logoutBtnM) logoutBtnM.addEventListener('click', doLogout);
+
+  // ── Menu mobile (drawer) ──────────────────────────────────────────────
+  // Estado num booleano (não inferido de classes/hidden) + cancelamento do RAF/timer
+  // pra open→close no mesmo frame nunca divergir. Gestão de foco (entra/sai + trap)
+  // e fechamento ao cruzar pro desktop. É um diálogo modal (role/aria-modal no HTML).
+  var menuToggle = byId('menu-toggle');
+  var mobileMenu = byId('mobile-menu');
+  var menuIsOpen = false, menuOpenRaf = 0, menuCloseTimer = 0, menuLastFocus = null;
+  function menuFocusables() {
+    return mobileMenu ? Array.prototype.slice.call(mobileMenu.querySelectorAll('a[href], button:not([disabled])')) : [];
+  }
+  function openMenu() {
+    if (!mobileMenu || menuIsOpen) return;
+    menuIsOpen = true;
+    clearTimeout(menuCloseTimer);
+    menuLastFocus = document.activeElement;
+    mobileMenu.hidden = false;
+    menuOpenRaf = requestAnimationFrame(function () { mobileMenu.classList.add('is-open'); });
+    if (menuToggle) { menuToggle.classList.add('is-open'); menuToggle.setAttribute('aria-expanded', 'true'); menuToggle.setAttribute('aria-label', 'Fechar menu'); }
+    document.body.classList.add('menu-open');
+    var first = mobileMenu.querySelector('.mobile-menu-x') || menuFocusables()[0];
+    if (first && first.focus) first.focus();   // leva o foco pra dentro do drawer
+  }
+  function closeMenu() {
+    if (!mobileMenu || !menuIsOpen) return;
+    menuIsOpen = false;
+    cancelAnimationFrame(menuOpenRaf);
+    mobileMenu.classList.remove('is-open');
+    if (menuToggle) { menuToggle.classList.remove('is-open'); menuToggle.setAttribute('aria-expanded', 'false'); menuToggle.setAttribute('aria-label', 'Abrir menu'); }
+    document.body.classList.remove('menu-open');
+    menuCloseTimer = setTimeout(function () { if (!menuIsOpen) mobileMenu.hidden = true; }, 320);
+    // devolve o foco a quem abriu (ou ao toggle), evitando foco órfão no <body>
+    var back = (menuLastFocus && menuLastFocus.focus && document.contains(menuLastFocus)) ? menuLastFocus : menuToggle;
+    if (back && back.focus) { try { back.focus(); } catch (e) {} }
+  }
+  if (menuToggle) menuToggle.addEventListener('click', function () { if (menuIsOpen) closeMenu(); else openMenu(); });
+  if (mobileMenu) mobileMenu.addEventListener('click', function (e) {
+    var t = e.target;
+    if (t.closest && (t.closest('[data-close]') || t.closest('.mobile-nav-item'))) closeMenu();
   });
+  document.addEventListener('keydown', function (e) {
+    if (!menuIsOpen) return;
+    if (e.key === 'Escape') { closeMenu(); return; }
+    if (e.key === 'Tab') {                       // focus-trap dentro do drawer
+      var f = menuFocusables();
+      if (!f.length) return;
+      var first = f[0], last = f[f.length - 1], a = document.activeElement;
+      if (!mobileMenu.contains(a)) { e.preventDefault(); first.focus(); return; }
+      if (e.shiftKey && a === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && a === last) { e.preventDefault(); first.focus(); }
+    }
+  });
+  // Cruzar pro desktop com o drawer aberto travaria o scroll (body.menu-open) sem
+  // affordance de fechar — fecha na transição de breakpoint.
+  if (window.matchMedia) {
+    var mqDesktop = window.matchMedia('(min-width: 761px)');
+    var onMqDesktop = function (ev) { if (ev.matches) closeMenu(); };
+    if (mqDesktop.addEventListener) mqDesktop.addEventListener('change', onMqDesktop);
+    else if (mqDesktop.addListener) mqDesktop.addListener(onMqDesktop);
+  }
 
   // ── Seleção de arquivo + validação ────────────────────────────────────
   var dropzone = byId('dropzone');
@@ -386,7 +487,7 @@
       if (e.key === 'f') { router.go('/favoritos'); return; }
       if (e.key === 'c') { router.go('/config'); return; }
     }
-    if (e.key === 'n') { router.go('/'); var dz = byId('dropzone'); if (dz && dz.focus) dz.focus(); }
+    if (e.key === 'n') { router.go('/'); var vf = byId('video-file'); if (vf && vf.focus) vf.focus(); }
   });
   function openShortcuts() {
     var html = '<h3 class="modal-title">Atalhos</h3><ul class="shortcuts">' +

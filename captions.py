@@ -78,6 +78,41 @@ def parse_srt(srt_text: str) -> list:
     return segments
 
 
+def snap_clip_bounds(srt_text, start, end, max_tail: float = 2.5, max_head: float = 1.0):
+    """Ajusta [start, end] (segundos absolutos do vídeo) pra o corte não cair no meio
+    de uma fala, usando o SRT da transcrição:
+      - FIM: se o ponto de corte cai DENTRO de um trecho falado, estende até o fim desse
+        trecho — no máximo `max_tail` s a mais (senão a frase é longa demais e mantém o
+        corte original).
+      - INÍCIO: se o ponto de entrada cai no MEIO de um trecho, puxa pro começo dele — no
+        máximo `max_head` s antes.
+    Função pura e idempotente: sem SRT, sem fala no ponto de corte, ou bounds inválidos,
+    devolve os limites de entrada (arredondados a 3 casas). Devolve (start, end) floats."""
+    try:
+        s = float(start)
+        e = float(end)
+    except (TypeError, ValueError):
+        return start, end
+    if not (math.isfinite(s) and math.isfinite(e)) or e <= s:
+        return start, end
+    segs = parse_srt(srt_text)
+    if not segs:
+        return round(s, 3), round(e, 3)
+    for seg in segs:                       # fim: estende até terminar a fala em curso
+        if seg["start"] < e < seg["end"]:
+            if seg["end"] - e <= max_tail:
+                e = seg["end"]
+            break
+    for seg in segs:                       # início: puxa pro começo da fala em curso
+        if seg["start"] < s < seg["end"]:
+            if s - seg["start"] <= max_head:
+                s = max(0.0, seg["start"])
+            break
+    if e <= s:
+        return round(float(start), 3), round(float(end), 3)
+    return round(s, 3), round(e, 3)
+
+
 def _sanitize(text: str) -> str:
     """Neutraliza o que o parser do ASS interpretaria como controle. Aplicado
     também no render porque o texto pode ter vindo editado pelo usuário."""
@@ -146,10 +181,14 @@ def segments_for_clip(srt_text: str, clip_start: float, clip_end: float) -> list
     return out
 
 
-def build_ass_from_segments(segments: list):
+def build_ass_from_segments(segments: list, caption_y=None):
     """Renderiza o .ass no estilo SB a partir de uma lista de {start, end, text}
     (tempos relativos ao clipe). Retorna a string .ass ou None se vazia. O texto
-    é re-sanitizado aqui porque pode ter vindo editado pelo usuário (Parte 3)."""
+    é re-sanitizado aqui porque pode ter vindo editado pelo usuário (Parte 3).
+
+    caption_y (fração 0..1 do centro, a partir do topo) reposiciona a legenda na
+    vertical via \\an5\\pos (centralizada). None = posição padrão do estilo SB
+    (alignment 2 + MARGIN_V). O usuário define isso arrastando no editor do front."""
     if not segments:
         return None
 
@@ -179,7 +218,17 @@ def build_ass_from_segments(segments: list):
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
-    prefix = f"{{\\blur{GLOW_BLUR}\\fsp{TRACKING_PX:g}}}"
+    # Reposicionamento vertical opcional: \an5 (centro) + \pos no centro horizontal.
+    pos_tag = ""
+    if caption_y is not None:
+        try:
+            cy = float(caption_y)
+            if math.isfinite(cy):
+                cy = min(0.95, max(0.05, cy))
+                pos_tag = f"\\an5\\pos({PLAY_W // 2},{round(cy * PLAY_H)})"
+        except (TypeError, ValueError):
+            pos_tag = ""
+    prefix = f"{{\\blur{GLOW_BLUR}\\fsp{TRACKING_PX:g}{pos_tag}}}"
     lines = []
     for s in segments:
         # Defesa: um segmento salvo com tempo inválido (NaN/inf, end<=start) não pode

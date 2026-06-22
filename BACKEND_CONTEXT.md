@@ -56,7 +56,7 @@ Trabalha-se **direto na VPS de produção** em `/opt/opussb`.
   (defesa: rotas internas não acessíveis de fora).
 - **N8N** (Docker, porta 5678): orquestra RunPod + Claude. Container alcança o Flask
   pelo gateway `172.17.0.1:5001` **direto** (não via Nginx). Workflow id
-  `UGtxQOBzHsfI9Bpg`, editável pela API REST (`X-N8N-API-KEY`). Key em
+  `<no painel do N8N>`, editável pela API REST (`X-N8N-API-KEY`). Key em
   `/root/.opussb_n8n_api_key` (600, root only, fora do repo).
 - **RunPod**: endpoint de Faster Whisper. Devolve o transcript em **SRT** (com
   timestamps por segmento, no eixo absoluto do vídeo).
@@ -119,14 +119,22 @@ reframing, uploading_clips, done, error`.
   vídeo já é vertical, copia direto (sem recorte). `_filter_escape`,
   `_encode_with_subtitles`, `_mux_audio`. **cv2/ultralytics são pesados**: o app só
   importa o reframer dentro da thread2 (lazy), nunca no processo web só pra servir.
-- **`captions.py`** — puro (só `re`, sem ffmpeg). `parse_srt`, `segments_for_clip`
+- **`captions.py`** — puro (só `re`/`math`, sem ffmpeg). `parse_srt`, `segments_for_clip`
   (recorta o SRT por clipe → dado editável), `build_ass_from_segments` (rende o .ass
-  no estilo SB). Constantes do estilo no topo (ver seção 6).
+  no estilo SB), **`snap_clip_bounds`** (2026-06-21: ajusta in/out do corte pra não
+  cair no meio da fala — ver abaixo). Constantes do estilo no topo (ver seção 6).
+  - **Auto-snap do corte (2026-06-21):** o `run_thread2` chama `captions.snap_clip_bounds`
+    em cada clipe **antes** de `_cut_clips`, usando o SRT da transcrição. Estende o FIM até
+    o fim do trecho falado em curso (teto +2,5s) e puxa o INÍCIO pro começo do trecho (teto
+    1s); em silêncio/sem fala no ponto de corte ou sem transcript, mantém igual. Como roda
+    antes do corte, o ffmpeg, os segmentos de legenda (que herdam `item["meta"]`) e a duração
+    usam os limites ajustados. Função pura, coberta no `test_backend.py` (`test_snap_clip_bounds`).
+    Resolve "clipe termina em cima da fala" só pra jobs NOVOS (o original some no cleanup).
 - **`s3_client.py`** — `upload_file`, `download_file`, `exists`, `get_presigned_url`,
   `delete_object`, `delete_prefix`.
 - **`manage_users.py`** — CLI: `add/reset/list/delete` usuários (scrypt,
   `must_change=True` por padrão). Ex.: `./venv/bin/python manage_users.py add
-  fulano@seubone.com --password '!SenhaPadrãoMudar'`.
+  fulano@seubone.com --password '<senha-inicial>'`.
 - **`static/`** — SPA vanilla (sem build), servida pelo Nginx. **Domínio do chat do
   front**; o backend só expõe o contrato (`BACKEND_INTEGRATION.md`).
 
@@ -206,8 +214,9 @@ Contrato completo dessas rotas: `BACKEND_INTEGRATION.md` seção 3.1.
   sessão. Trocar a senha encerra as OUTRAS sessões (mantém a atual). Senhas com
   **scrypt** (Werkzeug). `must_change_password` força troca no primeiro acesso (gate no
   upload).
-- Sem TLS ainda (`SESSION_COOKIE_SECURE=False`), **adiado até decidir domínio**.
-  Quando subir HTTPS, virar `Secure=True`.
+- **TLS ativo (2026-06-22, ver §14):** HTTPS em https://sbclips.space (Let's Encrypt),
+  `SESSION_COOKIE_SECURE=True`. `SameSite=Lax` mantido de propósito (o cookie precisa
+  viajar no retorno top-level do OAuth do Zoho).
 - Defesa das rotas internas em 3 camadas: Flask não escuta público + Nginx 404 +
   gate por subnet da bridge.
 - Senha de onboarding por convenção: `!SenhaPadrãoMudar` (NÃO é hardcoded; é o que se
@@ -387,3 +396,73 @@ humanização, `_client_ip` (último hop + XFF forjado ignorado + peer não conf
 ownership do delete, reuso de sid, reap, revogação imediata entre dois navegadores,
 no-op da sessão atual, troca de senha revogando as outras, e que `/api/callback` segue
 aberto (não regrediu). E2e ao vivo na produção com usuário TEST e cleanup total.
+
+---
+
+## 14. Domínio, HTTPS, login Zoho + cadastro/aprovação, segurança e disco (2026-06-22)
+
+### Domínio e HTTPS (a frase "sem TLS" da §7 está OBSOLETA)
+- Produção atende em **https://sbclips.space** (e www). Domínio comprado na Hostinger; DNS
+  no hPanel (registro A `@` para `87.99.159.235`; `www` é CNAME pra raiz).
+- Certificado **Let's Encrypt** via `certbot --nginx`. Cert em
+  `/etc/letsencrypt/live/sbclips.space/`. Redirect http para https automático. `certbot.timer`
+  ativo (renova sozinho; `certbot renew --dry-run` passou).
+- `SESSION_COOKIE_SECURE=True`. `SameSite=Lax` mantido de propósito (o cookie precisa viajar
+  no retorno top-level do OAuth do Zoho).
+- nginx `server_name sbclips.space www.sbclips.space _` (o `_` preserva acesso por IP).
+  CUIDADO: backup de config NÃO vai em `/etc/nginx/sites-enabled/` (o include é `*`, vira
+  server block duplicado e dá "conflicting server name"). Backups ficam em `/root/nginx-backups/`.
+
+### Auth: Zoho SSO + cadastro manual + aprovação por admin
+Três vias que abrem a MESMA sessão server-side (a tabela `sessions` da §13 não mudou):
+1. **Zoho SSO (padrão):** OAuth2/OIDC restrito por domínio (`ALLOWED_EMAIL_DOMAINS` =
+   seubone.com, grupoquatro5.com). Entra direto, auto-aprovado (`active`). O e-mail vem do
+   `id_token` (`email` + `email_verified`); o `iss` é conferido pelo hostname exato do DC.
+   Scope `openid email profile`, DC `.com` (`accounts.zoho.com`). App no api-console.zoho.com
+   (Server-based App); redirect URI exato `https://sbclips.space/api/auth/zoho/callback`.
+2. **Cadastro manual (`POST /api/signup`):** qualquer e-mail cria conta `status=pending`; só
+   loga após um admin aprovar. Resposta neutra (mesma mensagem se o e-mail é novo ou já existe)
+   pra não permitir enumeração de contas.
+3. **Senha (break-glass):** segue funcionando, mas só conta `active` loga.
+
+Estados em `users.status`: `active` | `pending` | `rejected` | `inactive` (só `active` loga).
+Colunas novas em `users`: `status`, `is_admin`, `auth_provider` (zoho/manual/bootstrap). Migração
+aditiva (`_ensure_column`, defaults `active`/0); usuários legados viram `active`. Admin inicial
+semeado no boot por `config.ADMIN_EMAILS` (`klenio.braz@seubone.com`) via `db.ensure_admin`
+(garante `is_admin=1` + `active`, sem senha utilizável; ele entra via Zoho).
+
+### Endpoints novos (`app.py`)
+- `POST /api/signup` (cria pending; reusa o throttle de login como rate-limit).
+- `GET /api/auth/providers` (público; o front decide se mostra o botão Zoho).
+- `GET /api/auth/zoho/login` (gera `state` anti-CSRF na sessão, redireciona pro Zoho).
+- `GET /api/auth/zoho/callback` (troca code por token, lê e-mail do `id_token`, valida
+  `email_verified` + `iss` + domínio, provisiona `active`, abre sessão). O nome
+  `/auth/zoho/callback` é de propósito (o bloco `^/api/(callback|internal)` do nginx NÃO casa).
+- Admin (decorator `admin_required`, valida `is_admin` + `active` no servidor; e-mail no body):
+  `GET /api/admin/users`, `POST /api/admin/approve|reject|set_active|set_admin`. Guardas: não dá
+  pra se auto-recusar/desativar/rebaixar, nem derrubar o ÚLTIMO admin ativo (`db.count_active_admins`).
+- `login_required` e `/api/me` checam `status=='active'` a CADA request (conta desativada cai no
+  request seguinte). Helper `_open_session` extraído (login por senha e callback Zoho usam).
+
+### config.py (vars novas, todas OPCIONAIS)
+`ZOHO_CLIENT_ID`, `ZOHO_CLIENT_SECRET`, `ZOHO_REDIRECT_URI`, `ZOHO_ACCOUNTS_BASE`
+(default `accounts.zoho.com`), `ALLOWED_EMAIL_DOMAINS` (default seubone/grupoquatro5),
+`ADMIN_EMAILS`, `ZOHO_ENABLED` (= tem client id+secret). Sem as creds o Zoho fica desligado e o
+app sobe normal. Valores reais ficam no `.env` (fora do repo).
+
+### Segurança (varredura do Aikido) e headers
+- Headers no nginx (server block 443, com `always`): HSTS, CSP, X-Content-Type-Options,
+  X-Frame-Options, Referrer-Policy, Permissions-Policy. `server_tokens off` (esconde a versão).
+  CSP compatível: `script`/`style` em `self`+`unsafe-inline` (Next injeta inline), `img`/`media`
+  liberam `https:`/`blob:`/`data:` pra não quebrar thumbnail nem player de clipe.
+- gunicorn 26 está acima do range do CVE de request smuggling (já mitigado).
+- PENDENTE: atualizar `ultralytics` (achado de RCE; usado no `reframer.py`); `static/js/views.js`
+  (XSS legado na SPA antiga: parar de servir ou blindar). Nenhum é janela de risco aberta.
+
+### Disco e upload (correção)
+Upload grande dava `OSError: [Errno 28] No space left on device`: o werkzeug bufferizava o
+multipart no `/tmp` do disco LOCAL (38G) antes de salvar no volume. O `JOB_DIR` já apontava pro
+volume de 80G (`/mnt/opussb-jobs`), mas faltava o temp. Corrigido: `TMPDIR=/mnt/opussb-jobs/tmp`
+no `.env` (mesmo filesystem do `JOB_DIR`, então o `.save()` vira rename) + `proxy_request_buffering
+off` no `/api` do nginx (stream direto pro Flask, sem 2a cópia local). Caches (pip/npm/apt/journal)
+limpos liberaram ~4G. (`yolov8 para GPU/RunPod` segue como otimização adiada, não urgente.)

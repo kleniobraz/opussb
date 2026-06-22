@@ -37,3 +37,23 @@ MAX_CONCURRENT_JOBS: int = int(os.environ.get("MAX_CONCURRENT_JOBS", "1"))
 JOB_DIR: str = os.environ.get("JOB_DIR", "/opt/opussb/jobs")
 # Acima da janela do Whisper (5-15min) com folga. Job preso passa disso vira error.
 JOB_STALE_MINUTES: int = int(os.environ.get("JOB_STALE_MINUTES", "30"))
+
+# ─── Auth: Zoho SSO + cadastro com aprovação ─────────────────────────────────
+# Tudo OPCIONAL de propósito: sem ZOHO_CLIENT_ID/SECRET o login Zoho fica desligado
+# e só o login por senha (incl. break-glass) funciona — o app sobe normal.
+ZOHO_CLIENT_ID: str = os.environ.get("ZOHO_CLIENT_ID", "")
+ZOHO_CLIENT_SECRET: str = os.environ.get("ZOHO_CLIENT_SECRET", "")
+ZOHO_REDIRECT_URI: str = os.environ.get(
+    "ZOHO_REDIRECT_URI", "https://sbclips.space/api/auth/zoho/callback"
+)
+# Data center do Zoho. .com no nosso caso (MX em mx.zoho.com); .eu/.in/.com.au noutras regiões.
+ZOHO_ACCOUNTS_BASE: str = os.environ.get("ZOHO_ACCOUNTS_BASE", "https://accounts.zoho.com").rstrip("/")
+ZOHO_ENABLED: bool = bool(ZOHO_CLIENT_ID and ZOHO_CLIENT_SECRET)
+
+# Domínios que entram via Zoho (login direto, auto-aprovado). Fora daqui, recusa.
+_ALLOWED_DOMAINS_RAW = os.environ.get("ALLOWED_EMAIL_DOMAINS", "seubone.com,grupoquatro5.com")
+ALLOWED_EMAIL_DOMAINS: list = [d.strip().lower() for d in _ALLOWED_DOMAINS_RAW.split(",") if d.strip()]
+
+# Admins iniciais, semeados no boot como is_admin + status active. Promova outros pelo painel.
+_ADMIN_EMAILS_RAW = os.environ.get("ADMIN_EMAILS", "")
+ADMIN_EMAILS: list = [e.strip().lower() for e in _ADMIN_EMAILS_RAW.split(",") if e.strip()]

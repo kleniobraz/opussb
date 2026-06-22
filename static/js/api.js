@@ -141,6 +141,25 @@
     }).then(function (r) { return r.ok; }, function () { return false; });
   }
 
+  // ── Segurança › sessões ativas (FUTURO) ───────────────────────────────
+  // Contrato esperado do backend:
+  //   GET    /api/sessions             -> { sessions: [{id, current, browser, os, location, last_active}] }
+  //   DELETE /api/sessions/<id>        -> { ok }
+  //   POST   /api/sessions/revoke_all  -> { ok }
+  function getSessions() {
+    return fetch('/api/sessions', { headers: { 'Accept': 'application/json' } }).then(function (r) {
+      if (r.status === 401) throw authError(401);
+      if (!r.ok) { var e = new Error('sessions'); e.status = r.status; throw e; }
+      return r.json();
+    });
+  }
+  function revokeSession(id) {
+    return fetch('/api/sessions/' + encodeURIComponent(id), { method: 'DELETE' }).then(jsonOrThrow);
+  }
+  function revokeAllSessions() {
+    return fetch('/api/sessions/revoke_all', { method: 'POST' }).then(jsonOrThrow);
+  }
+
   NS.api = {
     isDemo: function () { return state.demo; },
     me: me, login: login, logout: logout, changePassword: changePassword, upload: upload, status: status,
@@ -148,7 +167,8 @@
     favoriteClip: favoriteClip, deleteProject: deleteProject, cancelJob: cancelJob, reprocess: reprocess,
     downloadAllUrl: downloadAllUrl, putPreferences: putPreferences,
     getCaptions: getCaptions, putCaptions: putCaptions,
-    uploadMusic: uploadMusic, setMusicVolume: setMusicVolume, removeMusic: removeMusic
+    uploadMusic: uploadMusic, setMusicVolume: setMusicVolume, removeMusic: removeMusic,
+    getSessions: getSessions, revokeSession: revokeSession, revokeAllSessions: revokeAllSessions
   };
 
   // ── MOCK (dados de demonstração enquanto o backend não responde) ──────

@@ -1,0 +1,159 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "./brand.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ── Tema OpusSB: marca sagrada (dark #0a0a0b + dourado #f5c518 + Space Grotesk) ──
+   Os tokens semanticos do shadcn (primary, muted, border, ring...) recebem os valores
+   exatos do design system v2 antigo. Tokens extras da marca (gold-2/3, green, ink-soft,
+   surfaces) ficam expostos como cores Tailwind via @theme. */
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-sans);
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-heading: var(--font-sans);
+
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+
+  /* Tokens proprios da marca expostos como utilitarios (bg-gold, text-green, ...) */
+  --color-gold: var(--gold);
+  --color-gold-2: var(--gold-2);
+  --color-gold-3: var(--gold-3);
+  --color-on-gold: var(--on-gold);
+  --color-green: var(--green);
+  --color-ink: var(--foreground);
+  --color-ink-soft: var(--ink-soft);
+  --color-ink-muted: var(--ink-muted);
+  --color-surface: var(--card);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+
+  --radius-sm: 11px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 24px;
+  --radius-2xl: 28px;
+}
+
+:root,
+.dark {
+  /* Marca (sempre dark) */
+  --background: #0a0a0b;
+  --foreground: #f4f4f2;
+  --card: #111113;
+  --card-foreground: #f4f4f2;
+  --popover: #16161a;
+  --popover-foreground: #f4f4f2;
+  --primary: #f5c518;
+  --primary-foreground: #1a1505;
+  --secondary: #1a1a1e;
+  --secondary-foreground: #f4f4f2;
+  --muted: #16161a;
+  --muted-foreground: #a6a6a3;
+  --accent: #1a1a1e;
+  --accent-foreground: #f4f4f2;
+  --destructive: #f2655e;
+  --border: rgba(255, 255, 255, 0.09);
+  --input: rgba(255, 255, 255, 0.14);
+  --ring: #f5c518;
+  --radius: 0.875rem;
+
+  /* Tokens extras da marca */
+  --gold: #f5c518;
+  --gold-2: #ffd75e;
+  --gold-3: #e0a800;
+  --on-gold: #1a1505;
+  --green: #3fb97a;
+  --red: #f2655e;
+  --ink-soft: #a6a6a3;
+  --ink-muted: #7e7e7b;
+  --surface-2: #16161a;
+  --surface-3: #1a1a1e;
+  --border-strong: rgba(255, 255, 255, 0.16);
+
+  --grad: linear-gradient(150deg, #ffd75e, #e0a800);
+  --gold-glow: 0 6px 22px -8px rgba(245, 197, 24, 0.5);
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-card: 0 10px 30px -12px rgba(0, 0, 0, 0.6);
+  --shadow-hero: 0 30px 80px -30px rgba(0, 0, 0, 0.7);
+  --focus-ring: 0 0 0 3px rgba(245, 197, 24, 0.45);
+
+  /* Movimento */
+  --dur-fast: 0.12s;
+  --dur: 0.15s;
+  --dur-slow: 0.3s;
+  --dur-slower: 0.6s;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* charts (nao usados no app, mantidos pra shadcn nao quebrar) */
+  --chart-1: #f5c518;
+  --chart-2: #e0a800;
+  --chart-3: #3fb97a;
+  --chart-4: #a6a6a3;
+  --chart-5: #7e7e7b;
+  --sidebar: #111113;
+  --sidebar-foreground: #f4f4f2;
+  --sidebar-primary: #f5c518;
+  --sidebar-primary-foreground: #1a1505;
+  --sidebar-accent: #1a1a1e;
+  --sidebar-accent-foreground: #f4f4f2;
+  --sidebar-border: rgba(255, 255, 255, 0.09);
+  --sidebar-ring: #f5c518;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  html {
+    @apply font-sans;
+  }
+  ::selection {
+    background: rgba(245, 197, 24, 0.22);
+    color: #fff;
+  }
+  /* Scrollbar na marca */
+  * {
+    scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 11px;
+    height: 11px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.12);
+    border-radius: 99px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(245, 197, 24, 0.45);
+    background-clip: content-box;
+  }
+}

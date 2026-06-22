@@ -111,33 +111,68 @@ Todas exigem **sessão autenticada** (mesmo gate de `/api/me`). Em não autentic
 
 ---
 
-## 3.1 Legenda editável (correção + base do mini editor)
+## 3.1 Legenda editável + mini editor de clipe
 
 A legenda **não** é mais queimada no processamento. O clipe sai como base sem
 legenda e a queima é **sob demanda** na rota de vídeo (com cache). Os segmentos
-(texto + tempos) ficam editáveis no backend.
+(texto + tempos) **e a posição vertical** ficam editáveis no backend.
+
+> **Atualizado em 2026-06-21:** rota `GET /…/base`, campo `caption_y` (em GET/PUT
+> `/captions`) e o objeto `music` na resposta de `/captions`. Tudo **aditivo**, já em
+> produção (`test_backend.py` passa). Origem: editor de clipe estilo OpusClip do front Next.
 
 ### `GET /api/clips/{clip_id}/video`
 Entrega o vídeo do clipe: **302** pra URL presignada do S3 (queima a legenda na 1a
 abertura, cacheia, e nas próximas redireciona pro cache). É o que vem em `Clip.url`;
 o front usa direto em `<video src>` e no download (segue o redirect sozinho).
 
+### `GET /api/clips/{clip_id}/base`
+**302** pra URL presignada do S3 do clipe **SEM** legenda queimada (`clip_NN_base.mp4`).
+Usado pelo editor: o preview toca a base limpa e o front **sobrepõe a legenda AO VIVO**
+(sem duplicar com a queimada), e usa essa mesma URL no "Exportar sem legenda". Para clipe
+antigo (`_9x16.mp4`, legenda já fixa) cai na própria base — por isso o editor trata esse
+caso como "Edição indisponível".
+
 ### `GET /api/clips/{clip_id}/captions`
-Devolve a legenda editável do clipe:
+Devolve a legenda editável, a música de fundo e a posição vertical da legenda:
 ```json
-{ "editable": true, "segments": [ { "start": 0.0, "end": 1.08, "text": "..." } ] }
+{
+  "editable": true,
+  "segments": [ { "start": 0.0, "end": 1.08, "text": "..." } ],
+  "music": { "filename": "trilha.mp3", "volume": 0.15 },
+  "caption_y": 0.67
+}
 ```
-`editable:false` = clipe antigo (legenda já fixa) ou sem fala. `start`/`end` em
-segundos relativos ao clipe.
+- `editable:false` = clipe antigo (legenda já fixa) ou sem fala. `start`/`end` em
+  segundos relativos ao clipe.
+- `music` = `null` quando não há trilha adicionada.
+- `caption_y` = fração `0..1` do **centro da legenda a partir do topo** (ex.: `0.67` ≈ 2/3
+  abaixo), ou `null` = posição padrão do estilo SB. Ao salvar, o backend faz clamp em
+  `0.05..0.95`.
 
 ### `PUT /api/clips/{clip_id}/captions`
-Salva a legenda corrigida (nome/empresa/etc) e **invalida o cache** (o próximo play
-re-queima com o texto novo). Corpo:
+Salva a legenda corrigida (nome/empresa/etc) **e** a posição vertical, e **invalida o
+cache** (o próximo play re-queima com o texto/posição novos). Corpo:
 ```json
-{ "segments": [ { "start": 0.0, "end": 1.08, "text": "Texto corrigido" } ] }
+{
+  "segments": [ { "start": 0.0, "end": 1.08, "text": "Texto corrigido" } ],
+  "caption_y": 0.67
+}
 ```
-Resposta `200 { ok: true, segments: [...] }`. Erros: `400` (segmento mal formado,
-ex. end <= start), `409` (clipe não editável), `404` (não é o dono).
+- `caption_y` é **opcional**: chave ausente = não mexe na posição; `null` = volta ao padrão
+  do estilo SB; número = reposiciona (aplicado na queima via `\an5\pos`, centralizado).
+
+Resposta `200 { ok: true, segments: [...] }`. Erros: `400` (segmento mal formado, ex.
+`end <= start`, ou `caption_y` não numérico), `409` (clipe não editável), `404` (não é o dono).
+
+### Música de fundo do clipe (mixada na queima sob demanda)
+Rotas em `/api/clips/{clip_id}/music`, todas usadas pelo editor:
+- **`POST`** (multipart, campo `music`) — adiciona a trilha; valida que tem áudio de verdade
+  (ffprobe) e invalida o cache. Responde `{ ok: true, music: { filename, volume } }`.
+- **`PUT`** (JSON `{ "volume": 0.0..1.0 }`) — ajusta o volume da mixagem.
+- **`DELETE`** — remove a trilha.
+
+Detalhe completo (passe único de queima, cache `_cap.mp4`) no `BACKEND_CONTEXT.md`.
 
 ---
 

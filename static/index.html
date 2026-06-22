@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#0a0a0b">
   <title>OpusSB — Corte Viral</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/favicon.svg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -131,14 +133,38 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
           </button>
         </div>
+        <button class="menu-toggle" id="menu-toggle" type="button" aria-label="Abrir menu" aria-expanded="false" aria-controls="mobile-menu">
+          <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path class="mt-morph" d="M27 10 13 10C10.8 10 9 8.2 9 6 9 3.5 10.8 2 13 2 15.2 2 17 3.8 17 6L17 26C17 28.2 18.8 30 21 30 23.2 30 25 28.2 25 26 25 23.8 23.2 22 21 22L7 22"/>
+            <path d="M7 16 27 16"/>
+          </svg>
+        </button>
       </div>
     </header>
+
+    <!-- Menu mobile (drawer) — aberto pelo #menu-toggle -->
+    <div class="mobile-menu" id="mobile-menu" role="dialog" aria-modal="true" aria-label="Menu" hidden>
+      <div class="mobile-menu-backdrop" data-close="1"></div>
+      <nav class="mobile-menu-panel" aria-label="Navegação">
+        <div class="mobile-menu-head">
+          <span class="user-avatar" id="user-avatar-m" aria-hidden="true">SB</span>
+          <div class="mobile-menu-id"><p class="mobile-menu-name" id="user-name-m"></p><p class="mobile-menu-sub">OpusSB · Clipes</p></div>
+          <button class="mobile-menu-x" type="button" data-close="1" aria-label="Fechar menu">&times;</button>
+        </div>
+        <a class="mobile-nav-item" data-nav="home" href="#/">Home</a>
+        <a class="mobile-nav-item" data-nav="projetos" href="#/projetos">Projetos</a>
+        <a class="mobile-nav-item" data-nav="favoritos" href="#/favoritos">Favoritos</a>
+        <a class="mobile-nav-item" data-nav="config" href="#/config">Configurações</a>
+        <button class="btn btn-ghost mobile-menu-logout" id="logout-btn-m" type="button">Sair</button>
+      </nav>
+    </div>
 
     <main>
 
       <!-- ═══════ HOME ═══════ -->
       <div id="view-home" class="view">
         <section class="hero">
+          <div class="hero-shader" id="hero-shader" aria-hidden="true"></div>
           <div class="hero-glows" aria-hidden="true">
             <div class="glow glow-a" style="top:-10%;left:8%;"></div>
             <div class="glow glow-b" style="top:0;right:6%;"></div>
@@ -146,20 +172,26 @@
           <div class="hero-inner">
             <div class="hero-text">
               <p class="eyebrow">Central de clipes</p>
-              <h1 class="page-title" style="font-size:clamp(40px,5.6vw,72px);letter-spacing:-0.035em;">E aí, <span class="grad-text" id="greeting-name">você</span>.</h1>
+              <h1 class="page-title" style="font-size:clamp(40px,5.6vw,72px);letter-spacing:-0.035em;"><span id="greeting-time">Olá</span>, <span class="grad-text" id="greeting-name">você</span>.</h1>
               <p class="page-sub">Solte um vídeo longo abaixo e o OpusSB devolve os melhores momentos cortados, reformatados e legendados.</p>
             </div>
-            <svg class="arrowburst hero-art" width="100" height="100" viewBox="0 0 200 200" aria-hidden="true">
-              <defs><linearGradient id="hmArrow" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFD75E"/><stop offset="1" stop-color="#E0A800"/></linearGradient></defs>
-              <g transform="rotate(0 100 100)"><path d="M126,100 L148,84 L148,92 L190,92 L190,108 L148,108 L148,116 Z" fill="#26262B"/></g>
-              <g transform="rotate(45 100 100)"><path d="M126,100 L148,84 L148,92 L190,92 L190,108 L148,108 L148,116 Z" fill="#26262B"/></g>
-              <g transform="rotate(90 100 100)"><path d="M126,100 L148,84 L148,92 L190,92 L190,108 L148,108 L148,116 Z" fill="#26262B"/></g>
-              <g transform="rotate(135 100 100)"><path d="M126,100 L148,84 L148,92 L190,92 L190,108 L148,108 L148,116 Z" fill="#26262B"/></g>
-              <g transform="rotate(180 100 100)"><path d="M126,100 L148,84 L148,92 L190,92 L190,108 L148,108 L148,116 Z" fill="#26262B"/></g>
-              <g transform="rotate(270 100 100)"><path d="M126,100 L148,84 L148,92 L190,92 L190,108 L148,108 L148,116 Z" fill="#26262B"/></g>
-              <g transform="rotate(315 100 100)"><path d="M126,100 L148,84 L148,92 L190,92 L190,108 L148,108 L148,116 Z" fill="#26262B"/></g>
-              <g transform="rotate(225 100 100)"><path d="M126,100 L148,84 L148,92 L190,92 L190,108 L148,108 L148,116 Z" fill="url(#hmArrow)"/></g>
-            </svg>
+            <div class="hero-visual" aria-hidden="true">
+              <div class="hero-clip hero-clip--mid">
+                <div class="hero-clip-cover"><div class="hero-eq"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+                <span class="score-badge score-high hero-clip-badge">8.1</span>
+                <span class="hero-clip-dur">0:42</span>
+              </div>
+              <div class="hero-clip hero-clip--back">
+                <div class="hero-clip-cover"><div class="hero-eq"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+                <span class="score-badge score-mid hero-clip-badge">7.3</span>
+                <span class="hero-clip-dur">1:05</span>
+              </div>
+              <div class="hero-clip hero-clip--front">
+                <div class="hero-clip-cover"><div class="hero-eq"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+                <span class="score-badge score-high hero-clip-badge">9.2</span>
+                <span class="hero-clip-dur">0:28</span>
+              </div>
+            </div>
           </div>
 
           <div class="upload-wrap">
@@ -253,9 +285,6 @@
           <div id="clips-list" class="clips-grid"></div>
         </section>
 
-        <!-- Stats -->
-        <section id="home-stats" class="home-stats"></section>
-
         <!-- Como funciona (faixa clara, animada) -->
         <section class="howb" aria-label="Como funciona">
           <div class="howb-inner">
@@ -342,6 +371,7 @@
   <script src="/js/router.js"></script>
   <script src="/js/views.js"></script>
   <script src="/js/howit.js"></script>
+  <script src="/js/shader-animation.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
