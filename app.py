@@ -828,7 +828,9 @@ def _clip_objects(job_id, result_urls_json, thumbnail_url=None):
 
 
 def _project_from_job(job):
-    """Mapeia um job para o shape Project que o front consome (um job = um projeto)."""
+    """Mapeia um job para o shape Project que o front consome (um job = um projeto).
+    owner_email = quem subiu o vídeo (NULL = legado); a biblioteca é compartilhada, mas
+    o front usa o dono pra exibir "Enviado por X" e liberar Excluir só pro dono/admin."""
     try:
         items = json.loads(job.get("result_urls") or "[]")
     except (TypeError, ValueError):
@@ -847,21 +849,26 @@ def _project_from_job(job):
         "avg_score": round(sum(scores) / len(scores), 1) if scores else None,
         "duration": None,
         "captions": bool(job.get("captions", 1)),
+        "owner_email": job.get("user_email"),
     }
 
 
 @app.route("/api/projects")
 @login_required
 def list_projects():
-    jobs = db.list_jobs(session["user"])
+    # Uso interno: a biblioteca de projetos é COMPARTILHADA. Todo usuário ativo vê
+    # todos os projetos (quem subiu fica em owner_email); só o dono e os admins podem
+    # excluir (ver delete_project). list_jobs() sem argumento traz tudo, ordenado.
+    jobs = db.list_jobs()
     return jsonify({"projects": [_project_from_job(j) for j in jobs], "total": len(jobs)})
 
 
 @app.route("/api/projects/<job_id>")
 @login_required
 def get_project(job_id):
+    # Biblioteca compartilhada: qualquer usuário ativo abre qualquer projeto.
     job = db.get_job(job_id)
-    if not job or (job.get("user_email") and job["user_email"] != session["user"]):
+    if not job:
         return jsonify({"error": "Projeto não encontrado."}), 404
     proj = _project_from_job(job)
     proj["clips"] = _clip_objects(job_id, job["result_urls"], _thumb_url(job)) if job["result_urls"] else []
@@ -872,9 +879,9 @@ def get_project(job_id):
 @login_required
 def project_thumb(job_id):
     """Thumbnail do projeto (frame real do melhor clipe) via 302 pra URL presignada.
-    Mesmo padrão de auth da rota de vídeo: exige sessão e dono. 404 se não houver frame."""
+    Biblioteca compartilhada: exige só sessão ativa. 404 se não houver frame."""
     job = db.get_job(job_id)
-    if not job or (job.get("user_email") and job["user_email"] != session["user"]):
+    if not job:
         abort(404)
     key = job.get("thumbnail_key")
     if not key:
@@ -1112,8 +1119,9 @@ _MAX_TEXT_LEN = 300
 
 
 def _clip_lookup(clip_id):
-    """Resolve clip_id "<job_id>:<idx>" -> (job, idx, base_key), com auth de dono.
-    Aborta 404 se o formato, o job, o dono ou o índice não baterem."""
+    """Resolve clip_id "<job_id>:<idx>" -> (job, idx, base_key). Biblioteca compartilhada:
+    qualquer usuário ativo acessa/edita qualquer clipe. Aborta 404 se o formato, o job ou
+    o índice não baterem."""
     job_id, _, idx_s = clip_id.rpartition(":")
     try:
         idx = int(idx_s)
@@ -1122,7 +1130,7 @@ def _clip_lookup(clip_id):
     if not job_id:
         abort(404)
     job = db.get_job(job_id)
-    if not job or (job.get("user_email") and job["user_email"] != session["user"]):
+    if not job:
         abort(404)
     try:
         items = json.loads(job.get("result_urls") or "[]")
@@ -1315,12 +1323,25 @@ def clip_music_remove(clip_id):
     return jsonify({"ok": True})
 
 
+def _can_manage(job) -> bool:
+    """Quem pode destruir um projeto na biblioteca compartilhada: o DONO (quem subiu) ou
+    um admin. Os demais usuários acessam e editam, mas não excluem/cancelam. Job legado
+    (dono NULL) não tem quem reivindicar, então só admin gerencia."""
+    user = db.get_user(session["user"]) or {}
+    if user.get("is_admin"):
+        return True
+    owner = job.get("user_email")
+    return bool(owner) and owner == session["user"]
+
+
 @app.route("/api/projects/<job_id>", methods=["DELETE"])
 @login_required
 def delete_project(job_id):
     job = db.get_job(job_id)
-    if not job or (job.get("user_email") and job["user_email"] != session["user"]):
+    if not job:
         return jsonify({"error": "Projeto não encontrado."}), 404
+    if not _can_manage(job):
+        return jsonify({"error": "Só o dono do projeto ou um admin pode excluir."}), 403
     # Apaga os arquivos no S3 (áudio + clipes) e depois o registro. Se a limpeza do
     # S3 falhar parcialmente, ainda removemos o job pra UI ficar consistente (o que
     # sobrar no bucket é órfão e pode ser varrido depois).
@@ -1336,8 +1357,10 @@ def delete_project(job_id):
 @login_required
 def cancel_job(job_id):
     job = db.get_job(job_id)
-    if not job or (job.get("user_email") and job["user_email"] != session["user"]):
+    if not job:
         return jsonify({"error": "Job não encontrado."}), 404
+    if not _can_manage(job):
+        return jsonify({"error": "Só o dono do projeto ou um admin pode cancelar."}), 403
     if job["status"] in ("done", "error"):
         return jsonify({"ok": True, "already_final": True})
     # Cancel honesto: marca error (libera a vaga do MAX_CONCURRENT na hora). As threads

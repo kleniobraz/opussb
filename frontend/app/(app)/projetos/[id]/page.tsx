@@ -8,16 +8,18 @@ import { toast } from "sonner";
 import { Download, RotateCcw } from "lucide-react";
 import * as api from "@/lib/api";
 import { useProject } from "@/hooks/use-projects";
+import { useAuth } from "@/providers/auth-provider";
 import { ClipGrid } from "@/components/clip-grid";
 import { ReprocessDialog } from "@/components/reprocess-dialog";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Button } from "@/components/ui/button";
-import { fmtScore, timeAgo } from "@/lib/format";
+import { fmtScore, timeAgo, nameFromEmail } from "@/lib/format";
 
 export default function ProjetoPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const qc = useQueryClient();
+  const { user } = useAuth();
   const { data: p, isLoading, isError } = useProject(id);
   const [reprocessOpen, setReprocessOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
@@ -87,7 +89,12 @@ export default function ProjetoPage() {
   const meta =
     (p.clip_count != null ? p.clip_count + " clipes · " : "") +
     (p.avg_score != null ? "nota média " + fmtScore(p.avg_score) + " · " : "") +
-    timeAgo(p.created_at);
+    timeAgo(p.created_at) +
+    (p.owner_email ? " · enviado por " + nameFromEmail(p.owner_email) : "");
+
+  // Biblioteca compartilhada: todos acessam, mas só o dono (quem subiu) ou um admin
+  // excluem. O backend reforça isso (403); aqui é só pra não mostrar o botão à toa.
+  const canDelete = !!user && (!!user.is_admin || user.email === p.owner_email);
 
   return (
     <div className="view-pad">
@@ -107,9 +114,11 @@ export default function ProjetoPage() {
           <Button variant="brandGhost" onClick={() => setReprocessOpen(true)}>
             <RotateCcw /> Reprocessar
           </Button>
-          <Button variant="destructive" onClick={() => setDelOpen(true)}>
-            Excluir
-          </Button>
+          {canDelete && (
+            <Button variant="destructive" onClick={() => setDelOpen(true)}>
+              Excluir
+            </Button>
+          )}
         </div>
       </div>
 

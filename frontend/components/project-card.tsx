@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Play } from "lucide-react";
-import { fmtScore, scoreClass, timeAgo, hashStr } from "@/lib/format";
+import { fmtScore, scoreClass, timeAgo, hashStr, nameFromEmail } from "@/lib/format";
 import type { Project } from "@/lib/types";
 
 // Onda de audio generativa (capa quando nao ha thumbnail real). Determinística pelo seed.
@@ -85,7 +85,10 @@ export function ProjectCard({ p }: { p: Project }) {
       )}
       <div className="project-body">
         <p className="project-title">{p.title || p.filename || "Projeto"}</p>
-        <p className="project-meta">{timeAgo(p.created_at)}</p>
+        <p className="project-meta">
+          {timeAgo(p.created_at)}
+          {p.owner_email ? ` · por ${nameFromEmail(p.owner_email)}` : ""}
+        </p>
         <span className="project-open">
           Abrir <span aria-hidden="true">→</span>
         </span>

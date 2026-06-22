@@ -55,6 +55,15 @@ export function firstNameFromEmail(email?: string | null): string {
   return token.charAt(0).toUpperCase() + token.slice(1).toLowerCase();
 }
 
+// Nome de exibição a partir do email ("klenio.braz" -> "Klenio Braz"). Vazio se sem email.
+export function nameFromEmail(email?: string | null): string {
+  if (!email) return "";
+  const local = email.split("@")[0] || "";
+  const parts = local.split(/[._-]+/).filter(Boolean);
+  if (!parts.length) return local;
+  return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join(" ");
+}
+
 export function initialsFromEmail(email?: string | null): string {
   if (!email) return "SB";
   const local = email.split("@")[0] || "";

@@ -74,6 +74,7 @@ export interface Project {
   avg_score?: number | null;
   status?: string;
   thumbnail_url?: string | null;
+  owner_email?: string | null; // quem subiu o vídeo (biblioteca compartilhada); null = legado
   clips?: Clip[];
 }
 

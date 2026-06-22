@@ -368,3 +368,22 @@ antigo `clip-max`). Agora tem controles PRÓPRIOS, claros:
   `.clip-seek` + thumbs webkit/moz), tudo reusando `--gold`. Sem mudança no backend; `tsc` + `next
   build` limpos; deploy via `systemctl restart opussb-web` (build + restart juntos pra não deixar o
   `.next` inconsistente sob o `next start` no ar).
+
+---
+
+## 13. Projetos compartilhados (uso interno) (2026-06-22)
+
+> Decisão do dono: a biblioteca de Projetos passa a ser COMPARTILHADA entre o time (todos veem
+> e editam tudo); só o dono (quem subiu) e os admins podem excluir. Escopo: muda SÓ a tela de
+> Projetos. Home/Recentes e o contador "Sua produção" continuam PESSOAIS. Backend correspondente:
+> ver §15 do `BACKEND_CONTEXT.md`. Deployado em produção (build + `systemctl restart opussb-web`).
+
+- **`lib/types.ts`**: `Project` ganhou `owner_email?: string | null` (quem subiu; null = legado).
+- **`lib/format.ts`**: novo `nameFromEmail` ("klenio.braz" vira "Klenio Braz"; vazio se sem email).
+- **`components/project-card.tsx`**: a meta do card passou a mostrar "· por \<nome\>" quando há
+  `owner_email` (componente puro, sem hook).
+- **`app/(app)/projetos/[id]/page.tsx`**: usa `useAuth`; a meta mostra "· enviado por \<nome\>";
+  `canDelete = user && (user.is_admin || user.email === p.owner_email)` e o botão **Excluir** só
+  renderiza quando `canDelete`. O backend reforça (403), então esconder o botão é só cosmético.
+  **Reprocessar** e **Baixar todos** seguem visíveis pra todos (não destrutivos / no-op por ora).
+- Não mexe em favoritos/preferências (seguem individuais). `tsc --noEmit` e `next build` limpos.

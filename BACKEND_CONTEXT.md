@@ -466,3 +466,37 @@ volume de 80G (`/mnt/opussb-jobs`), mas faltava o temp. Corrigido: `TMPDIR=/mnt/
 no `.env` (mesmo filesystem do `JOB_DIR`, então o `.save()` vira rename) + `proxy_request_buffering
 off` no `/api` do nginx (stream direto pro Flask, sem 2a cópia local). Caches (pip/npm/apt/journal)
 limpos liberaram ~4G. (`yolov8 para GPU/RunPod` segue como otimização adiada, não urgente.)
+
+---
+
+## 15. Projetos compartilhados (uso interno) (2026-06-22)
+
+Decisão de produto do dono: pro uso interno do time, a biblioteca de projetos deixa de ser
+por usuário e passa a ser COMPARTILHADA. Todo usuário ativo vê e edita qualquer projeto/clipe
+(o caso "Zion precisa exportar um clipe que o Klenio subiu"). Quem subiu continua sendo o dono;
+só o dono e os admins podem destruir. Escopo confirmado: muda SÓ a biblioteca de Projetos;
+Home/Recentes e o contador "Sua produção" seguem PESSOAIS (continuam usando `list_jobs(user)`).
+
+Mudanças (todas em `app.py`, sem migração de banco; `user_email` do job já existia como dono):
+- `GET /api/projects` agora chama `db.list_jobs()` (sem argumento, traz tudo ordenado) em vez de
+  `db.list_jobs(session["user"])`. A lista vira global.
+- Removida a trava de dono (`job.user_email and job.user_email != session.user -> 404`) de
+  `get_project`, `project_thumb` e do helper `_clip_lookup`. Como `_clip_lookup` cobre vídeo,
+  base, legenda (GET/PUT), música (POST/PUT/DELETE), `caption_y` e export, todo usuário ativo
+  passa a acessar e EDITAR qualquer clipe. Atenção: legenda/música são propriedade do clipe
+  (compartilhadas), então a edição de um usuário vale pra todos (esperado no modelo de time).
+- `_project_from_job` passa a expor `owner_email` (= `job.user_email`, NULL pra legado), pro
+  front exibir "enviado por X" e decidir se mostra o botão Excluir.
+- Novo helper `_can_manage(job)`: True se o usuário da sessão for admin OU o dono do job. Job
+  legado (dono NULL) não tem dono pra reivindicar, então só admin gerencia.
+- `DELETE /api/projects/<id>` e `POST /api/jobs/<id>/cancel` passam por `_can_manage`: 404 se o
+  job não existe, 403 se existe mas o usuário não é dono nem admin. O gate é no servidor (o
+  front esconder o botão é só cosmético).
+- Favoritos e preferências seguem INDIVIDUAIS (são do usuário, não fazem sentido globais).
+
+Validação: `test_backend.py` passa (nenhum teste dependia da trava de dono; os de "ownership"
+são de sessões). Verificação e2e descartável (DB temporário + test client, monkeypatch do
+`s3_client.delete_prefix` pra não tocar a rede): B vê e abre o projeto de A, recebe 403 ao
+excluir/cancelar, o projeto sobrevive; dono e admin excluem com 200; legado só pelo admin.
+Deploy: backup (db + código) + `systemctl restart opussb` (active_jobs=0) + build do front +
+restart do `opussb-web`. Sem push na master (regra 9).
