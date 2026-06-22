@@ -5,6 +5,7 @@ import math
 import logging
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import requests
@@ -82,9 +83,32 @@ _YT_COOKIES = os.environ.get(
 )
 
 
-def _yt_auth_args() -> list:
-    """--cookies <arquivo> quando há cookies configurados (e o arquivo existe); senão vazio."""
-    return ["--cookies", _YT_COOKIES] if _YT_COOKIES and os.path.exists(_YT_COOKIES) else []
+def _cookie_copy_args():
+    """O yt-dlp REESCREVE o arquivo passado em --cookies a cada execução; quando o YouTube
+    invalida a sessão (comum em IP de datacenter), ele grava de volta um jar degradado e
+    DESTRÓI o master exportado (foi o que matou os cookies em produção). Damos a ele uma CÓPIA
+    descartável, preservando o master. Retorna (args, tmp_path|None); o chamador remove o tmp."""
+    if not (_YT_COOKIES and os.path.exists(_YT_COOKIES)):
+        return [], None
+    fd, tmp = tempfile.mkstemp(prefix="ytck_", suffix=".txt")
+    os.close(fd)
+    try:
+        shutil.copyfile(_YT_COOKIES, tmp)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return [], None
+    return ["--cookies", tmp], tmp
+
+
+def _rm_quiet(path) -> None:
+    if path:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 # Prefere h264+aac em mp4 (merge limpo, sem recode), até 1080p (reframe é 1080x1920, mais
 # que isso é desperdício). Fallbacks progressivos até o melhor disponível.
 _YT_FORMAT = (
@@ -110,7 +134,8 @@ def _yt_error_hint(stderr: str) -> str:
 def youtube_probe(url: str) -> dict:
     """Lê metadados do vídeo SEM baixar (título, duração, se é live). Levanta RuntimeError
     com mensagem amigável se o yt-dlp falhar, for bloqueado, ou o link for inválido."""
-    cmd = [_YTDLP, *_yt_auth_args(), "--socket-timeout", str(_YT_SOCKET_TIMEOUT),
+    ck_args, ck_tmp = _cookie_copy_args()
+    cmd = [_YTDLP, *ck_args, "--socket-timeout", str(_YT_SOCKET_TIMEOUT),
            "--dump-single-json", "--no-playlist", "--skip-download", "--no-warnings", url]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=_YT_PROBE_TIMEOUT)
@@ -118,6 +143,8 @@ def youtube_probe(url: str) -> dict:
         raise RuntimeError("Tempo esgotado ao ler o link do YouTube.")
     except FileNotFoundError:
         raise RuntimeError("yt-dlp não está instalado no servidor.")
+    finally:
+        _rm_quiet(ck_tmp)
     if r.returncode != 0:
         raise RuntimeError(_yt_error_hint(r.stderr))
     try:
@@ -136,7 +163,8 @@ def _download_youtube(url: str, out_path: str, job_id: str) -> None:
     """Baixa o vídeo do YouTube pra out_path (mp4). Levanta RuntimeError em falha/bloqueio/
     timeout (o subprocess é morto no estouro) ou se o arquivo sair vazio."""
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    cmd = [_YTDLP, *_yt_auth_args(), "-f", _YT_FORMAT, "--merge-output-format", "mp4",
+    ck_args, ck_tmp = _cookie_copy_args()
+    cmd = [_YTDLP, *ck_args, "-f", _YT_FORMAT, "--merge-output-format", "mp4",
            "--no-playlist", "--no-part", "--no-warnings", "--retries", "3",
            "--socket-timeout", str(_YT_SOCKET_TIMEOUT), "--max-filesize", _YT_MAX_FILESIZE,
            "-o", out_path, url]
@@ -146,6 +174,8 @@ def _download_youtube(url: str, out_path: str, job_id: str) -> None:
         raise RuntimeError("Tempo esgotado ao baixar o vídeo do YouTube.")
     except FileNotFoundError:
         raise RuntimeError("yt-dlp não está instalado no servidor.")
+    finally:
+        _rm_quiet(ck_tmp)
     if r.returncode != 0:
         raise RuntimeError(_yt_error_hint(r.stderr))
     if not os.path.exists(out_path) or os.path.getsize(out_path) < 10240:

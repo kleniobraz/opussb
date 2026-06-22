@@ -547,7 +547,10 @@ servidor e cai no MESMO pipeline do upload.
   por subprocess (lista de args, sem shell) via path absoluto do venv. `_yt_error_hint` traduz erros.
   **Heartbeat** (`db.heartbeat_job(job_id,'downloading')` a cada 60s durante o download) impede o
   watchdog de 30min de ceifar um download longo (que liberaria a vaga -> 2 jobs em paralelo). Cookies
-  opcionais: se existir `/opt/opussb/.youtube_cookies.txt`, passa `--cookies`.
+  opcionais: se existir `/opt/opussb/.youtube_cookies.txt`, passa `--cookies` numa **CÓPIA descartável**
+  (`_cookie_copy_args` + `_rm_quiet`), porque o yt-dlp REESCREVE o arquivo `--cookies` a cada execução
+  e, quando o YouTube invalida a sessão, grava de volta um jar degradado que DESTRÓI o master (foi o que
+  matou os cookies em produção 2026-06-22: SID/LOGIN_INFO stripados). A cópia preserva o master exportado.
 - **`db.py`**: `heartbeat_job(job_id, expected_status)` (UPDATE só do `updated_at`, com `WHERE status`
   pra não ressuscitar cancelado).
 - **`app.py`**: `POST /api/upload/youtube` (`@login_required`). Valida URL (`_is_youtube_url`, só
