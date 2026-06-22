@@ -2,9 +2,9 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Download, Copy, Heart, Maximize2, Pencil, Play } from "lucide-react";
+import { Download, Copy, Heart, Pencil, Play } from "lucide-react";
 import { toast } from "sonner";
-import { fmtScore, scoreClass, fmtSeconds } from "@/lib/format";
+import { fmtScore, scoreClass } from "@/lib/format";
 import { useToggleFavorite } from "@/hooks/use-favorites";
 import { ClipVideo } from "./clip-video";
 import { ClipPlayerDialog } from "./clip-player-dialog";
@@ -45,11 +45,10 @@ export function ClipCard({ clip, index = 0 }: { clip: Clip; index?: number }) {
   return (
     <article className="clip-card" data-clip-id={clip.id}>
       {url ? (
-        <ClipVideo src={playUrl}>
+        <ClipVideo src={playUrl} onExpand={() => setOpen(true)}>
           {clip.score != null && (
             <span className={`score-badge ${scoreClass(clip.score)}`}>{fmtScore(clip.score)}</span>
           )}
-          {clip.duration != null && <span className="clip-dur">{fmtSeconds(clip.duration)}</span>}
           <button
             type="button"
             className={`clip-fav${fav ? " is-on" : ""}`}
@@ -58,14 +57,6 @@ export function ClipCard({ clip, index = 0 }: { clip: Clip; index?: number }) {
             title="Favoritar"
           >
             <Heart className="size-4" />
-          </button>
-          <button
-            type="button"
-            className="clip-max"
-            onClick={() => setOpen(true)}
-            aria-label="Abrir clipe"
-          >
-            <Maximize2 className="size-4" />
           </button>
         </ClipVideo>
       ) : (

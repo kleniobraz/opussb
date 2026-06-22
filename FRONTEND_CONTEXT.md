@@ -194,6 +194,27 @@ com o que o nosso backend faz de verdade** (sem botões falsos):
   rodava antes do vídeo montar (query carregando) → `currentTime`/`duration` ficavam em 0 e a
   legenda não acompanhava. Corrigido adicionando `editable` às deps + sync de metadados na corrida.
 
+**Onda de usabilidade (2026-06-22, pedido do dono: "timeline difícil + tempo/ordem das legendas difíceis"):**
+Decisão de design via pesquisa (OpusClip/CapCut/Veed/Kapwing/Descript) + júri: a lista de transcrição
+vira o editor de tempo e estrutura de verdade; a timeline é a companheira visual. Sem mudança no backend
+(a ordem do array é cosmética pro `build_ass_from_segments`, que emite um evento por segmento; o `save()`
+manda `{start,end,text}[]` limpo). Build + `tsc` limpos, restart do `opussb-web` feito.
+- **IDs de cliente estáveis** (`EditSeg = {_id} & Segment`, contador de módulo, **nunca persistido**, removido
+  no `save()`): seleção/karaokê/split/merge ficam estáveis mesmo quando a lista se reordena. `selected`
+  virou `selectedId: string`. A lista e os blocos leem de `ordered = [...segments].sort(byStart)`.
+- **Ordem:** lista **sempre cronológica**; `addSeg` insere no playhead (e o render ordenado coloca no lugar);
+  **Dividir** (`splitSeg`, tesoura: no playhead se dentro do trecho, ou no caret do texto via **Enter**, cortando
+  na palavra mais próxima) e **Juntar** (`mergeSeg`, com a próxima via botão, ou **Backspace** no início junta
+  com a anterior). Tudo gera novo array, nunca toca vídeo.
+- **Tempo:** componente **`TimeField`** (input com draft local, parseT aceita `M:SS.d`/`SS.d`/segundos, vírgula
+  ou ponto; commit no blur/Enter, ESC reverte, seta cima/baixo = ±0,1s, Shift = ±1s). `setSegTime` clampa pra
+  não cruzar a outra borda. Início/Fim e os nudges ±0,1s continuam.
+- **Timeline:** **playhead auto-follow** (centra `scrollLeft` só enquanto `playing`, com guarda de scroll manual
+  ~1,5s); botão **Ajustar** (fit-to-clip) + zoom −/+ e fit-on-load; **clique vs arraste** separados por limiar de
+  4px (`startDrag`, seleciona no `up` sem mover) então clicar não empurra o bloco; **largura mínima 26px** no bloco;
+  aviso visual de **legenda curta** (`<0,7s`) no painel e na timeline. Breakpoint que esconde a transcrição baixou
+  pra 640px (a lista é mais central agora).
+
 **Limitações honestas (sem gambiarra):**
 - **Waveform e filmstrip são best-effort.** O vídeo vem do S3 via URL presignada **sem CORS**,
   então decodificar áudio / capturar frames no browser é bloqueado → as trilhas ficam **neutras**
@@ -323,3 +344,27 @@ limpo; deploy via `systemctl restart opussb-web`.
 Este foi o primeiro commit a incluir o diretório `frontend/` inteiro (até então estava untracked).
 `frontend/.gitignore` (do create-next-app) cobre `node_modules`/`.next`/`.env*`. Push na `master`
 só com autorização (regra 9).
+
+---
+
+## 12. Player custom do clipe (2026-06-22, pedido do dono: "não saber qual botão clicar")
+
+`components/clip-video.tsx` deixou de usar `<video controls>` (o chrome nativo trazia play/volume/
+tela-cheia/PiP/menu de 3 pontos, que competiam e se sobrepunham aos botões do app: ❤️, nota e o
+antigo `clip-max`). Agora tem controles PRÓPRIOS, claros:
+- **Play/pause central grande** (só aparece pausado + pronto, classe `.is-paused.is-ready`); clicar no
+  vídeo também alterna.
+- **Barra própria** (`.clip-controls`, visível no hover e fixa quando pausado): play/pause, tempo
+  `m:ss / m:ss`, **scrub** (`<input type=range>` `.clip-seek` com preenchimento dourado via gradiente
+  inline calculado de `cur/dur`), mudo, e **UM** botão de expandir.
+- **Expandir por contexto** via prop nova `onExpand?`: no card (`clip-card.tsx`) passa
+  `onExpand={() => setOpen(true)}` (abre o `ClipPlayerDialog`); no diálogo, sem `onExpand`, faz
+  **tela cheia** no próprio wrapper (`requestFullscreen`/`exitFullscreen`, ícone troca Expand/Shrink
+  via listener de `fullscreenchange`).
+- `clip-card.tsx`: removidos o botão `clip-max` duplicado e a badge `.clip-dur` (a barra já mostra o
+  tempo); mantidos ❤️ (`.clip-fav`, topo-esq) e a nota (topo-dir). Imports `Maximize2`/`fmtSeconds`
+  retirados. O editor (`preview-stage.tsx`) não usa o `ClipVideo`, então ficou intacto.
+- CSS novo em `app/brand.css` (`.clip-bigplay`, `.clip-controls`, `.clip-ctrl`, `.clip-time`,
+  `.clip-seek` + thumbs webkit/moz), tudo reusando `--gold`. Sem mudança no backend; `tsc` + `next
+  build` limpos; deploy via `systemctl restart opussb-web` (build + restart juntos pra não deixar o
+  `.next` inconsistente sob o `next start` no ar).

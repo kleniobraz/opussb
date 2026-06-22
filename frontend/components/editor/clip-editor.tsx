@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -17,6 +17,47 @@ import { PreviewStage } from "./preview-stage";
 import { TranscriptPanel } from "./transcript-panel";
 import { EditorTimeline } from "./editor-timeline";
 import type { Music, Segment } from "@/lib/types";
+
+// Segmento como vive no estado do editor: o {start,end,text} do contrato + um id de
+// cliente NAO persistido. O id deixa a selecao, o karaoke e o split/merge estaveis mesmo
+// quando a lista se reordena por tempo; ele e removido antes do PUT (save monta um array
+// limpo {start,end,text}). A ordem do array e cosmetica pro backend (cada segmento vira um
+// evento .ass com seu proprio tempo), entao ordenar/inserir em ordem/dividir/juntar e seguro.
+export type EditSeg = { _id: string } & Segment;
+
+let __segCounter = 0;
+function genId() {
+  return "s" + ++__segCounter;
+}
+
+// Ordena por inicio (desempate pelo fim). Usado pra renderizar a lista e os blocos sempre
+// em ordem cronologica, e pra achar vizinhos no juntar.
+const byStart = (a: EditSeg, b: EditSeg) => a.start - b.start || a.end - b.end;
+
+// Acha o espaco mais proximo de `idx` (dentro de ~16 chars) pra cortar o texto numa fronteira
+// de palavra ao dividir pelo playhead. No split pelo cursor do texto respeitamos o caret cru.
+function nearestSpace(text: string, idx: number): number {
+  const max = text.length;
+  if (idx <= 0 || idx >= max) return idx;
+  let left = -1;
+  let right = -1;
+  for (let i = idx; i >= 0 && idx - i <= 16; i--) {
+    if (text[i] === " ") {
+      left = i;
+      break;
+    }
+  }
+  for (let i = idx; i < max && i - idx <= 16; i++) {
+    if (text[i] === " ") {
+      right = i;
+      break;
+    }
+  }
+  if (left < 0 && right < 0) return idx;
+  if (left < 0) return right;
+  if (right < 0) return left;
+  return idx - left <= right - idx ? left : right;
+}
 
 function MusicControl({
   music,
@@ -92,8 +133,8 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
     enabled: !!clipId,
   });
 
-  const [segments, setSegments] = useState<Segment[]>([]);
-  const [selected, setSelected] = useState<number | null>(null);
+  const [segments, setSegments] = useState<EditSeg[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [music, setMusic] = useState<Music | null>(null);
   const [volume, setVolume] = useState(15);
   const [captionsOn, setCaptionsOn] = useState(true);
@@ -116,9 +157,17 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
   const frames = useFilmstrip(usingBurned ? null : baseSrc, duration, 12);
   const peaks = useWaveform(usingBurned ? null : baseSrc);
 
+  // Vista sempre em ordem cronologica (a lista e os blocos leem por aqui). O estado bruto
+  // pode estar em qualquer ordem; a identidade vem do _id, entao reordenar nunca perde a selecao.
+  const ordered = useMemo(() => [...segments].sort(byStart), [segments]);
+
   useEffect(() => {
     if (!data) return;
-    setSegments(data.segments?.length ? data.segments.map((s) => ({ ...s })) : []);
+    setSegments(
+      data.segments?.length
+        ? data.segments.map((s) => ({ _id: genId(), start: s.start, end: s.end, text: s.text }))
+        : [],
+    );
     setMusic(data.music ?? null);
     setVolume(Math.round((data.music?.volume ?? 0.15) * 100));
     if (data.caption_y != null) {
@@ -222,19 +271,19 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
     else v.pause();
   }
 
-  function patchSegment(i: number, patch: Partial<Segment>) {
-    setSegments((s) => s.map((row, j) => (j === i ? { ...row, ...patch } : row)));
+  const r2 = (x: number) => Math.round(x * 100) / 100;
+
+  function patchSegment(id: string, patch: Partial<Segment>) {
+    setSegments((s) => s.map((row) => (row._id === id ? { ...row, ...patch } : row)));
     setDirty(true);
   }
 
-  const r2 = (x: number) => Math.round(x * 100) / 100;
-
   // Marca o inicio/fim da linha no instante atual do player (sem precisar arrastar blocos).
-  function setSegEdge(i: number, edge: "start" | "end") {
+  function setSegEdge(id: string, edge: "start" | "end") {
     const t = r2(currentTime);
     setSegments((arr) =>
-      arr.map((row, j) => {
-        if (j !== i) return row;
+      arr.map((row) => {
+        if (row._id !== id) return row;
         return edge === "start"
           ? { ...row, start: Math.max(0, Math.min(t, r2(row.end - 0.1))) }
           : { ...row, end: Math.max(r2(row.start + 0.1), t) };
@@ -244,10 +293,10 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
   }
 
   // Ajuste fino de +-0.1s no inicio/fim da linha.
-  function nudgeSeg(i: number, edge: "start" | "end", delta: number) {
+  function nudgeSeg(id: string, edge: "start" | "end", delta: number) {
     setSegments((arr) =>
-      arr.map((row, j) => {
-        if (j !== i) return row;
+      arr.map((row) => {
+        if (row._id !== id) return row;
         return edge === "start"
           ? { ...row, start: r2(Math.max(0, Math.min(row.start + delta, row.end - 0.1))) }
           : { ...row, end: r2(Math.max(row.start + 0.1, row.end + delta)) };
@@ -256,12 +305,100 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
     setDirty(true);
   }
 
-  const activeIndex = (() => {
-    const i = segments.findIndex((s) => currentTime >= s.start && currentTime < s.end);
-    return i >= 0 ? i : null;
-  })();
+  // Define um tempo digitado (vindo do campo editavel). Clampa pra nunca cruzar a outra borda
+  // nem ficar negativo. NaN e ignorado (o campo reverte sozinho pro valor anterior).
+  function setSegTime(id: string, edge: "start" | "end", seconds: number) {
+    if (!isFinite(seconds)) return;
+    setSegments((arr) =>
+      arr.map((row) => {
+        if (row._id !== id) return row;
+        return edge === "start"
+          ? { ...row, start: r2(Math.max(0, Math.min(seconds, row.end - 0.1))) }
+          : { ...row, end: r2(Math.max(row.start + 0.1, seconds)) };
+      }),
+    );
+    setDirty(true);
+  }
 
-  const activeText = captionsOn && !usingBurned && activeIndex != null ? segments[activeIndex].text : null;
+  function addSeg() {
+    const at = r2(currentTime);
+    const id = genId();
+    setSegments((s) => [...s, { _id: id, start: at, end: r2(at + 2), text: "" }]);
+    setSelectedId(id);
+    setDirty(true);
+  }
+
+  function deleteSeg(id: string) {
+    setSegments((s) => s.filter((row) => row._id !== id));
+    setSelectedId((cur) => (cur === id ? null : cur));
+    setDirty(true);
+  }
+
+  // Divide uma linha em duas. Se um caret (posicao no texto) e passado (Enter no textarea),
+  // corta exatamente ali; senao corta no playhead (se dentro do trecho) ou no meio, alinhando
+  // o texto na palavra mais proxima. O tempo da divisao segue o playhead ou a proporcao do corte.
+  function splitSeg(id: string, caret?: number) {
+    const seg = segments.find((s) => s._id === id);
+    if (!seg) return;
+    const span = seg.end - seg.start;
+    if (span < 0.3) {
+      toast.error("Linha curta demais para dividir.");
+      return;
+    }
+    const len = seg.text.length;
+    const inside = currentTime > seg.start + 0.05 && currentTime < seg.end - 0.05;
+    let cut: number;
+    if (caret != null) {
+      cut = Math.max(0, Math.min(caret, len));
+    } else if (inside && len > 0) {
+      cut = nearestSpace(seg.text, Math.round(((currentTime - seg.start) / span) * len));
+    } else {
+      cut = nearestSpace(seg.text, Math.round(len / 2));
+    }
+    const left = seg.text.slice(0, cut).trim();
+    const right = seg.text.slice(cut).trim();
+    let mid = inside ? r2(currentTime) : r2(seg.start + span * (len ? cut / len : 0.5));
+    mid = Math.min(r2(seg.end - 0.05), Math.max(r2(seg.start + 0.05), mid));
+    setSegments((prev) => {
+      const idx = prev.findIndex((s) => s._id === id);
+      if (idx < 0) return prev;
+      const a: EditSeg = { _id: seg._id, start: seg.start, end: mid, text: left };
+      const b: EditSeg = { _id: genId(), start: mid, end: seg.end, text: right };
+      const copy = prev.slice();
+      copy.splice(idx, 1, a, b);
+      return copy;
+    });
+    setSelectedId(seg._id);
+    setDirty(true);
+  }
+
+  // Junta a linha com a vizinha (cronologica) anterior ou seguinte: une os tempos e o texto.
+  function mergeSeg(id: string, dir: "prev" | "next") {
+    const sorted = [...segments].sort(byStart);
+    const si = sorted.findIndex((s) => s._id === id);
+    if (si < 0) return;
+    const other = dir === "prev" ? sorted[si - 1] : sorted[si + 1];
+    if (!other) {
+      toast.info(dir === "prev" ? "Não há linha antes desta." : "Não há linha depois desta.");
+      return;
+    }
+    const cur = sorted[si];
+    const a = cur.start <= other.start ? cur : other; // mais cedo
+    const b = cur.start <= other.start ? other : cur; // mais tarde
+    const merged: EditSeg = {
+      _id: a._id,
+      start: Math.min(a.start, b.start),
+      end: Math.max(a.end, b.end),
+      text: `${a.text} ${b.text}`.trim(),
+    };
+    setSegments((prev) => prev.filter((s) => s._id !== a._id && s._id !== b._id).concat(merged));
+    setSelectedId(merged._id);
+    setDirty(true);
+  }
+
+  const activeSeg = segments.find((s) => currentTime >= s.start && currentTime < s.end) ?? null;
+  const activeId = activeSeg?._id ?? null;
+  const activeText = captionsOn && !usingBurned && activeSeg ? activeSeg.text : null;
 
   async function onUploadMusic(f: File) {
     toast.info("Enviando música…");
@@ -285,9 +422,10 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
   }
 
   async function save() {
+    // Monta um array limpo {start,end,text}, em ordem cronologica, sem o _id de cliente.
     const out: Segment[] = [];
     let bad: number | null = null;
-    segments.forEach((r, i) => {
+    [...segments].sort(byStart).forEach((r, i) => {
       const st = Number(r.start);
       const en = Number(r.end);
       const tx = (r.text || "").trim();
@@ -330,6 +468,12 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
     document.body.appendChild(a);
     a.click();
     a.remove();
+  }
+
+  function selectAndSeek(id: string) {
+    setSelectedId(id);
+    const seg = segments.find((s) => s._id === id);
+    if (seg) seek(seg.start);
   }
 
   return (
@@ -409,28 +553,20 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
           <div className="editor-main">
             <div className="editor-transcript">
               <TranscriptPanel
-                segments={segments}
-                selected={selected}
-                activeIndex={activeIndex}
+                segments={ordered}
+                selectedId={selectedId}
+                activeId={activeId}
                 currentTime={currentTime}
                 playing={playing}
-                onSelect={(i) => {
-                  setSelected(i);
-                  seek(segments[i].start);
-                }}
-                onChangeText={(i, text) => patchSegment(i, { text })}
-                onDelete={(i) => {
-                  setSegments((s) => s.filter((_, j) => j !== i));
-                  setSelected((cur) => (cur === i ? null : cur != null && cur > i ? cur - 1 : cur));
-                  setDirty(true);
-                }}
-                onAdd={() => {
-                  const at = r2(currentTime);
-                  setSegments((s) => [...s, { start: at, end: at + 2, text: "" }]);
-                  setDirty(true);
-                }}
+                onSelect={selectAndSeek}
+                onChangeText={(id, text) => patchSegment(id, { text })}
+                onDelete={deleteSeg}
+                onAdd={addSeg}
                 onSetEdge={setSegEdge}
                 onNudge={nudgeSeg}
+                onSetTime={setSegTime}
+                onSplit={splitSeg}
+                onMerge={mergeSeg}
               />
               <MusicControl
                 music={music}
@@ -489,15 +625,15 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
             duration={duration}
             currentTime={currentTime}
             playing={playing}
-            segments={segments}
-            selected={selected}
+            segments={ordered}
+            selectedId={selectedId}
             pxPerSec={pxPerSec}
             frames={frames}
             peaks={peaks}
             onSeek={seek}
             onPlayPause={togglePlay}
-            onSelect={setSelected}
-            onChangeSegment={(i, patch) => patchSegment(i, patch)}
+            onSelect={setSelectedId}
+            onChangeSegment={(id, patch) => patchSegment(id, patch)}
             onZoom={setPxPerSec}
           />
         </>

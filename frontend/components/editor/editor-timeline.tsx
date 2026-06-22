@@ -1,9 +1,14 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { Pause, Play, SkipBack, SkipForward, ZoomIn, ZoomOut } from "lucide-react";
+import { Maximize2, Minus, Pause, Play, Plus, SkipBack, SkipForward } from "lucide-react";
 import type { Frame } from "@/hooks/use-filmstrip";
-import type { Segment } from "@/lib/types";
+import type { EditSeg } from "./clip-editor";
+
+const MIN_BLOCK_W = 26; // largura minima clicavel de um bloco, mesmo pra legenda curtissima
+const ZOOM_MIN = 4;
+const ZOOM_MAX = 48;
+const DRAG_THRESHOLD = 4; // px que o ponteiro precisa andar antes de virar arraste (clique != mover)
 
 function fmtClock(t: number): string {
   if (!isFinite(t)) t = 0;
@@ -12,6 +17,8 @@ function fmtClock(t: number): string {
   const cs = Math.floor((t * 100) % 100);
   return `${m}:${String(s).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
 }
+
+const r2 = (x: number) => Math.round(x * 100) / 100;
 
 // Imanta `value` ao alvo mais proximo dentro de `tol` (segundos). Facilita alinhar a
 // legenda ao playhead e as bordas dos blocos vizinhos sem precisar de precisao no mouse.
@@ -28,20 +35,12 @@ function snap(value: number, targets: number[], tol: number): number {
   return best;
 }
 
-type DragState = {
-  i: number;
-  mode: "move" | "left" | "right";
-  startX: number;
-  start: number;
-  end: number;
-} | null;
-
 export function EditorTimeline({
   duration,
   currentTime,
   playing,
   segments,
-  selected,
+  selectedId,
   pxPerSec,
   frames,
   peaks,
@@ -54,20 +53,26 @@ export function EditorTimeline({
   duration: number;
   currentTime: number;
   playing: boolean;
-  segments: Segment[];
-  selected: number | null;
+  segments: EditSeg[];
+  selectedId: string | null;
   pxPerSec: number;
   frames: Frame[];
   peaks: number[] | null;
   onSeek: (t: number) => void;
   onPlayPause: () => void;
-  onSelect: (i: number) => void;
-  onChangeSegment: (i: number, patch: { start: number; end: number }) => void;
+  onSelect: (id: string) => void;
+  onChangeSegment: (id: string, patch: { start: number; end: number }) => void;
   onZoom: (px: number) => void;
 }) {
-  const tracksRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null); // container que rola (mede clientWidth, move scrollLeft)
+  const tracksRef = useRef<HTMLDivElement>(null); // conteudo (largura = trackWidth)
   const waveRef = useRef<HTMLCanvasElement>(null);
-  const drag = useRef<DragState>(null);
+  // Guarda contra brigar com o scroll do usuario: lembramos o ultimo scrollLeft que NOS setamos;
+  // se o onScroll trouxer outro valor, foi o usuario -> pausa o auto-follow por um tempinho.
+  const lastAuto = useRef(-1);
+  const pauseFollowUntil = useRef(0);
+  const didFit = useRef(false);
+
   const dur = duration && isFinite(duration) ? duration : 0;
   const trackWidth = Math.max(dur * pxPerSec, 320);
 
@@ -90,36 +95,41 @@ export function EditorTimeline({
     window.addEventListener("pointerup", up);
   }
 
-  function startDrag(e: React.PointerEvent, i: number, mode: "move" | "left" | "right") {
+  function startDrag(e: React.PointerEvent, id: string, mode: "move" | "left" | "right") {
     e.stopPropagation();
-    const s = segments[i];
-    drag.current = { i, mode, startX: e.clientX, start: s.start, end: s.end };
-    const tol = 8 / pxPerSec; // ~8px de imã
+    const s = segments.find((seg) => seg._id === id);
+    if (!s) return;
+    const startX = e.clientX;
+    let moved = false;
+    const d = { start: s.start, end: s.end };
+    const tol = 8 / pxPerSec; // ~8px de ima
     const targets = [currentTime, 0, dur];
-    segments.forEach((seg, j) => {
-      if (j !== i) targets.push(seg.start, seg.end);
+    segments.forEach((seg) => {
+      if (seg._id !== id) targets.push(seg.start, seg.end);
     });
     const move = (ev: PointerEvent) => {
-      const d = drag.current;
-      if (!d) return;
-      const ds = (ev.clientX - d.startX) / pxPerSec;
+      const dx = ev.clientX - startX;
+      // So vira arraste depois de passar do limiar: um clique puro nao empurra o bloco.
+      if (!moved && Math.abs(dx) < DRAG_THRESHOLD) return;
+      moved = true;
+      const ds = dx / pxPerSec;
       let start = d.start;
       let end = d.end;
-      if (d.mode === "move") {
+      if (mode === "move") {
         const w = d.end - d.start;
         start = Math.max(0, Math.min(snap(d.start + ds, targets, tol), dur - w));
         end = start + w;
-      } else if (d.mode === "left") {
+      } else if (mode === "left") {
         start = Math.max(0, Math.min(snap(d.start + ds, targets, tol), d.end - 0.1));
       } else {
         end = Math.min(dur, Math.max(snap(d.end + ds, targets, tol), d.start + 0.1));
       }
-      onChangeSegment(d.i, { start: Math.round(start * 100) / 100, end: Math.round(end * 100) / 100 });
+      onChangeSegment(id, { start: r2(start), end: r2(end) });
     };
     const up = () => {
-      drag.current = null;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      if (!moved) onSelect(id); // clique sem mover = selecionar
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -151,13 +161,67 @@ export function EditorTimeline({
     }
   }, [peaks, trackWidth]);
 
+  // Ajusta o zoom pra que o clipe inteiro caiba na largura visivel (sem rolagem horizontal).
+  function fitToClip() {
+    const el = scrollRef.current;
+    if (!el || dur <= 0) return;
+    const w = el.clientWidth - 16;
+    onZoom(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.floor(w / dur))));
+  }
+
+  // Abre o clipe ja cabendo inteiro na tela (uma vez, quando a duracao fica conhecida).
+  useEffect(() => {
+    if (didFit.current) return;
+    const el = scrollRef.current;
+    if (dur > 0 && el) {
+      const w = el.clientWidth - 16;
+      onZoom(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.floor(w / dur))));
+      didFit.current = true;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dur]);
+
+  // Playhead acompanha sozinho enquanto toca: rola pra manter o cursor ~no centro da janela.
+  // So enquanto `playing`, e com um respiro se o usuario rolou na mao no meio do play.
+  useEffect(() => {
+    if (!playing) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    if (performance.now() < pauseFollowUntil.current) return;
+    const target = currentTime * pxPerSec - el.clientWidth / 2;
+    const max = Math.max(0, el.scrollWidth - el.clientWidth);
+    const next = Math.max(0, Math.min(target, max));
+    lastAuto.current = next;
+    el.scrollLeft = next;
+  }, [currentTime, playing, pxPerSec]);
+
+  // Selecao vinda da lista (pausado): rola pra mostrar o bloco selecionado se estiver fora da vista.
+  useEffect(() => {
+    if (playing || selectedId == null) return;
+    const el = scrollRef.current;
+    const seg = segments.find((s) => s._id === selectedId);
+    if (!el || !seg) return;
+    const x = seg.start * pxPerSec;
+    if (x < el.scrollLeft || x > el.scrollLeft + el.clientWidth) {
+      el.scrollLeft = Math.max(0, x - el.clientWidth / 2);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
+
+  function onTracksScroll() {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (lastAuto.current >= 0 && Math.abs(el.scrollLeft - lastAuto.current) < 2) return; // foi o auto-follow
+    pauseFollowUntil.current = performance.now() + 1500; // usuario rolou: pausa o follow um pouco
+  }
+
   // Ticks da regua: intervalo conforme o zoom.
   const interval = pxPerSec >= 14 ? 1 : pxPerSec >= 7 ? 2 : 5;
   const ticks: number[] = [];
   for (let t = 0; t <= dur; t += interval) ticks.push(t);
 
   // Bloco sendo falado agora (destaque karaoke, distinto da selecao).
-  const activeIdx = segments.findIndex((s) => currentTime >= s.start && currentTime < s.end);
+  const activeId = segments.find((s) => currentTime >= s.start && currentTime < s.end)?._id ?? null;
 
   return (
     <div className="editor-timeline">
@@ -181,20 +245,42 @@ export function EditorTimeline({
         </span>
         <div className="editor-transport-spacer" />
         <span className="editor-transport-hint">espaço: tocar · ← →: navegar (shift = 5s)</span>
-        <ZoomOut className="size-4 text-ink-muted" />
+        <button
+          className="editor-icon-btn"
+          onClick={fitToClip}
+          aria-label="Ajustar à tela"
+          title="Ajustar o clipe inteiro à tela"
+        >
+          <Maximize2 className="size-4" />
+        </button>
+        <button
+          className="editor-icon-btn"
+          onClick={() => onZoom(Math.max(ZOOM_MIN, pxPerSec - 4))}
+          aria-label="Diminuir zoom"
+          title="Diminuir zoom"
+        >
+          <Minus className="size-4" />
+        </button>
         <input
           type="range"
-          min={4}
-          max={48}
+          min={ZOOM_MIN}
+          max={ZOOM_MAX}
           value={pxPerSec}
           onChange={(e) => onZoom(parseInt(e.target.value, 10))}
           aria-label="Zoom da timeline"
-          className="w-32 accent-[var(--gold)]"
+          className="w-28 accent-[var(--gold)]"
         />
-        <ZoomIn className="size-4 text-ink-muted" />
+        <button
+          className="editor-icon-btn"
+          onClick={() => onZoom(Math.min(ZOOM_MAX, pxPerSec + 4))}
+          aria-label="Aumentar zoom"
+          title="Aumentar zoom"
+        >
+          <Plus className="size-4" />
+        </button>
       </div>
 
-      <div className="editor-tracks-scroll">
+      <div className="editor-tracks-scroll" ref={scrollRef} onScroll={onTracksScroll}>
         <div
           className="editor-tracks"
           ref={tracksRef}
@@ -228,27 +314,17 @@ export function EditorTimeline({
           </div>
 
           <div className="editor-track editor-track--caps">
-            {segments.map((s, i) => (
+            {segments.map((s) => (
               <div
-                key={i}
-                className={`editor-cap-block${selected === i ? " is-selected" : ""}${activeIdx === i ? " is-active" : ""}`}
-                style={{ left: s.start * pxPerSec, width: Math.max(8, (s.end - s.start) * pxPerSec) }}
-                onPointerDown={(e) => startDrag(e, i, "move")}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onSelect(i);
-                }}
+                key={s._id}
+                className={`editor-cap-block${selectedId === s._id ? " is-selected" : ""}${activeId === s._id ? " is-active" : ""}${s.end - s.start < 0.7 ? " is-short" : ""}`}
+                style={{ left: s.start * pxPerSec, width: Math.max(MIN_BLOCK_W, (s.end - s.start) * pxPerSec) }}
+                onPointerDown={(e) => startDrag(e, s._id, "move")}
                 title={s.text}
               >
                 <span className="editor-cap-block-text">{s.text || "(vazio)"}</span>
-                <div
-                  className="editor-cap-handle left"
-                  onPointerDown={(e) => startDrag(e, i, "left")}
-                />
-                <div
-                  className="editor-cap-handle right"
-                  onPointerDown={(e) => startDrag(e, i, "right")}
-                />
+                <div className="editor-cap-handle left" onPointerDown={(e) => startDrag(e, s._id, "left")} />
+                <div className="editor-cap-handle right" onPointerDown={(e) => startDrag(e, s._id, "right")} />
               </div>
             ))}
           </div>
