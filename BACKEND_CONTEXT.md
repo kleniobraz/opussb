@@ -51,9 +51,11 @@ Trabalha-se **direto na VPS de produção** em `/opt/opussb`.
   (`WorkingDirectory=/opt/opussb`, `EnvironmentFile=/opt/opussb/.env`,
   `Restart=on-failure`). **Bind duplo**: `127.0.0.1:5001` e `172.17.0.1:5001`
   (gateway da bridge Docker). **Nunca** escuta em `0.0.0.0`.
-- **Nginx** (porta 80): serve o SPA estático de `static/` e faz proxy do `/api/`.
-  `client_max_body_size 15G`. Devolve **404 para `/api/callback` e `/api/internal`**
-  (defesa: rotas internas não acessíveis de fora).
+- **Nginx** (HTTPS 443, ver §14; redirect http→https): proxy de `/` pro **Next**
+  (`opussb-web` em 127.0.0.1:3000, ver FRONTEND_CONTEXT §2) e de `/api`+`/health` pro Flask.
+  `client_max_body_size 15G` + `proxy_request_buffering off` no `/api`. Devolve **404 para
+  `/api/callback` e `/api/internal`** (rotas internas não acessíveis de fora). [OBSOLETO: a
+  frase "porta 80 / serve SPA estático de `static/`" valia antes do cutover pro Next (2026-06-21).]
 - **N8N** (Docker, porta 5678): orquestra RunPod + Claude. Container alcança o Flask
   pelo gateway `172.17.0.1:5001` **direto** (não via Nginx). Workflow id
   `<no painel do N8N>`, editável pela API REST (`X-N8N-API-KEY`). Key em
@@ -82,6 +84,10 @@ de propósito (não sobe com config faltando).
 - `extracting_audio` → `uploading_audio` (sobe `jobs/<id>/audio/audio.mp3` no S3) →
   `transcribing` → dispara o webhook do N8N (com URL presignada do áudio + min/max).
 
+Fonte alternativa: **`POST /api/upload/youtube`** cria o job e dispara `run_youtube_thread1`,
+que adiciona um passo **`downloading`** (baixa via yt-dlp) ANTES do `extracting_audio` e daí
+cai no mesmo `run_thread1`. Ver §17.
+
 O **N8N** roda RunPod (Whisper → SRT) + Claude (scoring → clips_json) e chama
 `POST /api/callback` com `{job_id, transcript (SRT), clips_json}`.
 
@@ -89,8 +95,8 @@ O callback grava transcript+clips_json e dispara a **thread2**:
 - `cutting` (corta cada clipe com ffmpeg) → `reframing` (reenquadra 9:16) →
   `uploading_clips` (sobe os clipes + grava segmentos de legenda) → `done`.
 
-Estados: `queued, extracting_audio, uploading_audio, transcribing, cutting,
-reframing, uploading_clips, done, error`.
+Estados: `queued, downloading (só fonte YouTube, §17), extracting_audio, uploading_audio,
+transcribing, cutting, reframing, uploading_clips, done, error`.
 
 - **MAX_CONCURRENT_JOBS=1**: um job por vez. Um job preso trava a fila.
 - **Watchdog**: `reap_stale_jobs` marca como `error` jobs sem update há >30min
@@ -147,11 +153,15 @@ reframing, uploading_clips, done, error`.
   error, created_at, updated_at, user_email (dono; NULL=legado visível a todos),
   captions (0/1, default 1), thumbnail_key (chave S3 do frame do card; NULL=sem
   frame, jobs antigos degradam pro fallback de onda)`.
-- **`users`**: `email, password_hash (scrypt), must_change_password, timestamps`.
+- **`users`**: `email, password_hash (scrypt), must_change_password, status
+  (active|pending|rejected|inactive; só active loga), is_admin (0/1), auth_provider
+  (zoho|manual|bootstrap), timestamps`. Ver §14.
 - **`favorites`**: `(user_email, clip_id)` — `clip_id = "<job_id>:<index>"`.
 - **`preferences`**: `user_email, data (JSON)`.
 - **`clip_captions`**: `clip_id, segments (JSON [{start,end,text}] relativo ao
-  clipe), updated_at`. Legenda editável.
+  clipe), updated_at, caption_y (REAL: posição vertical 0..1 ou NULL=padrão, §8),
+  caption_style (TEXT JSON {size,tracking,color,shadow} ou NULL=padrão SB, §16)`.
+  Legenda editável + posição + estilo de fonte por clipe.
 - **`clip_music`**: `clip_id, music_key (S3), volume (0..1), updated_at`. Música de
   fundo por clipe (opcional).
 - **`sessions`**: `id (uuid4, PK; também no cookie), user_email, ip (best-effort, só
@@ -256,10 +266,14 @@ Contrato completo dessas rotas: `BACKEND_INTEGRATION.md` seção 3.1.
   já chama, **backend ainda não implementou** (cai em toast).
 - Campos extras do upload `language`/`aspect_ratio`: ignorados (saída sempre 9:16).
   `captions` é honrado (default ligado).
-- TLS/HTTPS: bloqueado na decisão de domínio.
+- ~~TLS/HTTPS~~ **FEITO** (§14): HTTPS em https://sbclips.space.
 - Música: hoje é upload por clipe (sem biblioteca de presets).
-- Mini editor no front: backend pronto/testado; a UI está sendo polida pelo chat do
-  front (ver `FRONTEND_TODO.md`).
+- ~~Mini editor no front~~ **FEITO**: editor de clipe completo (FRONTEND §7) + posição
+  (`caption_y`, §8) + estilo de fonte (`caption_style`, §16).
+- **YouTube (§17): manutenção recorrente** — cookies expiram (reexportar), `yt-dlp`/`Deno`
+  precisam de update conforme o YouTube muda; bloqueio anti-robô do IP de datacenter é
+  intermitente mesmo com cookies (proxy residencial adiado).
+- PENDENTE (de §14): atualizar `ultralytics` (RCE); parar de servir/blindar `static/` (XSS legado).
 
 ---
 

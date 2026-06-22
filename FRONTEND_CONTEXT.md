@@ -20,6 +20,11 @@ de API) e a memória do projeto (`frontend-stack-decision`).
 - **Feito e aprovado:** Fase 1 (fatia vertical: casca + login + Home), Fase 2 (todas as views:
   Projetos, Detalhe, Favoritos, Config), **Editor de clipe estilo OpusClip** (rota
   `/editar/[clipId]`), **Fase 3 cutover**, e **aviso de alterações não salvas** no editor.
+- **Ondas seguintes (2026-06-22, todas em produção):** rebrand SB Clips + login Zoho + painel
+  admin + navbar nova + preloader (§11), player custom do clipe (§12), projetos compartilhados
+  (§13), e personalização de fonte da legenda + importar do YouTube + console estilo OpusClip
+  + hero preenchendo a viewport (§14). As seções 0-10 são da migração inicial; onde divergirem
+  das §11-14, **as §11-14 valem** (são mais recentes).
 - **Falta:** waveform/filmstrip reais do editor (bloqueados por CORS do S3 hoje); remover a SPA
   `static/` depois de alguns dias de cutover validado; guarda do botão Voltar do *navegador*
   (popstate) no editor — ver §7 e §9.
@@ -130,8 +135,10 @@ next.config.ts  components.json  tsconfig.json  package.json
 - **`lib/api.ts`** cliente fetch tipado de todos os endpoints. `credentials: same-origin`. Em 401
   lança `AuthError` e dispara `window` event `opussb:auth-expired`. `ApiError` carrega status/msg.
 - **`lib/types.ts`** contrato (Me, Project, Clip, Stats, Session, Captions, Segment, Music,
-  Preferences, UploadOptions). **`lib/format.ts`** (fmtBytes/Score/Seconds, timeAgo, hashStr,
-  nome/iniciais/saudação).
+  Preferences, UploadOptions). Mais recentes: `is_admin`/`status` em Me/LoginResponse + `AdminUser`/
+  `SignupResponse` (§11), `Project.owner_email` (§13), `CaptionStyle` + `Captions.style`/`caption_y`
+  (§14/§8/§16), `JobState` ganhou `downloading` (§14). **`lib/format.ts`** (fmtBytes/Score/Seconds,
+  timeAgo, hashStr, nome/iniciais/saudação, `nameFromEmail`).
 - **Providers** (`providers/`): `AuthProvider` (chama `me()` no boot; `login/logout/changePassword`;
   ouve o evento de 401 → desloga), `QueryProvider` (QueryClient; retry off em AuthError),
   `TooltipProvider`, `Toaster` (sonner, tema dark).
@@ -146,8 +153,10 @@ next.config.ts  components.json  tsconfig.json  package.json
 
 - **(auth):** `/login` (split editorial com glows + arrow-burst), `/senha` (troca no primeiro
   acesso). Ambas redirecionam se já autenticado.
-- **Casca (app):** `Topbar` (nav com aba ativa) + `MobileMenu` (drawer via Sheet) + `RequireAuth`
-  (loading/guest→login/must_change→senha).
+- **Casca (app):** `MiniNavbar` (pill flutuante de vidro, ver §11; **substituiu `Topbar`/`MobileMenu`**,
+  que seguem no repo sem uso) + `RequireAuth` (loading/guest→login/must_change→senha) + `Preloader`
+  pós-login (§11) + rodapé de autoria (§11). O `main` tem `pt-20` (navbar `position:fixed`); na Home
+  o hero é puxado sob a navbar (§14).
 - **Home (`/`):** hero + `ShaderBackground` (three lazy) + `UploadConsole` (dropzone, presets,
   validação de formato/tamanho, opções; aplica os padrões salvos) → `useJobStatus` polling →
   `JobProgress` (barra/status + resultados em `ClipGrid`) + `HowItWorks` (IntersectionObserver) +
