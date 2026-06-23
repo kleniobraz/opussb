@@ -59,10 +59,17 @@ def exists(s3_key: str) -> bool:
         return False
 
 
-def get_presigned_url(s3_key: str, expiry_seconds: int = 86400) -> str:
+def get_presigned_url(s3_key: str, expiry_seconds: int = 86400,
+                      download_name: str = None) -> str:
+    """URL presignada de GET. Com download_name, embute response-content-disposition pra o S3
+    devolver Content-Disposition: attachment (força o download com nome amigável em vez de tocar
+    inline) sem alterar o objeto nem afetar o player, que pede a mesma key sem o nome."""
+    params = {"Bucket": config.S3_BUCKET, "Key": s3_key}
+    if download_name:
+        params["ResponseContentDisposition"] = f'attachment; filename="{download_name}"'
     return _client().generate_presigned_url(
         "get_object",
-        Params={"Bucket": config.S3_BUCKET, "Key": s3_key},
+        Params=params,
         ExpiresIn=expiry_seconds,
     )
 

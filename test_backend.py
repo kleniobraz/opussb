@@ -565,11 +565,55 @@ def test_runpod_client():
         _cfg.RUNPOD_REFRAME_ENDPOINT_ID = orig_ep
 
 
+def test_download_all():
+    """download_all lista os clipes do projeto (id/filename/url) pro front baixar um a um;
+    _safe_filename/_clip_download_name geram nomes amigáveis; o presigned com download_name
+    embute o Content-Disposition de anexo."""
+    print("[download all: helpers + rota]")
+    import db
+    import json as _json
+    import s3_client
+    from werkzeug.security import generate_password_hash
+
+    # _safe_filename: tira acento/símbolo, colapsa espaço, limita tamanho, cai no fallback
+    check(app._safe_filename("Início: O Vídeo!! ") == "Inicio O Video", "_safe_filename tira acento/símbolo")
+    check(app._safe_filename("   ") == "clip", "_safe_filename vazio -> fallback")
+    check(len(app._safe_filename("x" * 200)) <= 80, "_safe_filename limita o tamanho")
+
+    # presigned com/sem download_name (assina local, sem rede)
+    u = s3_client.get_presigned_url("jobs/T/clips/clip_01_cap.mp4", 60, download_name="01 Teste.mp4")
+    check("response-content-disposition" in u.lower(), "presigned com download_name força attachment")
+    u2 = s3_client.get_presigned_url("jobs/T/clips/clip_01_cap.mp4", 60)
+    check("response-content-disposition" not in u2.lower(), "presigned sem download_name não força disposition")
+
+    # a rota (offline: só lê o job e monta URLs, não toca o S3)
+    db.upsert_user("dla@test", generate_password_hash("pw12345678"), must_change=False)
+    db.create_job("JDLA", "v.mp4", 10, 60, "/x", "dla@test")
+    db.update_job("JDLA", status="done",
+                  result_urls=_json.dumps([{"key": "jobs/JDLA/clips/clip_01_base.mp4", "title": "Abertura"},
+                                           {"key": "jobs/JDLA/clips/clip_02_base.mp4"}]))
+    c = app.app.test_client()
+    c.post("/api/login", json={"email": "dla@test", "password": "pw12345678"})
+    r = c.get("/api/projects/JDLA/download_all")
+    check(r.status_code == 200, "download_all -> 200")
+    d = r.get_json()
+    check(d.get("count") == 2 and len(d.get("clips", [])) == 2, "lista os 2 clipes")
+    check(d["clips"][0]["url"].endswith("?dl=1") and "JDLA:0" in d["clips"][0]["url"],
+          "url aponta pra /video?dl=1 do clipe")
+    check(d["clips"][0]["filename"] == "01 Abertura.mp4", "filename usa o título quando há")
+    check(d["clips"][1]["filename"] == "clip_02.mp4", "clipe sem título cai no fallback clip_NN")
+    check(c.get("/api/projects/NOPE/download_all").status_code == 404, "projeto inexistente -> 404")
+
+    db.delete_job("JDLA")
+    with db._conn() as cc:
+        cc.execute("DELETE FROM users WHERE email = ?", ("dla@test",))
+
+
 def main():
     for t in (test_burn_cmd, test_burn_semaphore, test_presigned_put, test_runpod_client,
               test_validate_segments, test_parse_clips_json,
               test_captions_roundtrip, test_caption_style, test_youtube_helpers,
-              test_snap_clip_bounds, test_thumbnail, test_clip_window,
+              test_snap_clip_bounds, test_thumbnail, test_clip_window, test_download_all,
               test_sessions_helpers, test_sessions_ownership, test_sessions_flow,
               test_sessions_extra):
         t()

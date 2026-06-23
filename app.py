@@ -1,7 +1,9 @@
 import os
 import sys
+import re
 import math
 import time
+import unicodedata
 import uuid
 import json
 import base64
@@ -832,6 +834,37 @@ def _clip_objects(job_id, result_urls_json, thumbnail_url=None):
     return clips
 
 
+def _safe_filename(name, fallback="clip", maxlen=80):
+    """Sanitiza um texto livre (título do clipe) num nome de arquivo seguro: tira acento
+    (NFKD -> ASCII), remove o que não é [A-Za-z0-9 ._-], colapsa espaço e limita o tamanho.
+    Mantém ASCII pra não quebrar o header Content-Disposition em navegador nenhum."""
+    s = unicodedata.normalize("NFKD", str(name or "")).encode("ascii", "ignore").decode("ascii")
+    s = re.sub(r"[^A-Za-z0-9 ._-]+", "", s)
+    s = re.sub(r"\s+", " ", s).strip().strip(".")
+    return s[:maxlen].strip() or fallback
+
+
+def _clip_download_name(job, idx):
+    """Nome de arquivo amigável pro download de um clipe: 'NN titulo.mp4' (título do clips_json,
+    se houver) ou 'clip_NN.mp4'. Usado pelo ?dl=1 da rota de vídeo e pelo download_all."""
+    title = None
+    try:
+        items = json.loads(job.get("result_urls") or "[]")
+        if 0 <= idx < len(items) and isinstance(items[idx], dict):
+            title = items[idx].get("title")
+    except (TypeError, ValueError):
+        pass
+    if title:
+        return f"{idx + 1:02d} {_safe_filename(title)}.mp4"
+    return f"clip_{idx + 1:02d}.mp4"
+
+
+def _clip_redirect(key, download_name=None):
+    """302 pra URL presignada de um clipe. Com download_name, a presignada carrega
+    Content-Disposition: attachment (força o download com nome amigável em vez de tocar inline)."""
+    return redirect(s3_client.get_presigned_url(key, download_name=download_name), code=302)
+
+
 def _project_from_job(job):
     """Mapeia um job para o shape Project que o front consome (um job = um projeto).
     owner_email = quem subiu o vídeo (NULL = legado); a biblioteca é compartilhada, mas
@@ -892,6 +925,35 @@ def project_thumb(job_id):
     if not key:
         abort(404)
     return redirect(s3_client.get_presigned_url(key), code=302)
+
+
+@app.route("/api/projects/<job_id>/download_all")
+@login_required
+def download_all(job_id):
+    """Lista os clipes do projeto pro front baixar um a um. Sem zip no servidor (custo de CPU/RAM
+    e travaria o /health): cada item aponta pra rota de vídeo com ?dl=1, que entrega o clipe
+    queimado sob demanda (serializado pelo semáforo de queima) já com Content-Disposition de
+    download. Biblioteca compartilhada: qualquer usuário ativo. 404 se o job não existe; lista
+    vazia se ainda não há clipes (job em processamento)."""
+    job = db.get_job(job_id)
+    if not job:
+        return jsonify({"error": "Projeto não encontrado."}), 404
+    try:
+        items = json.loads(job.get("result_urls") or "[]")
+    except (TypeError, ValueError):
+        items = []
+    clips = []
+    for i, it in enumerate(items):
+        key = it if isinstance(it, str) else (it or {}).get("key")
+        if not key:
+            continue
+        cid = f"{job_id}:{i}"
+        clips.append({
+            "id": cid,
+            "filename": _clip_download_name(job, i),
+            "url": f"/api/clips/{cid}/video?dl=1",
+        })
+    return jsonify({"clips": clips, "count": len(clips)})
 
 
 @app.route("/api/stats")
@@ -1101,6 +1163,9 @@ def clip_video(clip_id):
     corrompido no S3."""
     job, idx, base_key = _clip_lookup(clip_id)
     want_trim = request.args.get("nocap") in ("1", "true", "yes")
+    # ?dl=1: força download (Content-Disposition: attachment, nome amigável) em vez de tocar inline.
+    # Usado pelo "Baixar todos" do projeto. Sem dl, dl_name=None e o comportamento é o de antes.
+    dl_name = _clip_download_name(job, idx) if request.args.get("dl") in ("1", "true", "yes") else None
 
     segments_json = db.get_clip_captions(clip_id)
     music = db.get_clip_music(clip_id)
@@ -1132,28 +1197,28 @@ def clip_video(clip_id):
         # Export sem legenda: corte cru reenquadrado (sem legenda, sem música). Sem trim real,
         # a base já é o entregável.
         if not trim_needed:
-            return redirect(s3_client.get_presigned_url(base_key), code=302)
+            return _clip_redirect(base_key, dl_name)
         target_key = base_key.replace("_base.mp4", "_trim.mp4")
         do_caps = do_music = False
     else:
         # Sem nada a fazer (clipe antigo, ou novo sem legenda/música e sem trim): serve a base.
         if not (is_new and (use_caps or use_music or trim_needed)):
-            return redirect(s3_client.get_presigned_url(base_key), code=302)
+            return _clip_redirect(base_key, dl_name)
         target_key = cap_key
         do_caps, do_music = use_caps, use_music
 
     if s3_client.exists(target_key):                     # cache quente
-        return redirect(s3_client.get_presigned_url(target_key), code=302)
+        return _clip_redirect(target_key, dl_name)
 
     with _clip_burn_lock(clip_id):
         if s3_client.exists(target_key):                 # outra thread renderizou enquanto esperávamos
-            return redirect(s3_client.get_presigned_url(target_key), code=302)
+            return _clip_redirect(target_key, dl_name)
         # Slot global de queima: garante 1 ffmpeg pesado por vez (protege a VPS da estampida
         # que derrubava o /health). Se a fila estiver cheia, serve a base SEM legenda em vez
         # de prender a thread do gunicorn; o clipe sempre toca e a próxima abertura re-tenta.
         if not _burn_sem.acquire(timeout=_BURN_QUEUE_TIMEOUT):
             log.warning("[burn] fila de queima cheia para %s; servindo base", clip_id)
-            return redirect(s3_client.get_presigned_url(base_key), code=302)
+            return _clip_redirect(base_key, dl_name)
         tmp = None
         try:
             tmp = tempfile.mkdtemp(prefix="burn_")
@@ -1176,19 +1241,19 @@ def clip_video(clip_id):
                 music_path = os.path.join(tmp, "music" + os.path.splitext(music["music_key"])[1])
                 s3_client.download_file(music["music_key"], music_path)
             if not ass_path and not music_path and not trim_needed:   # nada a aplicar -> base
-                return redirect(s3_client.get_presigned_url(base_key), code=302)
+                return _clip_redirect(base_key, dl_name)
             burn_in, burn_out = (in_pt, out_pt) if trim_needed else (None, None)
             _burn_clip(base_path, ass_path, music_path, (music or {}).get("volume"), out_path,
                        burn_in, burn_out)
             s3_client.upload_file(out_path, target_key)   # só após render local ok
         except Exception as e:
             log.warning("[burn] clip %s falhou (%s); servindo base", clip_id, e)
-            return redirect(s3_client.get_presigned_url(base_key), code=302)
+            return _clip_redirect(base_key, dl_name)
         finally:
             if tmp:
                 shutil.rmtree(tmp, ignore_errors=True)
             _burn_sem.release()                          # libera o slot SEMPRE (o acquire acima deu certo)
-    return redirect(s3_client.get_presigned_url(target_key), code=302)
+    return _clip_redirect(target_key, dl_name)
 
 
 @app.route("/api/clips/<path:clip_id>/base")
@@ -1199,7 +1264,7 @@ def clip_base(clip_id):
     queimada), e a queima final continua acontecendo sob demanda em /video. So faz sentido
     pra clipe novo (_base.mp4); clipe antigo (_9x16.mp4) cai na propria base mesmo."""
     _job, _idx, base_key = _clip_lookup(clip_id)
-    return redirect(s3_client.get_presigned_url(base_key), code=302)
+    return _clip_redirect(base_key)
 
 
 # ─── Legenda editável do clipe (correção pelo usuário; base do mini editor) ───

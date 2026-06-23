@@ -25,28 +25,34 @@ export default function ProjetoPage() {
   const [delOpen, setDelOpen] = useState(false);
 
   async function downloadAll() {
-    const url = api.downloadAllUrl(id);
-    toast.info("Preparando download...");
     try {
-      const r = await fetch(url);
-      if (r.ok) {
-        const ct = r.headers.get("Content-Type") || "";
-        if (ct.includes("application/json")) {
-          const d = await r.json();
-          if (d?.url) window.location.href = d.url;
-          else toast.error("Resposta inesperada do servidor.");
-        } else {
-          window.location.href = url;
-        }
-      } else {
-        toast.info("Baixar todos aguarda o backend (GET /api/projects/:id/download_all).", {
-          duration: 6000,
-        });
+      const r = await fetch(api.downloadAllUrl(id));
+      if (!r.ok) {
+        toast.error("Não consegui preparar os downloads.");
+        return;
       }
-    } catch {
-      toast.info("Baixar todos aguarda o backend (GET /api/projects/:id/download_all).", {
-        duration: 6000,
+      const d = await r.json();
+      const clips: { url: string; filename?: string }[] = Array.isArray(d?.clips) ? d.clips : [];
+      if (clips.length === 0) {
+        toast.info("Esse projeto ainda não tem clipes pra baixar.");
+        return;
+      }
+      toast.success("Baixando " + clips.length + (clips.length > 1 ? " clipes..." : " clipe..."));
+      // Dispara um download por clipe, escalonado, pra o navegador não barrar a rajada. Cada link
+      // bate na rota de vídeo (?dl=1), que entrega o clipe queimado já como anexo; a queima é
+      // serializada pelo semáforo do backend, então não derruba o site.
+      clips.forEach((c, i) => {
+        window.setTimeout(() => {
+          const a = document.createElement("a");
+          a.href = c.url;
+          if (c.filename) a.download = c.filename;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+        }, i * 700);
       });
+    } catch {
+      toast.error("Não consegui preparar os downloads.");
     }
   }
 
