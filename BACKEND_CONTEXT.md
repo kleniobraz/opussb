@@ -739,8 +739,9 @@ segue do corte local (`item['path']`). Helpers anotam em cada item: `final` (pat
 - `gpu_reframe/handler.py` + `Dockerfile` + `requirements.txt`: worker do SDK `runpod`. Base
   `pytorch/...-cuda12.1-...-runtime` + `apt ffmpeg` (já traz `h264_nvenc`) + `libgl1` (opencv); modelo
   YOLO baixado no build e carregado UMA vez por worker; `ultralytics==8.4.66` pinada (mesma da VPS).
-- `.github/workflows/build-reframe-image.yml`: CI builda `linux/amd64` e publica em
-  `ghcr.io/kleniobraz/opussb-reframe:latest` (+ sha) quando `gpu_reframe/**` ou `reframe_core.py` mudam.
+- [OBSOLETO] Existiu um `.github/workflows/build-reframe-image.yml` (CI -> GHCR), mas a rota de CI foi
+  ABANDONADA (Actions bloqueado por billing) e o arquivo foi REMOVIDO do repo em 2026-06-23. A imagem é
+  buildada na VPS e publicada no Docker Hub (ver §21).
 - `config.py`: `RUNPOD_REFRAME_ENDPOINT_ID` ("" = desligado), `REFRAME_GPU_ENABLED` (exige a flag E o
   endpoint id), `REFRAME_GPU_TIMEOUT` (1800s), `REFRAME_PUT_CONTENT_TYPE` ("video/mp4").
 
@@ -763,14 +764,14 @@ cap da queima (21.2) e o corte input-seek (21.3) estão deployados mas AINDA NÃ
 ### 21.1 Reframe na GPU foi pra PRODUÇÃO (atualiza o status da §20)
 - **Endpoint LIVE:** `wni4gr0w1j76t3` (RunPod serverless, nome "sbclips-reframer"). `.env`:
   `RUNPOD_REFRAME_ENDPOINT_ID=wni4gr0w1j76t3` + `REFRAME_GPU_ENABLED=true`. Fallback CPU por clipe ativo.
-- **Imagem foi pro DOCKER HUB, não GHCR.** O GitHub Actions (workflow `build-reframe-image.yml` existe)
-  está BLOQUEADO por billing da conta GitHub. Então a imagem foi **buildada NA PRÓPRIA VPS** (os ~17GB
-  livres do disco comportam a CUDA de ~11GB; é transitório, `docker image prune -af` recupera depois) e
-  publicada em **`kleniobraz/opussb-reframe:latest` (Docker Hub, PÚBLICO)**. Pra o pull autenticado (fugir
-  do rate-limit anônimo do Docker Hub) o endpoint tem uma **registry credential** (user `kleniobraz` +
-  token); o token está em `/root/.dockerhub_token` (600). **Rebuild =** `docker build -f gpu_reframe/Dockerfile
-  -t kleniobraz/opussb-reframe:latest .` na VPS + `docker push` + `docker rmi`/prune. (Quando o billing do
-  Actions for resolvido, dá pra voltar pro CI/GHCR.)
+- **Imagem foi pro DOCKER HUB, não GHCR.** A rota de CI via GitHub Actions foi ABANDONADA (estava bloqueada
+  por billing da conta GitHub); o workflow `build-reframe-image.yml` foi REMOVIDO do repo em 2026-06-23
+  (ficava auto-falhando a cada push em `gpu_reframe/`, gerando notificação à toa). A imagem é **buildada NA
+  PRÓPRIA VPS** (os ~17GB livres do disco comportam a CUDA de ~11GB; é transitório, `docker image prune -af`
+  recupera depois) e publicada em **`kleniobraz/opussb-reframe:latest` (Docker Hub, PÚBLICO)**. Pra o pull
+  autenticado (fugir do rate-limit anônimo do Docker Hub) o endpoint tem uma **registry credential** (user
+  `kleniobraz` + token); o token está em `/root/.dockerhub_token` (600). **Rebuild =** `docker build -f
+  gpu_reframe/Dockerfile -t kleniobraz/opussb-reframe:latest .` na VPS + `docker push` + `docker rmi`/prune.
 - **GPU types (CUIDADO, incidente real):** a RunPod escalou workers em **RTX PRO 6000 Blackwell (MIG 24GB,
   sm_120)**, que o nosso PyTorch 2.4.1/cu121 (suporta sm_50-90) NÃO inicializa → workers "unhealthy",
   paralelismo morto (só 1 worker 4090 saudável pegava os 7 clipes em fila). **Correção: nos Enabled GPU
