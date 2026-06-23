@@ -72,6 +72,12 @@ CLIP_HANDLE_SECONDS: float = float(os.environ.get("CLIP_HANDLE_SECONDS", "10"))
 REFRAME_DEADZONE_FRAC: float = float(os.environ.get("REFRAME_DEADZONE_FRAC", "0.35"))  # zona morta = 35% da largura do corte
 REFRAME_MAX_PAN_FRAC: float = float(os.environ.get("REFRAME_MAX_PAN_FRAC", "0.18"))    # pan máx por SEGUNDO (fração da largura)
 REFRAME_MIN_CONF: float = float(os.environ.get("REFRAME_MIN_CONF", "0.30"))            # confiança mínima do YOLO pra contar a pessoa
+# Troca de câmera por GEOMETRIA (multicam same-set): a contagem/posição das pessoas que o YOLO já
+# entrega (1=close, enquadra nela; 2+=plano aberto host-esq/convidado-dir, segue o lado do último
+# close; 0=vazio, cai pro centro) define a troca de câmera e o enquadramento. Substitui a detecção
+# por cor (que falhava: as 3 câmeras são do mesmo cenário). True liga a segmentação por plano;
+# False = um plano só (rollback). Env REFRAME_CUT_DETECT=false desliga.
+REFRAME_CUT_DETECT: bool = os.environ.get("REFRAME_CUT_DETECT", "true").lower() in ("1", "true", "yes")
 
 # Offload do reframe pra GPU (2º endpoint RunPod serverless, ver BACKEND_CONTEXT §20). Sem o
 # endpoint id, fica DESLIGADO e o reframe roda na CPU da VPS (comportamento atual). A flag exige

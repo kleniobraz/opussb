@@ -56,6 +56,7 @@ def reframe_job(job_input: dict) -> dict:
         deadzone_frac=float(job_input.get("deadzone_frac", 0.35)),
         max_pan_frac=float(job_input.get("max_pan_frac", 0.18)),
         min_conf=float(job_input.get("min_conf", 0.30)),
+        detect_cuts=bool(job_input.get("detect_cuts", False)),
     )
     with tempfile.TemporaryDirectory() as tmp:
         cut = os.path.join(tmp, "cut.mp4")

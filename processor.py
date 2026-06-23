@@ -483,6 +483,7 @@ def _reframe_clips_gpu(job_id: str, produced: list) -> list:
         "deadzone_frac": config.REFRAME_DEADZONE_FRAC,
         "max_pan_frac": config.REFRAME_MAX_PAN_FRAC,
         "min_conf": config.REFRAME_MIN_CONF,
+        "detect_cuts": config.REFRAME_CUT_DETECT,
     }
     ct = config.REFRAME_PUT_CONTENT_TYPE
     url_expiry = config.REFRAME_GPU_TIMEOUT + 600       # URLs vivem mais que fila + cold start + job

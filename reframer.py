@@ -9,6 +9,7 @@ from ultralytics import YOLO
 _DEADZONE_FRAC = getattr(config, "REFRAME_DEADZONE_FRAC", 0.35)
 _MAX_PAN_FRAC = getattr(config, "REFRAME_MAX_PAN_FRAC", 0.18)
 _MIN_CONF = getattr(config, "REFRAME_MIN_CONF", 0.30)
+_CUT_DETECT = getattr(config, "REFRAME_CUT_DETECT", True)
 # Codec da VPS (CPU). Na GPU o worker usa h264_nvenc; a lógica de corte é a mesma (reframe_core).
 _VPS_CODEC = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
 
@@ -32,5 +33,5 @@ def reframe_clip(input_path: str, output_path: str, subtitles: str | None = None
     reframe_core.reframe_to_file(
         input_path, output_path, _get_model(),
         deadzone_frac=_DEADZONE_FRAC, max_pan_frac=_MAX_PAN_FRAC, min_conf=_MIN_CONF,
-        video_codec_args=_VPS_CODEC, subtitles=subtitles,
+        video_codec_args=_VPS_CODEC, subtitles=subtitles, detect_cuts=_CUT_DETECT,
     )

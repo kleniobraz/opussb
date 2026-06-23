@@ -112,58 +112,6 @@ def test_reframe_clip_levanta_se_nao_abre_video(mocker, tmp_path):
         reframer.reframe_clip(str(input_file), str(tmp_path / "out.mp4"))
 
 
-# Test 3: detect_subject_cx devolve None quando não há pessoa (-> trajetória SEGURA a posição)
-def test_detect_subject_sem_pessoa_retorna_none(mocker):
-    frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-
-    mock_results = mocker.MagicMock()
-    mock_results[0].boxes = []
-    mock_model = mocker.MagicMock(return_value=mock_results)
-
-    mocker.patch("reframe_core.cv2.resize", return_value=np.zeros((360, 640, 3), dtype=np.uint8))
-
-    result = reframe_core.detect_subject_cx(frame, mock_model, width=1920, prev_cx=None, min_conf=0.3)
-
-    assert result is None
-
-
-# Test 4: detect_subject_cx devolve o CENTRO do sujeito em coords da resolução original
-def test_detect_subject_centra_na_pessoa(mocker):
-    frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-
-    mock_box = mocker.MagicMock()
-    mock_box.conf = [0.9]
-    mock_box.xyxy = [[200, 100, 400, 900]]  # x1=200, x2=400 no espaço de 640px
-
-    mock_results = mocker.MagicMock()
-    mock_results[0].boxes = [mock_box]
-    mock_model = mocker.MagicMock(return_value=mock_results)
-
-    mocker.patch("reframe_core.cv2.resize", return_value=np.zeros((360, 640, 3), dtype=np.uint8))
-
-    # scale_x = 1920/640 = 3.0; centro em 640px = (200+400)/2 = 300; real = 300*3.0 = 900
-    result = reframe_core.detect_subject_cx(frame, mock_model, width=1920, prev_cx=None, min_conf=0.3)
-
-    assert result == 900
-
-
-# Test 4b: continuidade — com sujeito anterior, segue o box mais PRÓXIMO, não o mais confiante
-def test_detect_subject_continuidade_segue_o_mais_proximo(mocker):
-    frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-    # A: muito confiante e longe (centro real 120); B: menos confiante e perto (centro real 960)
-    a = mocker.MagicMock(); a.conf = [0.95]; a.xyxy = [[20, 0, 60, 360]]
-    b = mocker.MagicMock(); b.conf = [0.50]; b.xyxy = [[300, 0, 340, 360]]
-    mock_results = mocker.MagicMock()
-    mock_results[0].boxes = [a, b]
-    mock_model = mocker.MagicMock(return_value=mock_results)
-    mocker.patch("reframe_core.cv2.resize", return_value=np.zeros((360, 640, 3), dtype=np.uint8))
-
-    # sujeito anterior perto de 960 -> escolhe B (perto), não A (confiante)
-    result = reframe_core.detect_subject_cx(frame, mock_model, width=1920, prev_cx=950.0, min_conf=0.3)
-
-    assert result == 960
-
-
 # Test 5: câmera travada — sujeito parado -> corte FIXO (não se mexe)
 def test_trajetoria_travada_sujeito_parado():
     samples = [(0, 500), (15, 500), (30, 500)]
@@ -186,3 +134,70 @@ def test_trajetoria_travada_segue_devagar():
     assert out[0] == 200          # começa travado no sujeito
     assert out[-1] > 200          # já começou a acompanhar
     assert out[-1] < 500          # mas devagar: longe de ter pulado pro alvo
+
+
+# Test 7: detect_people devolve todas as pessoas (conf, cx, w) ordenadas por cx (esq -> dir)
+def test_detect_people_ordena_por_cx(mocker):
+    frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    # direita (cx 960) mais confiante; esquerda (cx 120) menos. scale_x = 1920/640 = 3
+    r = mocker.MagicMock(); r.conf = [0.9]; r.xyxy = [[300, 0, 340, 360]]   # cx 320*3 = 960
+    l = mocker.MagicMock(); l.conf = [0.5]; l.xyxy = [[20, 0, 60, 360]]     # cx 40*3 = 120
+    res = mocker.MagicMock(); res[0].boxes = [r, l]
+    model = mocker.MagicMock(return_value=res)
+    mocker.patch("reframe_core.cv2.resize", return_value=np.zeros((360, 640, 3), dtype=np.uint8))
+    people = reframe_core.detect_people(frame, model, width=1920, min_conf=0.3)
+    assert [round(p[1]) for p in people] == [120, 960]      # ordenado esquerda -> direita
+    assert people[0][0] == 0.5 and people[1][0] == 0.9      # conf preservada por pessoa
+
+
+# Test 8: _merge_boxes — funde caixas duplicadas (mesma pessoa), separa pessoas distantes
+def test_merge_boxes():
+    W = 1920   # thr = 0.10*1920 = 192
+    merged = reframe_core._merge_boxes([(0.5, 636, 200), (0.8, 646, 210)], W)   # 10px -> mesma pessoa
+    assert len(merged) == 1 and merged[0][0] == 0.8 and merged[0][1] == 646     # fica a de maior conf
+    merged = reframe_core._merge_boxes([(0.7, 600, 200), (0.9, 1450, 200)], W)  # 850px -> 2 pessoas
+    assert len(merged) == 2
+
+
+# Test 9: _classify — 1=close, 2+=plano aberto (default convidado/direita), guest ausente=hold, 0=centro
+def test_classify_geometria():
+    W = 1920
+    assert reframe_core._classify([], W) == ("none", None)                       # vazio -> centro
+    assert reframe_core._classify([(0.9, 900, 300)], W) == ("close", 900)        # 1 pessoa -> close nela
+    # plano aberto: default = convidado (mais à direita)
+    assert reframe_core._classify([(0.6, 600, 200), (0.9, 1450, 200)], W) == ("wide", 1450)
+    # plano aberto mas só gente à esquerda (convidado não detectado) -> hold (None), não pula
+    assert reframe_core._classify([(0.6, 600, 200), (0.7, 720, 200)], W) == ("wide", None)
+
+
+# Test 10: _cuts_from_kinds — debounce: troca real (>=3 amostras) conta; pisca curto NÃO
+def test_cuts_from_kinds_debounce():
+    seq = [(0, "close"), (15, "close"), (30, "close"),
+           (45, "wide"), (60, "wide"), (75, "wide"), (90, "wide"),
+           (105, "close"), (120, "close"), (135, "close")]
+    assert reframe_core._cuts_from_kinds(seq) == [45, 105]            # 2 trocas reais, fronteira no 1o frame
+    # pisca de 2 amostras dentro do plano aberto NÃO vira corte (debounce 3)
+    seq2 = [(0, "wide"), (15, "wide"), (30, "close"), (45, "close"), (60, "wide"), (75, "wide"), (90, "wide")]
+    assert reframe_core._cuts_from_kinds(seq2) == []
+
+
+# Test 8: trajetória SEGMENTADA por corte — re-adquire o sujeito do novo plano (não arrasta)
+def test_trajetoria_reacquire_no_corte():
+    # Plano A: sujeito em 500 (frame 0). Plano B (após corte no frame 45): sujeito em 1400.
+    samples = [(0, 500), (45, 1400)]
+    sem = reframe_core.build_locked_trajectory(samples, 90, 30.0, 1920, 600, 660, 0.35, 0.18)
+    com = reframe_core.build_locked_trajectory(samples, 90, 30.0, 1920, 600, 660, 0.35, 0.18, cuts=[45])
+    # sem corte: a câmera arrasta devagar de 200 (pan limitado), ainda longe do novo sujeito
+    assert sem[45] < 400
+    # com corte: o novo plano re-trava no sujeito imediatamente (1400 - crop_w/2 = 1100)
+    assert com[45] >= 1000
+    assert com[0] == 200          # plano A inalterado
+
+
+# Test 9: plano sem sujeito após um corte -> corte CENTRAL daquele plano (não fica no vazio)
+def test_plano_sem_sujeito_centraliza():
+    # Plano A com sujeito (frame 0), corte no frame 45, plano B sem ninguém detectado.
+    samples = [(0, 500), (45, None)]
+    com = reframe_core.build_locked_trajectory(samples, 90, 30.0, 1920, 600, 660, 0.35, 0.18, cuts=[45])
+    assert com[0] == 200                       # plano A travado no sujeito
+    assert all(v == 660 for v in com[45:])     # plano B sem sujeito -> center_x (660), não 200

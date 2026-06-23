@@ -16,3 +16,6 @@ FONTE INTER/
 
 # Cookies do YouTube (yt-dlp) - NUNCA commitar
 .youtube_cookies.txt
+
+# Vídeos de teste do reframe (validação manual; não fazem parte do repo)
+video/

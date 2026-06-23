@@ -20,26 +20,22 @@ def filter_escape(path: str) -> str:
     return path.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
 
 
-def detect_subject_cx(frame: np.ndarray, model, width: int,
-                      prev_cx, min_conf: float):
-    """Centro horizontal do sujeito (coords da resolução original) ou None se não houver pessoa
-    confiável (>= min_conf). Com sujeito anterior, escolhe o box mais PRÓXIMO do anterior
-    (continuidade), não o mais confiante do frame -> evita o corte saltar entre pessoas."""
+def detect_people(frame: np.ndarray, model, width: int, min_conf: float):
+    """Todas as pessoas (>= min_conf) do frame, como (conf, cx, box_w) em coords da resolução
+    ORIGINAL, ORDENADAS por cx (esquerda -> direita). Base da detecção por GEOMETRIA: o chamador
+    usa a CONTAGEM e a POSIÇÃO pra saber se é close (1), plano aberto (2+) ou vazio (0), e qual lado."""
     small = cv2.resize(frame, (640, 360))
     scale_x = width / 640
-    candidates = []   # (conf, cx)
+    people = []
     for box in model(small, classes=[0], verbose=False)[0].boxes:
         conf = float(box.conf[0])
         if conf < min_conf:
             continue
         x1 = float(box.xyxy[0][0]) * scale_x
         x2 = float(box.xyxy[0][2]) * scale_x
-        candidates.append((conf, (x1 + x2) / 2))
-    if not candidates:
-        return None
-    if prev_cx is None:
-        return max(candidates, key=lambda c: c[0])[1]            # primeira trava: mais confiante
-    return min(candidates, key=lambda c: abs(c[1] - prev_cx))[1]  # continuidade: mais perto do anterior
+        people.append((conf, (x1 + x2) / 2.0, x2 - x1))
+    people.sort(key=lambda p: p[1])
+    return people
 
 
 def moving_avg(arr, window: int):
@@ -54,13 +50,87 @@ def moving_avg(arr, window: int):
     return sm[:a.size]
 
 
-def build_locked_trajectory(samples: list, total_frames: int, fps: float,
-                            width: int, crop_w: int, center_x: int,
-                            deadzone_frac: float, max_pan_frac: float) -> list:
-    """Câmera virtual TRAVADA. A partir das amostras do centro do sujeito (None = sem detecção ->
-    segura a última), produz o crop_x por frame com ZONA MORTA (deadzone_frac: dentro dela não mexe)
-    + PAN LIMITADO (max_pan_frac por segundo: quando precisa andar, vai devagar, sem salto). Sem
-    nada detectado o clipe inteiro -> corte central fixo."""
+# Caixas cujos centros estão dentro desta fração da largura são a MESMA pessoa (o YOLO duplica/divide
+# o box) -> fundimos, senão a contagem oscila (2/3/4) e quebra a classificação de plano.
+_MERGE_FRAC = 0.10
+# Amostras CONSECUTIVAS que um novo tipo de quadro precisa persistir pra contar como troca de câmera
+# (debounce). 3 absorve o YOLO piscando por ~0,5s (ex.: convidado some 1-2 amostras no plano aberto).
+_CUT_DEBOUNCE = 3
+
+
+def _merge_boxes(people: list, width: int) -> list:
+    """Funde detecções sobrepostas (a MESMA pessoa contada 2x pelo YOLO): centros mais próximos que
+    _MERGE_FRAC*largura viram uma só (fica a de maior confiança). `people` já vem ordenado por cx."""
+    if not people:
+        return people
+    thr = _MERGE_FRAC * width
+    merged = [people[0]]
+    for p in people[1:]:
+        if p[1] - merged[-1][1] < thr:        # mesma pessoa
+            if p[0] > merged[-1][0]:          # mantém a de maior confiança
+                merged[-1] = p
+        else:
+            merged.append(p)
+    return merged
+
+
+def _classify(people: list, width: int):
+    """Enquadramento de UM sample por GEOMETRIA (layout fixo do podcast: host=esquerda, convidado=
+    direita). `people` já DEDUPLICADO e ordenado por cx. Retorna (kind, subject_cx):
+      0 pessoas -> ('none', None): a trajetória cai pro CENTRO.
+      1 pessoa  -> ('close', cx): CLOSE; enquadra nela.
+      2+ pessoas-> ('wide', cx_do_convidado): PLANO ABERTO; default = CONVIDADO (mais à direita). Se o
+                   mais à direita NÃO está na metade direita (convidado não detectado neste frame),
+                   ('wide', None) -> a trajetória SEGURA o sujeito (não pula pro host/vazio). O keyframe
+                   (Fase 1) é o override pra escolher o host."""
+    if not people:
+        return "none", None
+    if len(people) == 1:
+        return "close", people[0][1]
+    guest_cx = people[-1][1]                  # mais à direita = convidado
+    if guest_cx < width / 2.0:                # convidado não visível neste frame -> segura
+        return "wide", None
+    return "wide", guest_cx
+
+
+def _cuts_from_kinds(kinds: list, debounce: int = _CUT_DEBOUNCE) -> list:
+    """Fronteiras de plano (frames) a partir da sequência [(frame, kind)], com DEBOUNCE: um novo tipo
+    de quadro só vira troca de câmera se persistir por `debounce` amostras seguidas (absorve o YOLO
+    piscando). A fronteira é o PRIMEIRO frame do novo plano. O primeiro plano não gera corte."""
+    cuts = []
+    stable = cand = cand_start = None
+    cand_n = 0
+    for f, kind in kinds:
+        if stable is None:
+            stable = kind
+        elif kind != stable:
+            if kind == cand:
+                cand_n += 1
+            else:
+                cand, cand_n, cand_start = kind, 1, f
+            if cand_n >= debounce:
+                cuts.append(cand_start)
+                stable, cand, cand_n = kind, None, 0
+        else:
+            cand, cand_n = None, 0
+    return cuts
+
+
+def _motion_bias_wide(prev_frame, frame, width: int):
+    """TODO (Fase 2, opcional): no PLANO ABERTO, medir movimento (diff de pixels) na metade ESQUERDA
+    vs DIREITA e favorecer o lado mais ativo (provável quem fala/gesticula). Heurística barata, sem
+    áudio nem ML; gesto != fala, então é só um palpite. NÃO implementar ainda: o keyframe manual
+    (Fase 1) já cobre a escolha com certeza. Mantido como ponto de extensão."""
+    raise NotImplementedError("movimento esquerda/direita no plano aberto: TODO Fase 2")
+
+
+def _locked_segment(samples: list, total_frames: int, fps: float,
+                    width: int, crop_w: int, center_x: int,
+                    deadzone_frac: float, max_pan_frac: float) -> list:
+    """Câmera travada de UM plano contínuo (sem corte no meio). A partir das amostras do centro do
+    sujeito (None = sem detecção -> segura o último), produz o crop_x por frame com ZONA MORTA
+    (deadzone_frac: dentro dela não mexe) + PAN LIMITADO (max_pan_frac por segundo: anda devagar, sem
+    salto). Plano sem nenhum sujeito -> corte central fixo."""
     if total_frames <= 0:
         return []
     valid = [(f, cx) for f, cx in samples if cx is not None]
@@ -102,9 +172,35 @@ def build_locked_trajectory(samples: list, total_frames: int, fps: float,
     return [int(round(v)) for v in out]
 
 
+def build_locked_trajectory(samples: list, total_frames: int, fps: float,
+                            width: int, crop_w: int, center_x: int,
+                            deadzone_frac: float, max_pan_frac: float,
+                            cuts: list | None = None) -> list:
+    """Câmera virtual TRAVADA, ciente de CORTES DE CENA. Sem `cuts`, é um plano só (comportamento de
+    sempre). Com `cuts` (frames onde começa um novo plano), trata cada plano como uma mini-trajetória
+    INDEPENDENTE: reseta a câmera no corte (o pan não atravessa o corte arrastando do plano A pro B) e
+    um plano sem sujeito vira corte CENTRAL daquele plano, em vez de segurar a posição do plano
+    anterior (que é o 'cair no vazio' do multicam)."""
+    if total_frames <= 0:
+        return []
+    bounds = sorted({c for c in (cuts or []) if 0 < c < total_frames})
+    if not bounds:
+        return _locked_segment(samples, total_frames, fps, width, crop_w, center_x,
+                               deadzone_frac, max_pan_frac)
+    edges = [0] + bounds + [total_frames]
+    out = []
+    for i in range(len(edges) - 1):
+        start, end = edges[i], edges[i + 1]
+        seg = [(f - start, cx) for (f, cx) in samples if start <= f < end]
+        out.extend(_locked_segment(seg, end - start, fps, width, crop_w, center_x,
+                                   deadzone_frac, max_pan_frac))
+    return out
+
+
 def reframe_to_file(input_path: str, output_path: str, model, *,
                     deadzone_frac: float, max_pan_frac: float, min_conf: float,
-                    video_codec_args: list, subtitles: str | None = None) -> None:
+                    video_codec_args: list, subtitles: str | None = None,
+                    detect_cuts: bool = False) -> None:
     """Reenquadra pra 9:16 (1080x1920) com câmera travada. `model` é um YOLO já carregado;
     `video_codec_args` é a lista de args de vídeo do ffmpeg (ex.: libx264 veryfast na VPS, h264_nvenc
     na GPU). Se já-9:16, padroniza/copia. Levanta em falha (o chamador decide o fallback)."""
@@ -130,11 +226,15 @@ def reframe_to_file(input_path: str, output_path: str, model, *,
         crop_w = width
     center_x = (width - crop_w) // 2
 
-    # Pass 1: amostra o centro do sujeito a cada N frames. grab() nos pulados (sem converter BGR),
-    # retrieve() só nos amostrados. Segue o mesmo sujeito; None = segura a posição.
+    # Pass 1: amostra a cada N frames. grab() nos pulados (sem converter BGR), retrieve() só nos
+    # amostrados. Detecção por GEOMETRIA (NÃO por cor: as 3 câmeras são do mesmo cenário): após FUNDIR
+    # caixas duplicadas (_merge_boxes), a CONTAGEM diz close (1, enquadra nela) / plano aberto (2+,
+    # default = convidado à direita, segurando quando ele some um frame) / vazio (0, cai pro centro).
+    # As trocas de câmera saem do histórico de tipos com DEBOUNCE (_cuts_from_kinds), pra não picar no
+    # ruído do YOLO. detect_cuts=False desliga a segmentação (volta a um plano só).
     sample_every = 15
     samples = []
-    prev_cx = None
+    kinds = []
     frame_idx = 0
     while True:
         if not cap.grab():
@@ -142,15 +242,16 @@ def reframe_to_file(input_path: str, output_path: str, model, *,
         if frame_idx % sample_every == 0:
             ok, frame = cap.retrieve()
             if ok:
-                scx = detect_subject_cx(frame, model, width, prev_cx, min_conf)
-                if scx is not None:
-                    prev_cx = scx
-                samples.append((frame_idx, scx))
+                people = _merge_boxes(detect_people(frame, model, width, min_conf), width)
+                kind, subject_cx = _classify(people, width)
+                kinds.append((frame_idx, kind))
+                samples.append((frame_idx, subject_cx))
         frame_idx += 1
     cap.release()
 
+    cuts = _cuts_from_kinds(kinds) if detect_cuts else []
     per_frame_cx = build_locked_trajectory(samples, total_frames, fps, width, crop_w, center_x,
-                                           deadzone_frac, max_pan_frac)
+                                           deadzone_frac, max_pan_frac, cuts=cuts)
     _pipe_encode(input_path, output_path, per_frame_cx, fps, width, crop_w, center_x,
                  video_codec_args, subtitles)
 
