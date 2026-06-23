@@ -1,0 +1,6 @@
+# Deps do worker GPU de reframe. torch/cuda vêm da imagem base (pytorch runtime); opencv e numpy
+# vêm como dependência da ultralytics. ultralytics PINADA na MESMA versão da VPS (8.4.66) pra a
+# detecção/enquadramento se comportar idêntico nos dois lugares.
+runpod==1.9.1
+ultralytics==8.4.66
+requests>=2.31

@@ -12,6 +12,7 @@ import requests
 import config
 import db
 import s3_client
+import runpod_client
 import captions
 
 log = logging.getLogger("opussb.processor")
@@ -284,18 +285,8 @@ def run_thread2(job_id: str) -> None:
 
         _check_cancel(job_id)
         db.update_job(job_id, status="reframing", progress=85)
-        from reframer import reframe_clip
         _t_reframe = time.monotonic()
-        for i, item in enumerate(produced):
-            out_path = item["path"].replace(".mp4", "_base.mp4")
-            _t_clip = time.monotonic()
-            try:
-                reframe_clip(item["path"], out_path)            # base 9x16 SEM legenda
-            except Exception as e:
-                log.warning("[reframe] clip %d falhou (%s), usando center crop", i + 1, e)
-                _center_crop_fallback(item["path"], out_path)
-            log.info("[timing] reframe clip %d: %.1fs", i + 1, time.monotonic() - _t_clip)
-            item["final"] = out_path
+        _reframe_clips(job_id, produced)   # GPU (fan-out) se ligado, senão CPU; fallback CPU por clipe
         log.info("[timing] reframe total: %d clipe(s) em %.1fs", len(produced), time.monotonic() - _t_reframe)
 
         _check_cancel(job_id)
@@ -304,9 +295,13 @@ def run_thread2(job_id: str) -> None:
         H = config.CLIP_HANDLE_SECONDS
         for i, item in enumerate(produced):
             key = f"jobs/{job_id}/clips/clip_{i+1:02d}_base.mp4"
-            # Sobe a base ANTES de qualquer cleanup: depois do rmtree é a única
-            # cópia que sobra e é de onde a queima sob demanda parte.
-            _s3_upload_with_retry(item["final"], key)
+            # Sobe a base ANTES de qualquer cleanup: depois do rmtree é a única cópia que sobra e é
+            # de onde a queima sob demanda parte. No caminho GPU o worker já subiu a base nessa MESMA
+            # key (presigned PUT), então não re-sobe; só o caminho CPU (ou fallback) tem `final` local.
+            if item.get("gpu_base_key"):
+                pass
+            else:
+                _s3_upload_with_retry(item["final"], key)
             clip_id = f"{job_id}:{i}"
             meta = item["meta"]
             win_start = float(item.get("win_start") or 0.0)
@@ -316,7 +311,11 @@ def run_thread2(job_id: str) -> None:
             # próprio corte (comportamento antigo). Se o ffprobe falhar, usa o fim nominal e não
             # persiste a janela (degrada pra "sem handles", sem quebrar a legenda).
             if H > 0:
-                window_dur = _probe_duration(item["final"])
+                # GPU: a duração da janela vem do retorno do worker (não há arquivo local pra ffprobe).
+                # CPU: probe do base local. Em ambos, window_dur None degrada pra "sem handles".
+                window_dur = item.get("window_dur")
+                if window_dur is None and item.get("final"):
+                    window_dur = _probe_duration(item["final"])
                 seg_start = win_start
                 seg_end = (win_start + window_dur) if window_dur else (float(meta["end"]) + H)
             else:
@@ -429,6 +428,84 @@ def _probe_duration(path: str):
     except (TypeError, ValueError):
         return None
     return d if math.isfinite(d) and d > 0 else None
+
+
+def _reframe_clips(job_id: str, produced: list) -> None:
+    """Reenquadra cada clipe pra 9:16. Anota em cada item: `final` (path local da base, ou None se a
+    GPU já subiu a base pro S3), `gpu_base_key` (key S3 da base feita na GPU, ou None) e `window_dur`
+    (duração da janela vinda do worker GPU, ou None -> ffprobe depois). Com REFRAME_GPU_ENABLED, faz
+    o reframe na GPU (RunPod serverless, em paralelo) e cai pra CPU por clipe que falhar; senão roda
+    tudo na CPU (comportamento antigo)."""
+    from reframer import reframe_clip
+    for item in produced:
+        item["final"] = None
+        item["gpu_base_key"] = None
+        item["window_dur"] = None
+
+    gpu_ok = _reframe_clips_gpu(job_id, produced) if config.REFRAME_GPU_ENABLED else [False] * len(produced)
+
+    for i, item in enumerate(produced):
+        if gpu_ok[i]:
+            continue                                    # base já no S3 (GPU); nada a fazer na CPU
+        out_path = item["path"].replace(".mp4", "_base.mp4")
+        _t = time.monotonic()
+        try:
+            reframe_clip(item["path"], out_path)        # base 9x16 SEM legenda
+        except Exception as e:
+            log.warning("[reframe] clip %d falhou (%s), usando center crop", i + 1, e)
+            _center_crop_fallback(item["path"], out_path)
+        log.info("[timing] reframe clip %d (cpu): %.1fs", i + 1, time.monotonic() - _t)
+        item["final"] = out_path
+
+
+def _reframe_clips_gpu(job_id: str, produced: list) -> list:
+    """Reframe na GPU (RunPod serverless) com FAN-OUT: sobe os cortes pro S3, dispara todos os jobs
+    e faz poll de cada um. O worker baixa o corte, reenquadra (NVENC) e sobe a base direto na key
+    final via presigned PUT, devolvendo a duração. Devolve uma lista de bool (True = a GPU fez aquele
+    clipe; False = cai no fallback de CPU). Nunca levanta: qualquer falha vira fallback."""
+    n = len(produced)
+    ok = [False] * n
+    params = {
+        "deadzone_frac": config.REFRAME_DEADZONE_FRAC,
+        "max_pan_frac": config.REFRAME_MAX_PAN_FRAC,
+        "min_conf": config.REFRAME_MIN_CONF,
+    }
+    ct = config.REFRAME_PUT_CONTENT_TYPE
+    url_expiry = config.REFRAME_GPU_TIMEOUT + 600       # URLs vivem mais que fila + cold start + job
+    t0 = time.monotonic()
+    submitted = []     # (i, rp_job_id, base_key)
+    tmp_keys = []
+    # 1) sobe os cortes e submete todos (fan-out)
+    for i, item in enumerate(produced):
+        base_key = f"jobs/{job_id}/clips/clip_{i+1:02d}_base.mp4"
+        cut_key = f"jobs/{job_id}/tmp/cut_{i+1:02d}.mp4"
+        try:
+            s3_client.upload_file(item["path"], cut_key)
+            tmp_keys.append(cut_key)
+            get_url = s3_client.get_presigned_url(cut_key, expiry_seconds=url_expiry)
+            put_url = s3_client.get_presigned_put_url(base_key, ct, expiry_seconds=url_expiry)
+            rp_id = runpod_client.submit_reframe(get_url, put_url, ct, params, config.REFRAME_GPU_TIMEOUT)
+            submitted.append((i, rp_id, base_key))
+        except Exception as e:
+            log.warning("[reframe-gpu] clip %d: falha ao submeter (%s); fallback CPU", i + 1, e)
+    # 2) poll de cada job (eles rodam em paralelo na RunPod; o 1o poll espera o mais lento)
+    for i, rp_id, base_key in submitted:
+        try:
+            out = runpod_client.poll(rp_id, config.REFRAME_GPU_TIMEOUT)
+            dur = out.get("duration")
+            produced[i]["window_dur"] = float(dur) if dur else None
+            produced[i]["gpu_base_key"] = base_key      # base já está no S3 nessa key
+            ok[i] = True
+        except Exception as e:
+            log.warning("[reframe-gpu] clip %d: %s; fallback CPU", i + 1, e)
+    # 3) limpa os cortes temporários do S3 (best-effort; o resto do job some no rmtree/cleanup)
+    for k in tmp_keys:
+        try:
+            s3_client.delete_object(k)
+        except Exception:
+            pass
+    log.info("[timing] reframe GPU: %d/%d clipe(s) na GPU em %.1fs", sum(ok), n, time.monotonic() - t0)
+    return ok
 
 
 def _generate_thumbnail(job_id: str, produced: list):

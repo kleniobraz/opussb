@@ -487,8 +487,86 @@ def test_burn_semaphore():
         app._burn_sem.release()
 
 
+def test_presigned_put():
+    """O presigned PUT (usado pelo worker GPU pra subir a base) é uma URL assinada localmente
+    (sem rede) contendo a key. Garante que o helper existe e assina."""
+    print("[presigned put]")
+    import s3_client
+    url = s3_client.get_presigned_put_url("jobs/TESTxx/clips/clip_01_base.mp4", "video/mp4", 60)
+    check(isinstance(url, str) and url.startswith("http"), "presigned put devolve uma URL")
+    check("clip_01_base.mp4" in url, "URL contém a key do objeto")
+
+
+def test_runpod_client():
+    """submit_reframe monta o payload certo (/run, executionTimeout em ms) e poll interpreta os
+    estados (COMPLETED devolve output; FAILED e output com 'error' levantam). requests mockado."""
+    print("[runpod client]")
+    import runpod_client
+    import config as _cfg
+
+    class FakeResp:
+        def __init__(self, data, status=200):
+            self._d, self.status = data, status
+
+        def raise_for_status(self):
+            if self.status >= 400:
+                raise RuntimeError(f"http {self.status}")
+
+        def json(self):
+            return self._d
+
+    calls = {}
+
+    class FakePost:
+        RequestException = Exception
+
+        def post(self, url, json=None, headers=None, timeout=None):
+            calls["url"], calls["payload"] = url, json
+            return FakeResp({"id": "job-1", "status": "IN_QUEUE"})
+
+    def _get_returning(resp):
+        class G(FakePost):
+            def get(self, url, headers=None, timeout=None):
+                return resp
+        return G()
+
+    orig_req = runpod_client.requests
+    orig_ep = _cfg.RUNPOD_REFRAME_ENDPOINT_ID
+    _cfg.RUNPOD_REFRAME_ENDPOINT_ID = "epTEST"
+    try:
+        runpod_client.requests = FakePost()
+        jid = runpod_client.submit_reframe("http://get", "http://put", "video/mp4",
+                                           {"deadzone_frac": 0.35}, 1800)
+        check(jid == "job-1", "submit devolve o job_id")
+        check("/epTEST/run" in calls["url"], "submit bate em /run do endpoint certo")
+        check(calls["payload"]["input"]["input_url"] == "http://get", "input_url vai no payload")
+        check(calls["payload"]["policy"]["executionTimeout"] == 1800000, "executionTimeout em ms")
+
+        runpod_client.requests = _get_returning(FakeResp({"status": "COMPLETED", "output": {"duration": 12.5}}))
+        out = runpod_client.poll("job-1", timeout=5)
+        check(out.get("duration") == 12.5, "poll COMPLETED devolve o output")
+
+        runpod_client.requests = _get_returning(FakeResp({"status": "FAILED", "output": "boom"}))
+        try:
+            runpod_client.poll("job-1", timeout=5)
+            check(False, "poll FAILED deveria levantar")
+        except RuntimeError:
+            check(True, "poll FAILED levanta")
+
+        runpod_client.requests = _get_returning(FakeResp({"status": "COMPLETED", "output": {"error": "x"}}))
+        try:
+            runpod_client.poll("job-1", timeout=5)
+            check(False, "poll COMPLETED com 'error' deveria levantar")
+        except RuntimeError:
+            check(True, "poll COMPLETED com 'error' levanta (vira fallback CPU)")
+    finally:
+        runpod_client.requests = orig_req
+        _cfg.RUNPOD_REFRAME_ENDPOINT_ID = orig_ep
+
+
 def main():
-    for t in (test_burn_cmd, test_burn_semaphore, test_validate_segments, test_parse_clips_json,
+    for t in (test_burn_cmd, test_burn_semaphore, test_presigned_put, test_runpod_client,
+              test_validate_segments, test_parse_clips_json,
               test_captions_roundtrip, test_caption_style, test_youtube_helpers,
               test_snap_clip_bounds, test_thumbnail, test_clip_window,
               test_sessions_helpers, test_sessions_ownership, test_sessions_flow,

@@ -700,3 +700,54 @@ quanto é corte vs reframe, pra decidir com número se o reframe vai pra GPU (Ru
 plano na memória `reframe-burn-perf-and-gpu-plan`). O corte ainda usa OUTPUT seek (`-ss` depois do
 `-i`, decodifica do zero a cada clipe); otimizar pra INPUT seek ficou pendente (timing-sensível pelos
 handles, decidir com o dado do log).
+
+## 20. Reframe na GPU (RunPod serverless, 2º endpoint) (2026-06-23)
+
+Offload do reframe (a etapa mais pesada) pra um SEGUNDO endpoint RunPod serverless (GPU), separado
+do Whisper (que roda via N8N). Os clipes reenquadram EM PARALELO na GPU (fan-out), derrubando o
+reframe de dezenas de min pra ~1-3 min, com custo de centavos/vídeo e $0 ocioso. **Atrás de flag,
+default DESLIGADO** (sem mexer no comportamento atual até o endpoint existir e ser testado). Fallback
+pra CPU por clipe sempre ativo: a GPU falhar nunca derruba o job. GPU escolhida: **L4 24GB** (A5000
+fallback). Decisão e plano: memória `reframe-burn-perf-and-gpu-plan`; GEX44 dedicada rejeitada
+(cara pro volume). Status no deploy desta seção: **Fase A (código, flag off)**; o endpoint ainda
+não foi criado.
+
+**Lógica compartilhada (sem divergência VPS vs GPU):** `reframe_core.py` (novo) tem a matemática PURA
+do reframe (`detect_subject_cx`, `build_locked_trajectory`, `moving_avg`, e `reframe_to_file` com o
+pipe de frames pro ffmpeg, **codec parametrizado**). Sem `import config` (params entram por arg).
+`reframer.py` virou fino (delega ao core com libx264 veryfast); o worker GPU usa o MESMO core com
+`h264_nvenc`. Câmera travada (§19.3) idêntica nos dois. `reframer._filter_escape` reexportado pro
+`processor.py`. Testes de câmera migraram pra `tests/test_reframer.py` apontando o `reframe_core`.
+
+**Fluxo (`processor.py`, `_reframe_clips`/`_reframe_clips_gpu`):** com `REFRAME_GPU_ENABLED`, por clipe
+sobe o corte pro S3 (`jobs/{job}/tmp/cut_NN.mp4`), gera presigned GET (corte) + presigned PUT
+(`clip_NN_base.mp4`), e SUBMETE todos (fan-out) ao endpoint. O worker baixa, reenquadra (NVENC) e faz
+PUT da base direto na key final, devolvendo `{"duration"}`. O `run_thread2` faz poll, pega `window_dur`
+do retorno (não há arquivo local pra ffprobe), e pula o upload (a base já está no S3). Falha/timeout
+de um clipe -> reframe LOCAL de CPU desse clipe. Cortes temporários do S3 são apagados no fim. Thumbnail
+segue do corte local (`item['path']`). Helpers anotam em cada item: `final` (path local ou None),
+`gpu_base_key` (key S3 ou None), `window_dur`.
+
+**Peças novas:**
+- `reframe_core.py`: lógica pura compartilhada.
+- `runpod_client.py`: `submit_reframe` (POST /run, executionTimeout em ms) + `poll` (GET /status,
+  COMPLETED/FAILED, tolera blip de rede, output com `error` vira falha). Bearer `RUNPOD_API_KEY`.
+- `s3_client.get_presigned_put_url(key, content_type, expiry)`: o worker sobe sem credencial de longa
+  duração. **Content-Type do PUT TEM que casar com o assinado, senão 403** (gotcha nº 1).
+- `gpu_reframe/handler.py` + `Dockerfile` + `requirements.txt`: worker do SDK `runpod`. Base
+  `pytorch/...-cuda12.1-...-runtime` + `apt ffmpeg` (já traz `h264_nvenc`) + `libgl1` (opencv); modelo
+  YOLO baixado no build e carregado UMA vez por worker; `ultralytics==8.4.66` pinada (mesma da VPS).
+- `.github/workflows/build-reframe-image.yml`: CI builda `linux/amd64` e publica em
+  `ghcr.io/kleniobraz/opussb-reframe:latest` (+ sha) quando `gpu_reframe/**` ou `reframe_core.py` mudam.
+- `config.py`: `RUNPOD_REFRAME_ENDPOINT_ID` ("" = desligado), `REFRAME_GPU_ENABLED` (exige a flag E o
+  endpoint id), `REFRAME_GPU_TIMEOUT` (1800s), `REFRAME_PUT_CONTENT_TYPE` ("video/mp4").
+
+**Pra LIGAR (Fase B/C, pendente):** (1) deixar o pacote do GHCR público (ou dar PAT read:packages à
+RunPod); (2) criar o endpoint apontando pra imagem, GPU L4 (A5000 fallback), maxWorkers ~10,
+executionTimeout ~1800s, idle ~30s, active 0, FlashBoot on; (3) testar o endpoint isolado (script
+descartável: sobe corte, submete, poll, ffprobe); (4) pôr `RUNPOD_REFRAME_ENDPOINT_ID` + `REFRAME_GPU_ENABLED=true`
+no `.env`, restart, rodar 1 job real e comparar `[timing]`. Rollback = derrubar a flag.
+
+**Validação (Fase A):** `test_backend.py` (presigned PUT + `runpod_client` mockado: submit/poll/erro)
++ `tests/test_reframer.py` (7, câmera no `reframe_core`) + reframe real CPU (1080x1920 + áudio, flag
+off, comportamento inalterado) + py_compile do worker.

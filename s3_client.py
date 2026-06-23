@@ -67,6 +67,18 @@ def get_presigned_url(s3_key: str, expiry_seconds: int = 86400) -> str:
     )
 
 
+def get_presigned_put_url(s3_key: str, content_type: str = "video/mp4",
+                          expiry_seconds: int = 3600) -> str:
+    """URL presignada de PUT (upload). Usada pelo worker de reframe na GPU pra subir o resultado
+    SEM credenciais de longa duração (least-privilege). CUIDADO: o Content-Type enviado no PUT TEM
+    que ser EXATAMENTE este, senão o S3 responde 403 (é o gotcha nº 1 do presigned PUT)."""
+    return _client().generate_presigned_url(
+        "put_object",
+        Params={"Bucket": config.S3_BUCKET, "Key": s3_key, "ContentType": content_type},
+        ExpiresIn=expiry_seconds,
+    )
+
+
 def delete_object(s3_key: str) -> None:
     """Apaga um objeto único (usado pra invalidar o cache da queima ao editar)."""
     _client().delete_object(Bucket=config.S3_BUCKET, Key=s3_key)

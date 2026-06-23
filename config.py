@@ -65,6 +65,18 @@ REFRAME_DEADZONE_FRAC: float = float(os.environ.get("REFRAME_DEADZONE_FRAC", "0.
 REFRAME_MAX_PAN_FRAC: float = float(os.environ.get("REFRAME_MAX_PAN_FRAC", "0.18"))    # pan máx por SEGUNDO (fração da largura)
 REFRAME_MIN_CONF: float = float(os.environ.get("REFRAME_MIN_CONF", "0.30"))            # confiança mínima do YOLO pra contar a pessoa
 
+# Offload do reframe pra GPU (2º endpoint RunPod serverless, ver BACKEND_CONTEXT §20). Sem o
+# endpoint id, fica DESLIGADO e o reframe roda na CPU da VPS (comportamento atual). A flag exige
+# tanto REFRAME_GPU_ENABLED=true QUANTO o endpoint id (não liga sem destino). O fallback pra CPU
+# por clipe é sempre ativo, então a GPU falhar nunca derruba o job.
+RUNPOD_REFRAME_ENDPOINT_ID: str = os.environ.get("RUNPOD_REFRAME_ENDPOINT_ID", "")
+REFRAME_GPU_ENABLED: bool = (
+    os.environ.get("REFRAME_GPU_ENABLED", "false").lower() in ("1", "true", "yes")
+    and bool(RUNPOD_REFRAME_ENDPOINT_ID)
+)
+REFRAME_GPU_TIMEOUT: int = int(os.environ.get("REFRAME_GPU_TIMEOUT", "1800"))  # teto por clipe (s); > 600s default do RunPod
+REFRAME_PUT_CONTENT_TYPE: str = os.environ.get("REFRAME_PUT_CONTENT_TYPE", "video/mp4")
+
 # YouTube (yt-dlp): teto de duração do vídeo de entrada, em segundos. Controla custo de
 # transcrição (RunPod escala com a duração) e quanto tempo um job segura o único slot da
 # fila (MAX_CONCURRENT_JOBS=1). Default 2h. Ajustável por env sem mexer no código.
