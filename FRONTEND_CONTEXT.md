@@ -482,3 +482,18 @@ pra baixo da dobra.
 - **`app/brand.css`**: `.hero--busy { min-height: 0; padding-bottom: 44px; }` derruba o 100vh forçado
   enquanto há job, então o card fica logo abaixo da saudação. Backend correspondente: BACKEND §19
   (semáforo de queima, reframe mais rápido e travado).
+
+> **STATUS (handoff 2026-06-23): COMMITADO mas NÃO deployado.** O front não foi rebuildado nesta sessão,
+> então a lacuna AINDA aparece em produção. Subir = `cd frontend && npm run build && systemctl restart
+> opussb-web` (com `active_jobs=0`, fora de processamento pelo pico de RAM). Ver §17.
+
+## 17. Pendências do front (handoff 2026-06-23)
+
+1. **Deployar a lacuna da Home (§16):** está commitada mas o front nunca foi rebuildado. `npm run build`
+   + `systemctl restart opussb-web` (com `active_jobs=0`) resolve.
+2. **Lazy-load dos clipes (a fazer):** hoje o `ClipGrid` monta um `ClipVideo` por clipe e o `<video>` pede
+   `/api/clips/<id>/video` ao RENDERIZAR. Quando um job termina e a grade aparece, isso dispara **N queimas
+   de uma vez** (a estampida que pegava a CPU e travava o site). O backend já tem semáforo + cap de CPU como
+   rede (BACKEND §19.1 e §21.2), mas o ideal é não disparar tudo de uma vez. Plano: `preload="none"` e/ou só
+   pedir o `/video` **no play** (lazy), pra queimar **1 de cada vez** conforme o usuário assiste. Arquivos:
+   `components/clip-video.tsx` (+ talvez `clip-card.tsx`/`clip-grid.tsx`). Reduz a estampida na origem.

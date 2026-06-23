@@ -1,0 +1,5 @@
+# Contexto mínimo pro build do worker de reframe (gpu_reframe/Dockerfile). A imagem só precisa de
+# reframe_core.py + gpu_reframe/. Sem isto, o contexto enviaria venv/frontend/.git/jobs inteiros.
+*
+!reframe_core.py
+!gpu_reframe/**

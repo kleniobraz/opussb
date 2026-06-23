@@ -710,7 +710,9 @@ default DESLIGADO** (sem mexer no comportamento atual até o endpoint existir e 
 pra CPU por clipe sempre ativo: a GPU falhar nunca derruba o job. GPU escolhida: **L4 24GB** (A5000
 fallback). Decisão e plano: memória `reframe-burn-perf-and-gpu-plan`; GEX44 dedicada rejeitada
 (cara pro volume). Status no deploy desta seção: **Fase A (código, flag off)**; o endpoint ainda
-não foi criado.
+não foi criado. **[ATUALIZADO 2026-06-23: HOJE ESTÁ EM PRODUÇÃO E LIGADO. Ver §21. O endpoint foi
+criado (`wni4gr0w1j76t3`), a imagem foi pro DOCKER HUB (não GHCR: Actions bloqueado por billing), e
+a flag está ON. As frases "Fase A / GHCR / pra LIGAR pendente" desta §20 estão OBSOLETAS; §21 vale.]**
 
 **Lógica compartilhada (sem divergência VPS vs GPU):** `reframe_core.py` (novo) tem a matemática PURA
 do reframe (`detect_subject_cx`, `build_locked_trajectory`, `moving_avg`, e `reframe_to_file` com o
@@ -751,3 +753,59 @@ no `.env`, restart, rodar 1 job real e comparar `[timing]`. Rollback = derrubar 
 **Validação (Fase A):** `test_backend.py` (presigned PUT + `runpod_client` mockado: submit/poll/erro)
 + `tests/test_reframer.py` (7, câmera no `reframe_core`) + reframe real CPU (1080x1920 + áudio, flag
 off, comportamento inalterado) + py_compile do worker.
+
+## 21. GPU reframe EM PRODUÇÃO + cap de CPU da queima + corte input-seek (2026-06-23)
+
+Continuação direta da §19/§20, tudo DEPLOYADO (restart com `active_jobs=0` + backup). **ATENÇÃO: o
+cap da queima (21.2) e o corte input-seek (21.3) estão deployados mas AINDA NÃO commitados** (ver
+"Estado de commit" no fim).
+
+### 21.1 Reframe na GPU foi pra PRODUÇÃO (atualiza o status da §20)
+- **Endpoint LIVE:** `wni4gr0w1j76t3` (RunPod serverless, nome "sbclips-reframer"). `.env`:
+  `RUNPOD_REFRAME_ENDPOINT_ID=wni4gr0w1j76t3` + `REFRAME_GPU_ENABLED=true`. Fallback CPU por clipe ativo.
+- **Imagem foi pro DOCKER HUB, não GHCR.** O GitHub Actions (workflow `build-reframe-image.yml` existe)
+  está BLOQUEADO por billing da conta GitHub. Então a imagem foi **buildada NA PRÓPRIA VPS** (os ~17GB
+  livres do disco comportam a CUDA de ~11GB; é transitório, `docker image prune -af` recupera depois) e
+  publicada em **`kleniobraz/opussb-reframe:latest` (Docker Hub, PÚBLICO)**. Pra o pull autenticado (fugir
+  do rate-limit anônimo do Docker Hub) o endpoint tem uma **registry credential** (user `kleniobraz` +
+  token); o token está em `/root/.dockerhub_token` (600). **Rebuild =** `docker build -f gpu_reframe/Dockerfile
+  -t kleniobraz/opussb-reframe:latest .` na VPS + `docker push` + `docker rmi`/prune. (Quando o billing do
+  Actions for resolvido, dá pra voltar pro CI/GHCR.)
+- **GPU types (CUIDADO, incidente real):** a RunPod escalou workers em **RTX PRO 6000 Blackwell (MIG 24GB,
+  sm_120)**, que o nosso PyTorch 2.4.1/cu121 (suporta sm_50-90) NÃO inicializa → workers "unhealthy",
+  paralelismo morto (só 1 worker 4090 saudável pegava os 7 clipes em fila). **Correção: nos Enabled GPU
+  types do endpoint, DESMARCAR "PRO 6000 MIG 24GB".** Manter L4, A5000, 3090, 4090, A4000/A4500, RTX
+  2000/4000 Ada (sm_86/sm_89, suportados). NÃO adianta mexer no "Minimum CUDA" (o problema é o kernel do
+  torch, não o driver). Pra usar Blackwell um dia: rebuild com torch >= 2.6/cu124. Config do endpoint:
+  maxWorkers **7** (cota da conta = 10, Whisper usa 3), executionTimeout 1800s, idle 30s (irrelevante:
+  "queue endpoint" escala a zero na hora), active 0, FlashBoot on.
+- **Validado em produção:** um job real reenquadrou **7/7 na GPU** (sem fallback). Naquele run demorou
+  ~11,5 min SÓ porque a Blackwell crippou o paralelismo; com ela desmarcada, roda em paralelo. Teste
+  isolado do endpoint: COMPLETED ~15s, saída 1080x1920 + áudio + NVENC.
+
+### 21.2 Cap de CPU da queima (conserta "site trava quando o job termina")
+A §19.1 (semáforo) impediu N queimas EM PARALELO, mas **uma única queima libx264 sozinha satura os 3
+vCPUs (300%)** e sufoca o web app quando um job termina e o front abre os clipes (estampida). Correção
+(`app.py` `_build_burn_cmd`/`_burn_clip`, `config.py`):
+- `BURN_FFMPEG_THREADS=2` → `-threads 2` no ffmpeg da queima (deixa >=1 núcleo pro web).
+- `BURN_NICE=15` → `_burn_clip` roda o ffmpeg com `preexec_fn=lambda: os.nice(15)` (cede CPU às
+  requisições web; o site responde mesmo durante a queima).
+- Teste: `test_backend.py` (`-threads` presente). **Os mesmos knobs são reusados no corte (21.3).**
+
+### 21.3 Corte com INPUT-seek (conserta "corte demorando ~40 min")
+Resolve a pendência da §19.4. `_cut_clips` (`processor.py`) trocou OUTPUT-seek (`-ss` DEPOIS do `-i`, que
+decodificava a fonte inteira desde o zero pra cada clipe = o gargalo de ~40 min numa fonte de 1h38) por
+**INPUT-seek** (`-ss` ANTES do `-i` + `-t`), que pula direto pro ponto via índice. Continua **frame-accurate**
+(validado: frame inicial idêntico ao método antigo; `win_start` = o pedido, então a matemática dos handles
+§18 NÃO muda). Roda **niced + threads-capped** (BURN_NICE/BURN_FFMPEG_THREADS) pra não travar o site durante
+o corte. Medido: 6x+ mais rápido em fonte curta; em fonte longa cortando perto do fim, ~10-15x. Estimativa:
+~40 min → ~2-4 min.
+
+### Estado de commit (PENDENTE) e segurança
+- Já em `ccf4886` + `2daaac9` (pushed): semáforo, reframe single-pass/lock, timing, handles, e a Fase A do
+  reframe GPU (código + worker + CI).
+- **NÃO commitado ainda (só deployado via restart):** cap da queima + corte input-seek = `app.py`,
+  `config.py`, `processor.py`, `test_backend.py` modificados + `.dockerignore` (untracked). Pendente:
+  commitar + push (regra 9) + estes docs.
+- **Segurança:** rotacionar o token do Docker Hub (foi colado em chat). Ao rotacionar, atualizar a registry
+  credential do endpoint na RunPod + `/root/.dockerhub_token`.

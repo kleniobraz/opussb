@@ -49,6 +49,14 @@ BURN_CONCURRENCY: int = int(os.environ.get("BURN_CONCURRENCY", "1"))
 # base SEM legenda (o clipe sempre toca; a próxima abertura re-tenta). Evita prender a
 # thread do gunicorn indefinidamente quando a fila de queima está cheia.
 BURN_QUEUE_TIMEOUT: float = float(os.environ.get("BURN_QUEUE_TIMEOUT", "120"))
+# A queima usa ffmpeg/libx264, que SOZINHO satura todos os núcleos (300% numa VPS de 3 vCPU) e
+# sufoca o web app quando um job termina e vários clipes são abertos (CPU a 300% por minutos -> site
+# sem CPU pra responder). Pra o site continuar de pé DURANTE a queima: limita as threads do encoder
+# (deixa >=1 núcleo livre) E roda o ffmpeg com baixa prioridade (nice), pra ele ceder CPU às
+# requisições web. O semáforo (BURN_CONCURRENCY) já evita N queimas juntas; isto evita que UMA
+# queima monopolize a CPU.
+BURN_FFMPEG_THREADS: int = int(os.environ.get("BURN_FFMPEG_THREADS", "2"))   # de 3 vCPU, deixa 1 pro web
+BURN_NICE: int = int(os.environ.get("BURN_NICE", "15"))                       # 0-19; maior = menor prioridade
 
 # Sobra (handles) cortada de cada lado do clipe, em segundos. O clip_NN_base.mp4 passa a ser
 # a janela [start-H, end+H] (clamped ao vídeo) reenquadrada, e o editor abre/fecha o corte

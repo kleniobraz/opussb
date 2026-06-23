@@ -1051,6 +1051,7 @@ def _build_burn_cmd(base_path: str, ass_path, music_path, music_vol, out_path: s
         # Sem música: preserva o áudio original do clipe (copiando, sem recodificar).
         cmd += ["-map", "0:a?", "-c:a", "copy"]
     cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+    cmd += ["-threads", str(config.BURN_FFMPEG_THREADS)]   # limita o encoder p/ não tomar todos os núcleos (deixa CPU pro web)
     cmd += ["-movflags", "+faststart"]   # moov no início: playback progressivo no navegador
     if music_path:
         cmd += ["-shortest"]
@@ -1067,7 +1068,11 @@ def _burn_clip(base_path: str, ass_path, music_path, music_vol, out_path: str,
     chamador só sobe pro S3 DEPOIS que isto retorna ok, então uma render que falha no
     meio nunca vira um cache corrompido."""
     cmd = _build_burn_cmd(base_path, ass_path, music_path, music_vol, out_path, in_point, out_point)
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=_BURN_TIMEOUT)
+    # nice: roda o ffmpeg da queima com prioridade baixa, pra ele CEDER CPU às requisições web e o
+    # site não travar enquanto queima (preexec_fn nica o próprio ffmpeg, então o timeout ainda mata
+    # o processo certo). Só faz a syscall os.nice no filho (seguro mesmo com o worker multithread).
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=_BURN_TIMEOUT,
+                       preexec_fn=lambda: os.nice(config.BURN_NICE))
     if r.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1024:
         raise RuntimeError(f"ffmpeg render falhou: {r.stderr[-400:]}")
 

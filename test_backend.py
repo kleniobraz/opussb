@@ -45,6 +45,7 @@ def test_burn_cmd():
     check(cmd[i + 1] == "copy", "legenda-só copia o áudio (sem recodificar)")
     check("[v]" in cmd, "legenda-só mapeia o vídeo filtrado [v]")
     check("+faststart" in cmd, "legenda-só usa +faststart")
+    check("-threads" in cmd, "queima limita threads do encoder (-threads; não monopoliza a CPU)")
 
     # Só música: mixa fala+música e recodifica em aac.
     cmd = app._build_burn_cmd("base.mp4", None, "m.mp3", 0.2, "out.mp4")

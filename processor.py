@@ -637,11 +637,20 @@ def _cut_clips(video_path: str, clips_data: list, output_dir: str, handle: float
         out_path = os.path.join(output_dir, f"clip_{idx:02d}.mp4")
         try:
             result = subprocess.run(
-                ["ffmpeg", "-y", "-i", video_path,
-                 "-ss", str(win_start), "-to", str(win_end),
+                # INPUT seek: -ss ANTES do -i pula direto pro ponto do clipe via índice, em vez de
+                # decodificar desde o segundo zero (era o gargalo de ~40min em fonte longa: o clipe
+                # no min 90 decodificava 90 min só pra começar). Com re-encode, o corte continua
+                # frame-accurate e win_start = o pedido (NÃO mexe na matemática dos handles, §18).
+                # -t (duração) em vez de -to (que com input-seek seria ambíguo). nice + -threads:
+                # cede CPU pro site durante o corte (não trava o web app).
+                ["ffmpeg", "-y", "-ss", f"{win_start:.3f}", "-i", video_path,
+                 "-t", f"{win_end - win_start:.3f}",
                  "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
-                 "-avoid_negative_ts", "1", "-movflags", "+faststart", out_path],
+                 "-avoid_negative_ts", "make_zero",
+                 "-threads", str(config.BURN_FFMPEG_THREADS),
+                 "-movflags", "+faststart", out_path],
                 capture_output=True, text=True, timeout=_FFMPEG_CUT_TIMEOUT,
+                preexec_fn=lambda: os.nice(config.BURN_NICE),
             )
         except subprocess.TimeoutExpired:
             log.error("[cut] clip %d estourou o timeout (%ss); pulando", n + 1, _FFMPEG_CUT_TIMEOUT)
