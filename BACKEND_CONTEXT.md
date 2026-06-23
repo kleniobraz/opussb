@@ -805,9 +805,11 @@ o corte. Medido: 6x+ mais rápido em fonte curta; em fonte longa cortando perto 
 - Já em `ccf4886` + `2daaac9` (pushed): semáforo, reframe single-pass/lock, timing, handles, e a Fase A do
   reframe GPU (código + worker + CI).
 - **Commitado nesta sessão (2026-06-23):** cap da queima + corte input-seek (`app.py`, `config.py`,
-  `processor.py`, `test_backend.py`, `.dockerignore`) + docs `§21`/FRONTEND `§16-17`. Aguardando push (regra 9).
-- **Segurança:** rotacionar o token do Docker Hub (foi colado em chat). Ao rotacionar, atualizar a registry
-  credential do endpoint na RunPod + `/root/.dockerhub_token`. **PENDENTE (precisa do dono gerar o token novo).**
+  `processor.py`, `test_backend.py`, `.dockerignore`) + docs `§21`/FRONTEND `§16-17`. **Pushado em 2026-06-23**
+  (`origin/master` em `dbef94d`, autorizado pelo dono).
+- **Segurança:** token do Docker Hub **rotacionado em 2026-06-23**. O antigo (exposto em chat) foi revogado no
+  Docker Hub; a registry credential do endpoint na RunPod e o `/root/.dockerhub_token` foram atualizados, e o
+  login foi validado com o antigo JÁ revogado (prova de que o arquivo tem o token novo).
 
 ## 22. Heartbeat no corte e reframe (watchdog) (2026-06-23)
 
@@ -823,4 +825,4 @@ no meio poderia ceifar um job VIVO. Correção (`processor.py`):
 - `run_thread2` envolve o corte com `with _heartbeat(job_id, "cutting")` e o reframe com
   `with _heartbeat(job_id, "reframing")`. Cobre tanto o reframe na GPU (poll longo) quanto o fallback CPU.
 - `test_backend.py` (puro) verde + `py_compile`; deploy com `active_jobs=0` + backup (DB + tarball) e restart
-  do `opussb`. Aguardando push junto do resto.
+  do `opussb`. **Pushado em 2026-06-23** (`origin/master` em `dbef94d`).
