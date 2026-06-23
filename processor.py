@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 import requests
 import config
 import db
@@ -216,18 +217,12 @@ def run_youtube_thread1(job_id: str, url: str) -> None:
     try:
         _check_cancel(job_id)
         db.update_job(job_id, status="downloading", progress=8)
-        # O download é um subprocess bloqueante de até 1h sem progresso intermediário; um
-        # heartbeat periódico mantém updated_at fresco pra o watchdog (JOB_STALE_MINUTES, 30min)
-        # NÃO marcar como stale um download legítimo em andamento (o que liberaria a vaga e deixaria
-        # um 2º job pesado rodar em paralelo). O heartbeat usa WHERE status='downloading', então um
-        # cancelamento concorrente não é ressuscitado.
-        stop = threading.Event()
-        hb = threading.Thread(target=_download_heartbeat, args=(job_id, stop), daemon=True)
-        hb.start()
-        try:
+        # O download é um subprocess bloqueante de até 1h sem progresso intermediário; o heartbeat
+        # mantém updated_at fresco pra o watchdog (JOB_STALE_MINUTES, 30min) NÃO marcar como stale um
+        # download legítimo em andamento (o que liberaria a vaga e deixaria um 2º job pesado rodar em
+        # paralelo). O heartbeat usa WHERE status='downloading', então um cancelamento não é ressuscitado.
+        with _heartbeat(job_id, "downloading"):
             _download_youtube(url, job["local_path"], job_id)
-        finally:
-            stop.set()
         _check_cancel(job_id)
     except _Cancelled:
         log.info("[cancel] job %s cancelado no download; limpando disco", job_id)
@@ -239,13 +234,28 @@ def run_youtube_thread1(job_id: str, url: str) -> None:
     run_thread1(job_id)
 
 
-def _download_heartbeat(job_id: str, stop: threading.Event) -> None:
-    """Marca sinal de vida (updated_at) enquanto o download roda, até `stop` ser sinalizado."""
-    while not stop.wait(_YT_HEARTBEAT_SECONDS):
-        try:
-            db.heartbeat_job(job_id, "downloading")
-        except Exception as e:
-            log.warning("[heartbeat] job %s: %s", job_id, e)
+@contextmanager
+def _heartbeat(job_id: str, status: str, interval: float = _YT_HEARTBEAT_SECONDS):
+    """Marca sinal de vida (updated_at) periodicamente durante uma etapa longa SEM progresso
+    intermediário (download do YouTube, corte, reframe), até sair do bloco `with`. Sem isto, o
+    watchdog (reap_stale_jobs, JOB_STALE_MINUTES=30min) pode ceifar um job VIVO quando um upload
+    novo chega e dispara o reap. O `status` esperado no heartbeat_job garante que um cancelamento
+    concorrente (status virou 'error') NÃO ressuscita o job."""
+    stop = threading.Event()
+
+    def _beat() -> None:
+        while not stop.wait(interval):
+            try:
+                db.heartbeat_job(job_id, status)
+            except Exception as e:
+                log.warning("[heartbeat] job %s: %s", job_id, e)
+
+    t = threading.Thread(target=_beat, daemon=True)
+    t.start()
+    try:
+        yield
+    finally:
+        stop.set()
 
 
 def run_thread2(job_id: str) -> None:
@@ -280,13 +290,17 @@ def run_thread2(job_id: str) -> None:
         _check_cancel(job_id)
         db.update_job(job_id, status="cutting", progress=70)
         _t_cut = time.monotonic()
-        produced = _cut_clips(job["local_path"], clips_data, job_clips_dir, config.CLIP_HANDLE_SECONDS)
+        # Corte e reframe são etapas longas sem update intermediário: o heartbeat segura o watchdog
+        # (JOB_STALE_MINUTES) pra não ceifar o job se um upload novo disparar o reap no meio.
+        with _heartbeat(job_id, "cutting"):
+            produced = _cut_clips(job["local_path"], clips_data, job_clips_dir, config.CLIP_HANDLE_SECONDS)
         log.info("[timing] corte: %d clipe(s) em %.1fs", len(produced), time.monotonic() - _t_cut)
 
         _check_cancel(job_id)
         db.update_job(job_id, status="reframing", progress=85)
         _t_reframe = time.monotonic()
-        _reframe_clips(job_id, produced)   # GPU (fan-out) se ligado, senão CPU; fallback CPU por clipe
+        with _heartbeat(job_id, "reframing"):
+            _reframe_clips(job_id, produced)   # GPU (fan-out) se ligado, senão CPU; fallback CPU por clipe
         log.info("[timing] reframe total: %d clipe(s) em %.1fs", len(produced), time.monotonic() - _t_reframe)
 
         _check_cancel(job_id)

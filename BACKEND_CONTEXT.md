@@ -801,11 +801,26 @@ decodificava a fonte inteira desde o zero pra cada clipe = o gargalo de ~40 min 
 o corte. Medido: 6x+ mais rápido em fonte curta; em fonte longa cortando perto do fim, ~10-15x. Estimativa:
 ~40 min → ~2-4 min.
 
-### Estado de commit (PENDENTE) e segurança
+### Estado de commit e segurança
 - Já em `ccf4886` + `2daaac9` (pushed): semáforo, reframe single-pass/lock, timing, handles, e a Fase A do
   reframe GPU (código + worker + CI).
-- **NÃO commitado ainda (só deployado via restart):** cap da queima + corte input-seek = `app.py`,
-  `config.py`, `processor.py`, `test_backend.py` modificados + `.dockerignore` (untracked). Pendente:
-  commitar + push (regra 9) + estes docs.
+- **Commitado nesta sessão (2026-06-23):** cap da queima + corte input-seek (`app.py`, `config.py`,
+  `processor.py`, `test_backend.py`, `.dockerignore`) + docs `§21`/FRONTEND `§16-17`. Aguardando push (regra 9).
 - **Segurança:** rotacionar o token do Docker Hub (foi colado em chat). Ao rotacionar, atualizar a registry
-  credential do endpoint na RunPod + `/root/.dockerhub_token`.
+  credential do endpoint na RunPod + `/root/.dockerhub_token`. **PENDENTE (precisa do dono gerar o token novo).**
+
+## 22. Heartbeat no corte e reframe (watchdog) (2026-06-23)
+
+Resolve a pendência "etapas pesadas não mandam heartbeat" (handoff #5). O watchdog (`reap_stale_jobs`,
+`JOB_STALE_MINUTES`=30min) marca como `error` qualquer job sem `updated_at` fresco; o corte (`cutting`) e o
+reframe (`reframing`) podem rodar minutos sem update intermediário, então um upload novo que dispare o reap
+no meio poderia ceifar um job VIVO. Correção (`processor.py`):
+- Novo context manager `_heartbeat(job_id, status, interval=_YT_HEARTBEAT_SECONDS=60)`: sobe uma thread
+  daemon que chama `db.heartbeat_job(job_id, status)` a cada 60s até sair do `with`. O `status` esperado no
+  `heartbeat_job` (WHERE status=...) garante que um cancelamento concorrente (status virou `error`) NÃO
+  ressuscita o job. Generaliza o antigo `_download_heartbeat` (removido; o download do YouTube agora usa o
+  mesmo `with _heartbeat(job_id, "downloading")`).
+- `run_thread2` envolve o corte com `with _heartbeat(job_id, "cutting")` e o reframe com
+  `with _heartbeat(job_id, "reframing")`. Cobre tanto o reframe na GPU (poll longo) quanto o fallback CPU.
+- `test_backend.py` (puro) verde + `py_compile`; deploy com `active_jobs=0` + backup (DB + tarball) e restart
+  do `opussb`. Aguardando push junto do resto.
