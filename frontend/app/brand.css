@@ -621,6 +621,11 @@
 .clip-bigplay svg { width: 26px; height: 26px; margin-left: 1px; }
 .clip-bigplay:hover { background: rgba(0,0,0,0.72); transform: scale(1.06); }
 .clip-video.is-paused.is-ready .clip-bigplay { display: grid; }
+/* idle: clipe ainda nao carregado (lazy/preload=none). Mostra o play (pra iniciar) e esconde o
+   "preparando" -- nada esta carregando ate o usuario tocar; sem isto a grade mostraria N spinners
+   falsos eternos e nenhum botao de play. O play idle dispara a queima (uma de cada vez). */
+.clip-video.is-idle .clip-bigplay { display: grid; }
+.clip-video.is-idle > .clip-prep { opacity: 0; visibility: hidden; }
 .clip-controls { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; display: flex; flex-direction: column; gap: 6px; padding: 20px 10px 9px; background: linear-gradient(to top, rgba(0,0,0,0.8), rgba(0,0,0,0)); opacity: 0; pointer-events: none; transition: opacity 0.18s; }
 .clip-video:hover .clip-controls, .clip-video.is-paused.is-ready .clip-controls { opacity: 1; pointer-events: auto; }
 .clip-ctrl-row { display: flex; align-items: center; gap: 8px; }

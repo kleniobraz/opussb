@@ -483,17 +483,33 @@ pra baixo da dobra.
   enquanto há job, então o card fica logo abaixo da saudação. Backend correspondente: BACKEND §19
   (semáforo de queima, reframe mais rápido e travado).
 
-> **STATUS (handoff 2026-06-23): COMMITADO mas NÃO deployado.** O front não foi rebuildado nesta sessão,
-> então a lacuna AINDA aparece em produção. Subir = `cd frontend && npm run build && systemctl restart
-> opussb-web` (com `active_jobs=0`, fora de processamento pelo pico de RAM). Ver §17.
+> **STATUS (2026-06-23): FEITO e deployado.** O front foi rebuildado (`npm run build`) e o `opussb-web`
+> reiniciado com `active_jobs=0`, então a lacuna não aparece mais em produção. Deploy junto do lazy-load (§18).
 
 ## 17. Pendências do front (handoff 2026-06-23)
 
-1. **Deployar a lacuna da Home (§16):** está commitada mas o front nunca foi rebuildado. `npm run build`
-   + `systemctl restart opussb-web` (com `active_jobs=0`) resolve.
-2. **Lazy-load dos clipes (a fazer):** hoje o `ClipGrid` monta um `ClipVideo` por clipe e o `<video>` pede
-   `/api/clips/<id>/video` ao RENDERIZAR. Quando um job termina e a grade aparece, isso dispara **N queimas
-   de uma vez** (a estampida que pegava a CPU e travava o site). O backend já tem semáforo + cap de CPU como
-   rede (BACKEND §19.1 e §21.2), mas o ideal é não disparar tudo de uma vez. Plano: `preload="none"` e/ou só
-   pedir o `/video` **no play** (lazy), pra queimar **1 de cada vez** conforme o usuário assiste. Arquivos:
-   `components/clip-video.tsx` (+ talvez `clip-card.tsx`/`clip-grid.tsx`). Reduz a estampida na origem.
+1. ~~**Deployar a lacuna da Home (§16)**~~ **FEITO (2026-06-23)** — rebuild + restart do `opussb-web`
+   com `active_jobs=0`. Ver §16 (status atualizado).
+2. ~~**Lazy-load dos clipes**~~ **FEITO (2026-06-23)** — ver §18.
+
+## 18. Lazy-load dos clipes na grade (anti-estampida) (2026-06-23)
+
+Resolve a pendência da §17.2. **Antes:** o `ClipGrid` montava um `ClipVideo` por clipe e cada `<video>`
+nascia com `src` + `preload="metadata"`, então pedia `/api/clips/<id>/video` **ao renderizar** -> quando
+um job terminava e a grade aparecia, disparava **N queimas de uma vez** (a estampida que tomava a CPU e
+travava o site). O backend já tem rede (semáforo de queima BACKEND §19.1 + cap de CPU §21.2), mas o ideal
+é não disparar tudo de uma vez.
+
+- **`components/clip-video.tsx`**: o `src` só é anexado ao `<video>` na **primeira intenção de tocar**
+  (clique no play), não na renderização. Estado novo `activated` (nasce `true` quando `autoPlay`, p.ex. no
+  diálogo); enquanto idle o `<video>` fica `src={undefined}` + `preload="none"` (zero request). No primeiro
+  play, `activated` vira true (anexa o src -> só AGORA o backend queima) e um efeito em `[activated]` chama
+  `.play()` quando o elemento remonta com o src (`wantPlayRef`). Resultado: **uma queima por vez**, conforme
+  o usuário assiste, em vez de N de cara.
+- **`app/brand.css`**: classe `.is-idle` no wrapper enquanto não-ativado. Sem ela a CSS mostraria, na grade,
+  N spinners "preparando legenda…" falsos e eternos (o `.clip-prep` só some com `.is-ready`) e nenhum botão
+  de play (o `.clip-bigplay` só aparece com `.is-paused.is-ready`). As regras novas
+  (`.clip-video.is-idle .clip-bigplay { display: grid }` + `.clip-video.is-idle > .clip-prep { opacity: 0 }`)
+  mostram o play idle (que dispara a queima) e escondem o spinner até o load real começar.
+- O diálogo (`ClipPlayerDialog`, `autoPlay`) e o editor (não usa `ClipVideo`) seguem iguais. `tsc --noEmit`
+  e `next build` limpos; deploy via `npm run build` + `systemctl restart opussb-web` (com `active_jobs=0`).

@@ -15,6 +15,12 @@ function fmtClock(t: number): string {
 // Player do clipe com queima de legenda SOB DEMANDA (a 1a abertura faz 302 e demora alguns
 // segundos; o overlay "preparando" fica por cima ate o video poder tocar).
 //
+// LAZY (anti-estampida): o `src` so e anexado ao <video> na PRIMEIRA intencao de tocar (clique no
+// play), nao na renderizacao. Antes, a grade montava N players e cada <video> pedia
+// /api/clips/<id>/video de cara -> N queimas de uma vez (estampida que sufocava a CPU). Agora cada
+// clipe so dispara a queima quando o usuario o assiste, uma de cada vez. `preload="none"` reforca
+// (nada de buffer ate o play). Quando `autoPlay` (dialogo), ja nasce ativado.
+//
 // Controles PROPRIOS (sem o chrome nativo do browser, que misturava play/volume/tela-cheia/PiP/
 // menu de 3 pontos e confundia com os botoes do app): play/pause central grande + uma barra com
 // play/pause, tempo, scrub, mudo e UM botao de expandir. `onExpand` define o expandir: no card
@@ -34,6 +40,9 @@ export function ClipVideo({
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+  // activated: o src ja foi anexado (a queima ja pode ter sido disparada). Em autoPlay nasce true.
+  const [activated, setActivated] = useState(autoPlay);
+  const wantPlayRef = useRef(false);
   const [ready, setReady] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
@@ -48,8 +57,23 @@ export function ClipVideo({
     return () => document.removeEventListener("fullscreenchange", onFs);
   }, []);
 
+  // Quando o src e anexado por intencao do usuario (idle -> activated), toca assim que o elemento
+  // remontar com o src. Em autoPlay o proprio atributo do <video> cuida (wantPlayRef fica false).
+  useEffect(() => {
+    if (activated && wantPlayRef.current) {
+      wantPlayRef.current = false;
+      videoRef.current?.play().catch(() => {});
+    }
+  }, [activated]);
+
   function toggle() {
     const v = videoRef.current;
+    if (!activated) {
+      // primeira intencao de tocar: anexa o src (so AGORA o backend queima) e toca quando puder.
+      wantPlayRef.current = true;
+      setActivated(true);
+      return;
+    }
     if (!v) return;
     if (v.paused) v.play().catch(() => {});
     else v.pause();
@@ -79,12 +103,15 @@ export function ClipVideo({
   const pct = dur > 0 ? Math.min(100, (cur / dur) * 100) : 0;
 
   return (
-    <div ref={wrapRef} className={cn("clip-video", ready && "is-ready", !playing && "is-paused", className)}>
+    <div
+      ref={wrapRef}
+      className={cn("clip-video", ready && "is-ready", !playing && "is-paused", !activated && "is-idle", className)}
+    >
       <video
         ref={videoRef}
-        src={src}
+        src={activated ? src : undefined}
         playsInline
-        preload="metadata"
+        preload="none"
         autoPlay={autoPlay}
         onClick={toggle}
         onPlay={() => setPlaying(true)}
