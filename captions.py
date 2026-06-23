@@ -162,10 +162,15 @@ def _fmt_time(sec: float) -> str:
 
 
 def segments_for_clip(srt_text: str, clip_start: float, clip_end: float) -> list:
-    """Extrai a legenda do clipe [clip_start, clip_end] (segundos absolutos do
+    """Extrai a legenda do intervalo [clip_start, clip_end] (segundos absolutos do
     vídeo original) como DADO editável: lista de {start, end, text} com tempos
-    relativos ao início do clipe, já quebrada em uma linha por evento. É isto que
-    vai pro banco (clip_captions) e que o usuário corrige."""
+    relativos ao início do intervalo, já quebrada em uma linha por evento. É isto que
+    vai pro banco (clip_captions) e que o usuário corrige.
+
+    Com handles (margem de corte), o pipeline passa [window_start, window_end] aqui, então os
+    tempos ficam relativos ao início da JANELA (cobrindo as sobras). A queima sob demanda corta o
+    vídeo em [in_point, out_point] via output seek; a legenda continua na escala da janela e o
+    próprio corte do ffmpeg descarta os eventos das sobras (validado com o ffmpeg da VPS)."""
     out = []
     for seg in parse_srt(srt_text):
         ov_s = max(seg["start"], clip_start)

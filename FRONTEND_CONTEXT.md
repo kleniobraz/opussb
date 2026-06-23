@@ -271,7 +271,8 @@ geração de waveform/filmstrip.
   corte: estende o fim até o fim da fala em curso, teto 2,5s; puxa o início, teto 1s). **Não** mexe
   em clipes já gerados (vídeo original já apagado). **Opção C (estender manual no editor, estilo
   OpusClip)** ficou DEFERIDA: exigiria reter o original no S3 + persistir in/out + rota de re-corte
-  + UI de alças (custo de storage/pipeline; decisão de produto).
+  + UI de alças (custo de storage/pipeline; decisão de produto). **Atualização (2026-06-23): a Opção
+  C foi FEITA via handles** (sobra de 10s/lado na base, sem reter o original), ver §15.
 - **Waveform/filmstrip reais** no editor (CORS no bucket S3 **ou** sprite/waveform server-side). PENDENTE.
 - Remover `static/` (SPA vanilla) só **depois** de alguns dias de cutover validado em produção. PENDENTE.
 - Se virar produto: mover o front pro Vercel/Cloudflare (deixa a VPS só com a API Flask).
@@ -434,3 +435,50 @@ viewport (`min-height: 100vh`, puxado sob a navbar com `margin-top: -5rem`) pra 
 > Nota: o botão animado escuro (sparkle/shimmer, `.gen-btn` em `brand.css`) chegou a ser feito mas o
 > mockup final pediu o botão dourado; o `.gen-btn` segue no CSS, sem uso (rollback fácil). Subtítulo
 > do hero mantido SEM travessão (regra do dono), apesar do mockup ter um.
+
+---
+
+## 15. Corte ajustável na timeline (handles) (2026-06-23)
+
+> Pedido do dono: a IA às vezes erra o corte; o editor passa a deixar ajustar o in/out arrastando
+> alças na timeline. Backend correspondente: §18 do `BACKEND_CONTEXT.md`. Sem reter o vídeo original:
+> cada clipe sai com ~10s de sobra de cada lado (o `base.mp4` vira a "janela") e o corte oficial fica
+> em `[in,out]` dentro dela. Deployado (build + `systemctl restart opussb-web`).
+
+- **`lib/types.ts`**: `Captions` ganhou `bounds?: {window_dur, in, out} | null` (+ interface
+  `CaptionBounds`). `null` = clipe sem handles (legado).
+- **`lib/api.ts`**: `putCaptions` aceita um 5º arg `cut: {in,out} | null` (manda `in`/`out` no PUT
+  quando há handles; omitido = não mexe no corte).
+- **`components/editor/editor-timeline.tsx`**: máscara escurecida nas sobras (`.editor-trim-mask`
+  is-head/is-tail) + duas **alças de trim** verde-água (`.editor-trim-handle`) arrastáveis + rótulo
+  da duração do corte (`.editor-trim-dur`). `startTrim` reusa o padrão de `startDrag` (snap no
+  playhead/bordas/blocos, clamp pra não cruzar a outra alça, mínimo `MIN_CUT=1s`). Props novas:
+  `hasHandles`, `cutIn`, `cutOut`, `onChangeCut`.
+- **`components/editor/clip-editor.tsx`**: estado `hasHandles`/`cutIn`/`cutOut` (de `data.bounds`);
+  o **play vira prévia do corte** (começa em `in`, pausa em `out`); o scrub segue livre pra inspecionar
+  as sobras; seek inicial pro `in` ao abrir; `save()` manda o corte via `putCaptions`; **"Exportar sem
+  legenda" passou a usar `/video?nocap=1`** (o corte cru) em vez de `/base` (que agora é a janela
+  inteira com sobras, usada só pelo preview ao vivo).
+- **`preview-stage.tsx`**: intacto (a legenda ao vivo usa `currentTime` e os segmentos no mesmo eixo
+  da janela).
+- **`app/brand.css`**: `.editor-trim-mask`, `.editor-trim-handle`, `.editor-trim-dur`.
+- Os segmentos da legenda agora cobrem a janela inteira (incluindo as sobras): aparecem na lista e na
+  timeline, então a legenda fora do corte pode ser vista (e entra se o corte for estendido).
+- `tsc --noEmit` e `next build` limpos. **Clipe ANTIGO** (sem `bounds`): editor sem alças (degrada,
+  como antes). As alças só aparecem em clipes gerados a partir do deploy do backend de §18.
+
+## 16. Lacuna na Home durante o processamento (2026-06-23)
+
+Bug visual: com um job processando, a Home mostrava uma lacuna preta gigante entre o hero e o card
+de progresso (e a faixa branca do "Como funciona" aparecia lá embaixo). Causa: o `.hero` tem
+`min-height: 100vh` (§14), e em processamento o `home-view` escondia o `UploadConsole` e renderizava
+o `JobProgress` DEPOIS do hero, então o hero ficava um bloco vazio de tela cheia empurrando o card
+pra baixo da dobra.
+
+- **`components/home/home-view.tsx`**: com job ativo, o `JobProgress` agora entra DENTRO do hero (no
+  lugar onde ficava o `UploadConsole`), e o `<section>` ganha a classe `hero--busy`. O `JobProgress`
+  é renderizado direto (sem `.upload-wrap`), porque o `.progress-card` já tem container centralizado
+  próprio (evita dupla restrição de largura).
+- **`app/brand.css`**: `.hero--busy { min-height: 0; padding-bottom: 44px; }` derruba o 100vh forçado
+  enquanto há job, então o card fica logo abaixo da saudação. Backend correspondente: BACKEND §19
+  (semáforo de queima, reframe mais rápido e travado).

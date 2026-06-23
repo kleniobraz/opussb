@@ -236,6 +236,12 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
   const [duration, setDuration] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [pxPerSec, setPxPerSec] = useState(14);
+  // Corte (handles): a janela do base tem sobra antes/depois; o corte oficial fica em
+  // [cutIn, cutOut] (s, relativos à janela). hasHandles=false em clipe legado (sem sobra).
+  const [hasHandles, setHasHandles] = useState(false);
+  const [cutIn, setCutIn] = useState(0);
+  const [cutOut, setCutOut] = useState(0);
+  const didSeekInitial = useRef(false);
 
   const editable = data?.editable ?? false;
   const previewSrc = usingBurned ? burnedSrc : baseSrc;
@@ -273,6 +279,15 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
     } else {
       setCapStyle(SB_STYLE);
       setStyleChanged(false);
+    }
+    if (data.bounds) {
+      setHasHandles(true);
+      setCutIn(data.bounds.in);
+      setCutOut(data.bounds.out);
+    } else {
+      setHasHandles(false);
+      setCutIn(0);
+      setCutOut(0);
     }
   }, [data]);
 
@@ -356,6 +371,24 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
     return () => cancelAnimationFrame(raf);
   }, [playing]);
 
+  // Play respeita o corte: ao atingir cutOut, pausa (prévia do clipe final). O scrub manual
+  // continua livre pra inspecionar as sobras antes de decidir onde abrir/fechar o corte.
+  useEffect(() => {
+    if (!hasHandles || !playing) return;
+    if (currentTime >= cutOut - 0.03) videoRef.current?.pause();
+  }, [currentTime, playing, hasHandles, cutOut]);
+
+  // Ao abrir um clipe com sobra, posiciona o playhead no início do corte (não na sobra-cabeça).
+  useEffect(() => {
+    if (!hasHandles || didSeekInitial.current) return;
+    const v = videoRef.current;
+    if (v && duration > 0 && cutIn > 0) {
+      v.currentTime = cutIn;
+      setCurrentTime(cutIn);
+      didSeekInitial.current = true;
+    }
+  }, [hasHandles, duration, cutIn]);
+
   function seek(t: number) {
     const v = videoRef.current;
     if (v) v.currentTime = t;
@@ -364,8 +397,16 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
   function togglePlay() {
     const v = videoRef.current;
     if (!v) return;
-    if (v.paused) v.play().catch(() => {});
-    else v.pause();
+    if (v.paused) {
+      // Play = prévia do corte: se está fora de [cutIn, cutOut], recomeça no início do corte.
+      if (hasHandles && (v.currentTime < cutIn - 0.05 || v.currentTime >= cutOut - 0.05)) {
+        v.currentTime = cutIn;
+        setCurrentTime(cutIn);
+      }
+      v.play().catch(() => {});
+    } else {
+      v.pause();
+    }
   }
 
   function patchStyle(patch: Partial<CapStyle>) {
@@ -551,7 +592,13 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
     setSaving(true);
     try {
       const tasks: Promise<unknown>[] = [
-        api.putCaptions(clipId, out, captionMoved ? captionY : null, styleChanged ? capStyle : null),
+        api.putCaptions(
+          clipId,
+          out,
+          captionMoved ? captionY : null,
+          styleChanged ? capStyle : null,
+          hasHandles ? { in: cutIn, out: cutOut } : null,
+        ),
       ];
       if (music) tasks.push(api.setMusicVolume(clipId, Math.max(0, Math.min(1, volume / 100))));
       await Promise.all(tasks);
@@ -566,8 +613,9 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
   }
 
   function exportClip() {
-    // Com legenda -> versao queimada; Sem legenda -> base limpa.
-    const url = captionsOn ? burnedSrc : baseSrc;
+    // Com legenda -> versao queimada (com trim); Sem legenda -> corte cru (com trim) via ?nocap=1.
+    // (baseSrc e a JANELA inteira com sobras, usada so pelo preview ao vivo; nao serve pra exportar.)
+    const url = captionsOn ? burnedSrc : `${burnedSrc}?nocap=1`;
     const a = document.createElement("a");
     a.href = url;
     a.download = "";
@@ -745,10 +793,18 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
             pxPerSec={pxPerSec}
             frames={frames}
             peaks={peaks}
+            hasHandles={hasHandles}
+            cutIn={cutIn}
+            cutOut={cutOut}
             onSeek={seek}
             onPlayPause={togglePlay}
             onSelect={setSelectedId}
             onChangeSegment={(id, patch) => patchSegment(id, patch)}
+            onChangeCut={(edge, value) => {
+              if (edge === "in") setCutIn(value);
+              else setCutOut(value);
+              setDirty(true);
+            }}
             onZoom={setPxPerSec}
           />
         </>

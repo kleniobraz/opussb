@@ -120,18 +120,27 @@ legenda e a queima é **sob demanda** na rota de vídeo (com cache). Os segmento
 > **Atualizado em 2026-06-21:** rota `GET /…/base`, campo `caption_y` (em GET/PUT
 > `/captions`) e o objeto `music` na resposta de `/captions`. Tudo **aditivo**, já em
 > produção (`test_backend.py` passa). Origem: editor de clipe estilo OpusClip do front Next.
+>
+> **Atualizado em 2026-06-23 (handles/corte ajustável):** o `clip_NN_base.mp4` agora é a
+> JANELA estendida (corte + ~10s de sobra de cada lado, `config.CLIP_HANDLE_SECONDS`). O corte
+> "oficial" fica em `[in,out]` dentro dela e é editável (alças na timeline). `GET/PUT /captions`
+> ganharam `bounds`/`in`/`out` e `GET /video` aceita `?nocap=1`. Aditivo, em produção
+> (`test_backend.py` passa). Clipe sem handles (legado) segue funcionando como antes.
 
 ### `GET /api/clips/{clip_id}/video`
 Entrega o vídeo do clipe: **302** pra URL presignada do S3 (queima a legenda na 1a
 abertura, cacheia, e nas próximas redireciona pro cache). É o que vem em `Clip.url`;
-o front usa direto em `<video src>` e no download (segue o redirect sozinho).
+o front usa direto em `<video src>` e no download (segue o redirect sozinho). Quando o clipe
+tem handles, a queima também **corta a janela** em `[in,out]`. **`?nocap=1`** entrega o corte
+**sem legenda** (corte cru reenquadrado, cache separado `_trim.mp4`); é o "Exportar sem legenda".
 
 ### `GET /api/clips/{clip_id}/base`
-**302** pra URL presignada do S3 do clipe **SEM** legenda queimada (`clip_NN_base.mp4`).
-Usado pelo editor: o preview toca a base limpa e o front **sobrepõe a legenda AO VIVO**
-(sem duplicar com a queimada), e usa essa mesma URL no "Exportar sem legenda". Para clipe
-antigo (`_9x16.mp4`, legenda já fixa) cai na própria base — por isso o editor trata esse
-caso como "Edição indisponível".
+**302** pra URL presignada do S3 do clipe **SEM** legenda queimada (`clip_NN_base.mp4`). Com
+handles, o base é a **JANELA inteira** (com as sobras), usada pelo editor: o preview toca a
+janela limpa, o front **sobrepõe a legenda AO VIVO** e desenha as alças de corte. (O "Exportar
+sem legenda" NÃO usa mais esta rota; usa `GET /video?nocap=1`, que corta `[in,out]`.) Para clipe
+antigo (`_9x16.mp4`, legenda já fixa) cai na própria base, e o editor trata esse caso como
+"Edição indisponível".
 
 ### `GET /api/clips/{clip_id}/captions`
 Devolve a legenda editável, a música de fundo e a posição vertical da legenda:
@@ -140,15 +149,19 @@ Devolve a legenda editável, a música de fundo e a posição vertical da legend
   "editable": true,
   "segments": [ { "start": 0.0, "end": 1.08, "text": "..." } ],
   "music": { "filename": "trilha.mp3", "volume": 0.15 },
-  "caption_y": 0.67
+  "caption_y": 0.67,
+  "bounds": { "window_dur": 28.0, "in": 10.0, "out": 18.0 }
 }
 ```
 - `editable:false` = clipe antigo (legenda já fixa) ou sem fala. `start`/`end` em
-  segundos relativos ao clipe.
+  segundos relativos à **janela** (= ao próprio clipe quando não há handles).
 - `music` = `null` quando não há trilha adicionada.
 - `caption_y` = fração `0..1` do **centro da legenda a partir do topo** (ex.: `0.67` ≈ 2/3
   abaixo), ou `null` = posição padrão do estilo SB. Ao salvar, o backend faz clamp em
   `0.05..0.95`.
+- `bounds` = janela/handles: `window_dur` (duração do base.mp4), `in`/`out` (corte oficial, em
+  segundos relativos à janela). `null` = clipe sem handles (legado): o editor trata a base
+  inteira como o clipe (só dá pra encurtar, sem alças de extensão).
 
 ### `PUT /api/clips/{clip_id}/captions`
 Salva a legenda corrigida (nome/empresa/etc) **e** a posição vertical, e **invalida o
@@ -156,14 +169,18 @@ cache** (o próximo play re-queima com o texto/posição novos). Corpo:
 ```json
 {
   "segments": [ { "start": 0.0, "end": 1.08, "text": "Texto corrigido" } ],
-  "caption_y": 0.67
+  "caption_y": 0.67,
+  "in": 10.0, "out": 18.0
 }
 ```
 - `caption_y` é **opcional**: chave ausente = não mexe na posição; `null` = volta ao padrão
   do estilo SB; número = reposiciona (aplicado na queima via `\an5\pos`, centralizado).
+- `in`/`out` (opcionais, enviados juntos) reposicionam o **corte** dentro da janela. O backend
+  clampa a `[0, window_dur]` e exige `out - in >= 1s`. Só vale pra clipe com handles (senão `409`).
 
 Resposta `200 { ok: true, segments: [...] }`. Erros: `400` (segmento mal formado, ex.
-`end <= start`, ou `caption_y` não numérico), `409` (clipe não editável), `404` (não é o dono).
+`end <= start`, `caption_y` não numérico, ou corte curto demais), `409` (clipe não editável, ou
+sem handles pra reposicionar o corte), `404` (não é o dono).
 
 ### Música de fundo do clipe (mixada na queima sob demanda)
 Rotas em `/api/clips/{clip_id}/music`, todas usadas pelo editor:

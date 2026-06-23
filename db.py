@@ -111,6 +111,16 @@ def init_clip_captions() -> None:
         # Estilo da fonte por clipe (JSON: {size, tracking, color, shadow}). NULL = estilo SB
         # padrao (constantes do captions.py). O usuario ajusta no painel "Estilo" do editor.
         _ensure_column(conn, "clip_captions", "caption_style", "TEXT")
+        # Handles (margem de corte): o clip_NN_base.mp4 passa a ser a JANELA estendida; estes 4
+        # campos situam o corte "oficial" dentro dela. window_start = onde a janela comeca no
+        # video original (s absolutos); window_dur = duracao real da janela (= base.mp4);
+        # in_point/out_point = entrada/saida do corte, relativos a janela (o usuario arrasta no
+        # editor). NULL = clipe sem handles (legado ou CLIP_HANDLE_SECONDS=0): o corte e a janela
+        # inteira e a queima nunca aplica trim.
+        _ensure_column(conn, "clip_captions", "window_start", "REAL")
+        _ensure_column(conn, "clip_captions", "window_dur", "REAL")
+        _ensure_column(conn, "clip_captions", "in_point", "REAL")
+        _ensure_column(conn, "clip_captions", "out_point", "REAL")
 
 
 def init_clip_music() -> None:
@@ -376,6 +386,51 @@ def set_clip_caption_style(clip_id: str, style_json) -> None:
         conn.execute(
             "UPDATE clip_captions SET caption_style = ?, updated_at = ? WHERE clip_id = ?",
             (style_json, _now(), clip_id),
+        )
+
+
+def get_clip_window(clip_id: str):
+    """Janela/handles do clipe: dict {window_start, window_dur, in_point, out_point} ou None se
+    não houver linha OU window_dur for NULL (clipe sem handles: o corte é a janela inteira)."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT window_start, window_dur, in_point, out_point FROM clip_captions WHERE clip_id = ?",
+            (clip_id,),
+        ).fetchone()
+    if not row or row["window_dur"] is None:
+        return None
+    return {
+        "window_start": row["window_start"],
+        "window_dur": row["window_dur"],
+        "in_point": row["in_point"],
+        "out_point": row["out_point"],
+    }
+
+
+def set_clip_window(clip_id: str, window_start, window_dur, in_point, out_point) -> None:
+    """Grava a janela + o corte inicial na produção (run_thread2). A linha de clip_captions
+    costuma já existir (segmentos salvos antes); o UPSERT cobre o clipe sem fala (sem segmentos)
+    pra a janela existir mesmo assim. Não toca em segments quando a linha já existe."""
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO clip_captions
+                   (clip_id, segments, window_start, window_dur, in_point, out_point, updated_at)
+               VALUES (?, '[]', ?, ?, ?, ?, ?)
+               ON CONFLICT(clip_id) DO UPDATE SET
+                   window_start = excluded.window_start, window_dur = excluded.window_dur,
+                   in_point = excluded.in_point, out_point = excluded.out_point,
+                   updated_at = excluded.updated_at""",
+            (clip_id, window_start, window_dur, in_point, out_point, _now()),
+        )
+
+
+def set_clip_inout(clip_id: str, in_point, out_point) -> None:
+    """Atualiza só os pontos de corte (in/out) editados no front. window_start/window_dur (a
+    janela física do base.mp4) nunca mudam em runtime, só o recorte dentro dela."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE clip_captions SET in_point = ?, out_point = ?, updated_at = ? WHERE clip_id = ?",
+            (in_point, out_point, _now(), clip_id),
         )
 
 

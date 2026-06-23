@@ -38,6 +38,33 @@ JOB_DIR: str = os.environ.get("JOB_DIR", "/opt/opussb/jobs")
 # Acima da janela do Whisper (5-15min) com folga. Job preso passa disso vira error.
 JOB_STALE_MINUTES: int = int(os.environ.get("JOB_STALE_MINUTES", "30"))
 
+# Teto de queimas de legenda SIMULTÂNEAS no processo. A queima sob demanda (GET
+# /api/clips/<id>/video) roda um ffmpeg libx264 que usa TODOS os núcleos; sem limite,
+# abrir vários clipes de um job recém-terminado disparava N queimas em paralelo (uma por
+# thread do gunicorn), saturava a VPS (3 vCPU) + RAM no swap e o /health timava (o site
+# parecia fora do ar). Numa máquina de poucos núcleos, 1 por vez roda rápido e mantém a
+# máquina viva. Env-tunável (subir só faz sentido em box com mais núcleos).
+BURN_CONCURRENCY: int = int(os.environ.get("BURN_CONCURRENCY", "1"))
+# Quanto uma requisição de vídeo espera por um slot de queima antes de desistir e servir a
+# base SEM legenda (o clipe sempre toca; a próxima abertura re-tenta). Evita prender a
+# thread do gunicorn indefinidamente quando a fila de queima está cheia.
+BURN_QUEUE_TIMEOUT: float = float(os.environ.get("BURN_QUEUE_TIMEOUT", "120"))
+
+# Sobra (handles) cortada de cada lado do clipe, em segundos. O clip_NN_base.mp4 passa a ser
+# a janela [start-H, end+H] (clamped ao vídeo) reenquadrada, e o editor abre/fecha o corte
+# dentro dessa sobra (ajuste fino quando a IA erra o ponto de corte). 0 desliga (corte exato,
+# comportamento antigo). Custo: alonga o reframe (YOLO, frame a frame) por clipe de origem
+# horizontal e sobe o storage por clipe; origem já vertical pula o reframe (sobra ~grátis).
+CLIP_HANDLE_SECONDS: float = float(os.environ.get("CLIP_HANDLE_SECONDS", "10"))
+
+# Reframe 9:16: estabilidade do enquadramento (feedback dos cortes: "se mexe muito, o ideal é
+# ficar fixo no rosto"). O corte fica TRAVADO no sujeito e só anda quando ele sai de uma zona
+# central (deadzone), e devagar (teto de pan). Tudo em fração da LARGURA do corte; env-tunável
+# pra dialar "quão travado": deadzone maior + pan menor = mais fixo.
+REFRAME_DEADZONE_FRAC: float = float(os.environ.get("REFRAME_DEADZONE_FRAC", "0.35"))  # zona morta = 35% da largura do corte
+REFRAME_MAX_PAN_FRAC: float = float(os.environ.get("REFRAME_MAX_PAN_FRAC", "0.18"))    # pan máx por SEGUNDO (fração da largura)
+REFRAME_MIN_CONF: float = float(os.environ.get("REFRAME_MIN_CONF", "0.30"))            # confiança mínima do YOLO pra contar a pessoa
+
 # YouTube (yt-dlp): teto de duração do vídeo de entrada, em segundos. Controla custo de
 # transcrição (RunPod escala com a duração) e quanto tempo um job segura o único slot da
 # fila (MAX_CONCURRENT_JOBS=1). Default 2h. Ajustável por env sem mexer no código.

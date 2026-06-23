@@ -9,6 +9,7 @@ const MIN_BLOCK_W = 26; // largura minima clicavel de um bloco, mesmo pra legend
 const ZOOM_MIN = 4;
 const ZOOM_MAX = 48;
 const DRAG_THRESHOLD = 4; // px que o ponteiro precisa andar antes de virar arraste (clique != mover)
+const MIN_CUT = 1; // duracao minima do corte (s) ao arrastar as alcas; bate com _MIN_CUT_SECONDS no backend
 
 function fmtClock(t: number): string {
   if (!isFinite(t)) t = 0;
@@ -44,10 +45,14 @@ export function EditorTimeline({
   pxPerSec,
   frames,
   peaks,
+  hasHandles,
+  cutIn,
+  cutOut,
   onSeek,
   onPlayPause,
   onSelect,
   onChangeSegment,
+  onChangeCut,
   onZoom,
 }: {
   duration: number;
@@ -58,10 +63,14 @@ export function EditorTimeline({
   pxPerSec: number;
   frames: Frame[];
   peaks: number[] | null;
+  hasHandles: boolean; // o clipe tem sobra (handles) editável? legado = false (sem alças)
+  cutIn: number; // início do corte (s, relativo à janela)
+  cutOut: number; // fim do corte (s, relativo à janela)
   onSeek: (t: number) => void;
   onPlayPause: () => void;
   onSelect: (id: string) => void;
   onChangeSegment: (id: string, patch: { start: number; end: number }) => void;
+  onChangeCut: (edge: "in" | "out", value: number) => void;
   onZoom: (px: number) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null); // container que rola (mede clientWidth, move scrollLeft)
@@ -130,6 +139,29 @@ export function EditorTimeline({
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       if (!moved) onSelect(id); // clique sem mover = selecionar
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  // Arrasta a alça de corte (in/out) dentro da janela. Imanta no playhead, nas bordas e nos
+  // blocos de legenda; clampa pra nunca cruzar a outra alça (deixando ao menos MIN_CUT de corte).
+  function startTrim(e: React.PointerEvent, edge: "in" | "out") {
+    e.stopPropagation();
+    const startX = e.clientX;
+    const orig = edge === "in" ? cutIn : cutOut;
+    const tol = 8 / pxPerSec;
+    const targets = [currentTime, 0, dur];
+    segments.forEach((s) => targets.push(s.start, s.end));
+    const move = (ev: PointerEvent) => {
+      let v = snap(orig + (ev.clientX - startX) / pxPerSec, targets, tol);
+      if (edge === "in") v = Math.max(0, Math.min(v, cutOut - MIN_CUT));
+      else v = Math.min(dur, Math.max(v, cutIn + MIN_CUT));
+      onChangeCut(edge, r2(v));
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -328,6 +360,32 @@ export function EditorTimeline({
               </div>
             ))}
           </div>
+
+          {hasHandles && dur > 0 && (
+            <>
+              {cutIn > 0 && (
+                <div className="editor-trim-mask is-head" style={{ width: cutIn * pxPerSec }} />
+              )}
+              {cutOut < dur && (
+                <div className="editor-trim-mask is-tail" style={{ left: cutOut * pxPerSec }} />
+              )}
+              <div
+                className="editor-trim-handle"
+                style={{ left: cutIn * pxPerSec }}
+                onPointerDown={(e) => startTrim(e, "in")}
+                title="Início do corte (arraste)"
+              />
+              <div
+                className="editor-trim-handle"
+                style={{ left: cutOut * pxPerSec }}
+                onPointerDown={(e) => startTrim(e, "out")}
+                title="Fim do corte (arraste)"
+              />
+              <div className="editor-trim-dur" style={{ left: ((cutIn + cutOut) / 2) * pxPerSec }}>
+                corte {fmtClock(cutOut - cutIn)}
+              </div>
+            </>
+          )}
 
           <div className="editor-playhead" style={{ left: currentTime * pxPerSec }} />
         </div>

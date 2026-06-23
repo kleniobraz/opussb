@@ -291,6 +291,9 @@
 
 /* ─── Hero (home) ──────────────────────────────────────────────────────── */
 .hero { position: relative; overflow: hidden; border-bottom: 1px solid var(--border); margin-top: -5rem; padding-top: 5rem; min-height: 100vh; display: flex; flex-direction: column; justify-content: flex-start; }
+/* Em processamento o console some e o card de progresso entra no lugar; sem o 100vh
+   a tela nao fica com uma lacuna gigante empurrando o card pra baixo da dobra. */
+.hero--busy { min-height: 0; padding-bottom: 44px; }
 .hero-glows { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
 .hero-inner { position: relative; z-index: 1; max-width: var(--container); margin: 0 auto; padding: 64px 28px 36px; display: flex; justify-content: space-between; align-items: center; gap: 32px; flex-wrap: wrap; }
 .hero-text { flex: 1 1 360px; }
@@ -780,6 +783,16 @@
 .editor-cap-handle.left { left: 0; } .editor-cap-handle.right { right: 0; }
 .editor-playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--gold-2); box-shadow: 0 0 8px rgba(245,197,24,0.85); pointer-events: none; z-index: 5; }
 .editor-playhead::before { content: ""; position: absolute; top: 0; left: -5px; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 8px solid var(--gold-2); }
+/* Handles de corte (trim): a janela do base.mp4 tem uma sobra antes/depois; o corte "oficial"
+   fica em [in,out]. As alças (verde-água, distintas do dourado da legenda/playhead) abrem/fecham
+   o corte; as sobras ficam escurecidas pela máscara. */
+.editor-trim-mask { position: absolute; top: 0; bottom: 0; background: rgba(8,8,10,0.62); z-index: 3; pointer-events: none; }
+.editor-trim-mask.is-head { left: 0; }
+.editor-trim-mask.is-tail { right: 0; }
+.editor-trim-handle { position: absolute; top: 0; bottom: 0; width: 16px; margin-left: -8px; cursor: ew-resize; z-index: 4; touch-action: none; }
+.editor-trim-handle::before { content: ""; position: absolute; top: 0; bottom: 0; left: 7px; width: 2px; background: #2fe0bf; box-shadow: 0 0 8px rgba(47,224,191,0.85); }
+.editor-trim-handle::after { content: ""; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 8px; height: 32px; background: #2fe0bf; border-radius: 4px; box-shadow: 0 0 8px rgba(47,224,191,0.55); }
+.editor-trim-dur { position: absolute; top: 1px; transform: translateX(-50%); z-index: 6; font-size: 0.62rem; font-weight: 600; color: #2fe0bf; background: rgba(8,8,10,0.78); padding: 1px 7px; border-radius: 999px; pointer-events: none; white-space: nowrap; }
 
 .editor-seg-row { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--surface); cursor: pointer; transition: border-color var(--dur), background var(--dur); }
 .editor-seg-row:hover { border-color: var(--border-strong); }

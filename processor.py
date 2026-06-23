@@ -278,40 +278,72 @@ def run_thread2(job_id: str) -> None:
 
         _check_cancel(job_id)
         db.update_job(job_id, status="cutting", progress=70)
-        produced = _cut_clips(job["local_path"], clips_data, job_clips_dir)
+        _t_cut = time.monotonic()
+        produced = _cut_clips(job["local_path"], clips_data, job_clips_dir, config.CLIP_HANDLE_SECONDS)
+        log.info("[timing] corte: %d clipe(s) em %.1fs", len(produced), time.monotonic() - _t_cut)
 
         _check_cancel(job_id)
         db.update_job(job_id, status="reframing", progress=85)
         from reframer import reframe_clip
+        _t_reframe = time.monotonic()
         for i, item in enumerate(produced):
             out_path = item["path"].replace(".mp4", "_base.mp4")
+            _t_clip = time.monotonic()
             try:
                 reframe_clip(item["path"], out_path)            # base 9x16 SEM legenda
             except Exception as e:
                 log.warning("[reframe] clip %d falhou (%s), usando center crop", i + 1, e)
                 _center_crop_fallback(item["path"], out_path)
+            log.info("[timing] reframe clip %d: %.1fs", i + 1, time.monotonic() - _t_clip)
             item["final"] = out_path
+        log.info("[timing] reframe total: %d clipe(s) em %.1fs", len(produced), time.monotonic() - _t_reframe)
 
         _check_cancel(job_id)
         db.update_job(job_id, status="uploading_clips", progress=95)
         results = []
+        H = config.CLIP_HANDLE_SECONDS
         for i, item in enumerate(produced):
             key = f"jobs/{job_id}/clips/clip_{i+1:02d}_base.mp4"
             # Sobe a base ANTES de qualquer cleanup: depois do rmtree é a única
             # cópia que sobra e é de onde a queima sob demanda parte.
             _s3_upload_with_retry(item["final"], key)
-            # Grava os segmentos editáveis (clip_id "<job_id>:<index>", batendo com
-            # o id de favoritos/_clip_objects). Falha aqui não derruba o job: dá pra
-            # re-derivar do transcript depois.
+            clip_id = f"{job_id}:{i}"
+            meta = item["meta"]
+            win_start = float(item.get("win_start") or 0.0)
+            # Com handles (H > 0), o base.mp4 é a JANELA: window_dur (duração real do base, via
+            # ffprobe) cobre o clamp quando a janela passa do fim do vídeo, e os segmentos passam
+            # a ser relativos ao início da janela (win_start). Sem handles, tudo é relativo ao
+            # próprio corte (comportamento antigo). Se o ffprobe falhar, usa o fim nominal e não
+            # persiste a janela (degrada pra "sem handles", sem quebrar a legenda).
+            if H > 0:
+                window_dur = _probe_duration(item["final"])
+                seg_start = win_start
+                seg_end = (win_start + window_dur) if window_dur else (float(meta["end"]) + H)
+            else:
+                window_dur = None
+                seg_start, seg_end = float(meta["start"]), float(meta["end"])
+            # Grava os segmentos editáveis (clip_id "<job_id>:<index>", batendo com o id de
+            # favoritos/_clip_objects). Falha aqui não derruba o job: dá pra re-derivar depois.
             if transcript:
                 try:
-                    segs = captions.segments_for_clip(
-                        transcript, float(item["meta"]["start"]), float(item["meta"]["end"]))
+                    segs = captions.segments_for_clip(transcript, seg_start, seg_end)
                     if segs:
-                        db.set_clip_captions(f"{job_id}:{i}", json.dumps(segs, ensure_ascii=False))
+                        db.set_clip_captions(clip_id, json.dumps(segs, ensure_ascii=False))
                 except Exception as e:
                     log.warning("[caption] clip %d: falha ao gravar segmentos (%s)", i + 1, e)
-            results.append(_clip_result(key, item["meta"]))
+            # Persiste a janela/corte só quando há handles e o ffprobe deu a duração real. O
+            # in/out inicial é o corte que o Claude/snap decidiu, situado dentro da janela.
+            if H > 0 and window_dur:
+                try:
+                    start, end = float(meta["start"]), float(meta["end"])
+                    in_pt = max(0.0, round(start - win_start, 3))
+                    out_pt = round(min(end - win_start, window_dur), 3)
+                    if out_pt > in_pt:
+                        db.set_clip_window(clip_id, round(win_start, 3),
+                                           round(window_dur, 3), in_pt, out_pt)
+                except Exception as e:
+                    log.warning("[window] clip %d: falha ao gravar a janela (%s)", i + 1, e)
+            results.append(_clip_result(key, meta))
 
         # Thumbnail do card: frame do melhor clipe, ANTES do rmtree (arquivos ainda em
         # disco). Best-effort: se falhar, thumbnail_key fica None e o card usa o fallback.
@@ -378,6 +410,27 @@ def _best_clip(produced: list):
     return max(produced, key=_score)
 
 
+def _probe_duration(path: str):
+    """Duração (segundos, float) de um arquivo de vídeo via ffprobe, ou None se falhar.
+    Best-effort: usado pra saber a duração real da janela cortada (que pode ser menor que o
+    nominal quando o fim passa do vídeo). Arquivo curto (a janela): ffprobe é barato."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "csv=p=0", path],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        d = float((r.stdout or "").strip())
+    except (TypeError, ValueError):
+        return None
+    return d if math.isfinite(d) and d > 0 else None
+
+
 def _generate_thumbnail(job_id: str, produced: list):
     """Best-effort: extrai 1 frame do clipe de maior score (no aspecto ORIGINAL do
     corte, item['path'], pra casar com o card 16/10, não o _base.mp4 9:16), sobe em
@@ -388,10 +441,18 @@ def _generate_thumbnail(job_id: str, produced: list):
     src = best.get("path") if best else None
     if not src or not os.path.exists(src):
         return None
+    # Com handles, src (item['path']) é a JANELA: o corte oficial começa ~handle segundos
+    # adiante, então -ss 1 cairia na sobra-cabeça. Pega 1s DENTRO do corte (start - win_start).
+    ss = 1.0
+    try:
+        win_start = float(best.get("win_start") or 0.0)
+        ss = max(0.0, float(best["meta"]["start"]) - win_start) + 1.0
+    except (KeyError, TypeError, ValueError):
+        ss = 1.0
     thumb_path = os.path.join(config.JOB_DIR, job_id, "thumb.jpg")
     try:
         r = subprocess.run(
-            ["ffmpeg", "-y", "-ss", "1", "-i", src,
+            ["ffmpeg", "-y", "-ss", f"{ss:.3f}", "-i", src,
              "-frames:v", "1", "-vf", "scale=640:-2", "-q:v", "4", thumb_path],
             capture_output=True, text=True, timeout=120,
         )
@@ -466,10 +527,16 @@ def _trigger_n8n_with_retry(
             time.sleep(2 ** attempt)
 
 
-def _cut_clips(video_path: str, clips_data: list, output_dir: str) -> list:
-    """Corta cada clipe e devolve, por clipe efetivamente produzido, {path, meta}.
-    Carrega o metadata original (title/score/reason) junto, pra não depender do
-    índice (clipes < 5s ou que falham são pulados e quebrariam o casamento)."""
+def _cut_clips(video_path: str, clips_data: list, output_dir: str, handle: float = 0.0) -> list:
+    """Corta cada clipe e devolve, por clipe efetivamente produzido, {path, meta, win_start}.
+    Carrega o metadata original (title/score/reason) junto, pra não depender do índice (clipes
+    < 5s ou que falham são pulados e quebrariam o casamento).
+
+    Com handle > 0, corta a JANELA [start-handle, end+handle] (clamped a >= 0; o ffmpeg corta
+    no que existe se o fim passar do vídeo) em vez do corte exato: o base.mp4 vira a janela e o
+    editor abre/fecha o corte dentro da sobra. meta mantém o start/end ORIGINAIS (título/score/
+    duração do card não mudam); win_start situa o corte dentro da janela. handle=0 = corte exato
+    (comportamento antigo, sem sobra)."""
     produced = []
     idx = 0
     for n, clip in enumerate(clips_data):
@@ -488,11 +555,13 @@ def _cut_clips(video_path: str, clips_data: list, output_dir: str) -> list:
             log.info("[cut] clip %d ignorado: duração %.1fs muito curta", n + 1, end - start)
             continue
         idx += 1
+        win_start = max(0.0, start - handle) if handle > 0 else start
+        win_end = (end + handle) if handle > 0 else end
         out_path = os.path.join(output_dir, f"clip_{idx:02d}.mp4")
         try:
             result = subprocess.run(
                 ["ffmpeg", "-y", "-i", video_path,
-                 "-ss", str(start), "-to", str(end),
+                 "-ss", str(win_start), "-to", str(win_end),
                  "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
                  "-avoid_negative_ts", "1", "-movflags", "+faststart", out_path],
                 capture_output=True, text=True, timeout=_FFMPEG_CUT_TIMEOUT,
@@ -501,7 +570,7 @@ def _cut_clips(video_path: str, clips_data: list, output_dir: str) -> list:
             log.error("[cut] clip %d estourou o timeout (%ss); pulando", n + 1, _FFMPEG_CUT_TIMEOUT)
             continue
         if result.returncode == 0 and os.path.exists(out_path):
-            produced.append({"path": out_path, "meta": clip})
+            produced.append({"path": out_path, "meta": clip, "win_start": win_start})
         else:
             log.warning("[cut] clip %d falhou: %s", n + 1, result.stderr[:200])
     return produced

@@ -269,7 +269,9 @@ Contrato completo dessas rotas: `BACKEND_INTEGRATION.md` seção 3.1.
 - ~~TLS/HTTPS~~ **FEITO** (§14): HTTPS em https://sbclips.space.
 - Música: hoje é upload por clipe (sem biblioteca de presets).
 - ~~Mini editor no front~~ **FEITO**: editor de clipe completo (FRONTEND §7) + posição
-  (`caption_y`, §8) + estilo de fonte (`caption_style`, §16).
+  (`caption_y`, §8) + estilo de fonte (`caption_style`, §16) + corte ajustável (handles, §18).
+- ~~Opção C (estender o corte manualmente, estilo OpusClip)~~ **FEITA (2026-06-23, §18)** via
+  handles (sobra de 10s/lado na base), sem reter o vídeo original.
 - **YouTube (§17): manutenção recorrente** — cookies expiram (reexportar), `yt-dlp`/`Deno`
   precisam de update conforme o YouTube muda; bloqueio anti-robô do IP de datacenter é
   intermitente mesmo com cookies (proxy residencial adiado).
@@ -591,3 +593,110 @@ servidor e cai no MESMO pipeline do upload.
   arquivo `--cookies` e destruía o master (SID/LOGIN_INFO); agora usa cópia descartável (`_cookie_copy_args`).
 - Validado: `test_youtube_helpers` (URL anti-bypass + tradução de erro). E2e do download real (32MB
   em ~3s com cookies+Deno). Deploy: backup + restart `opussb` (active_jobs=0) + build/restart `opussb-web`.
+
+## 18. Corte ajustável na timeline com "handles" (margem) (2026-06-23)
+
+Pedido do dono: a IA às vezes erra o corte (seco demais ou no tempo errado) e o editor não deixava
+ajustar (o clipe saía cortado exato em `[start,end]` e o original é apagado no cleanup). Em vez de
+reter o vídeo inteiro no S3 (caro; era a "Opção C" adiada da §9), cada clipe agora é cortado e
+reenquadrado com uma SOBRA de ~10s de cada lado, e o editor abre/fecha o corte dentro dela (alças
+na timeline). Decisão fechada com o dono: handle 10s/lado, simétrico, configurável. Deploy: backup +
+restart `opussb` + build/restart `opussb-web`.
+
+**Modelo (a âncora mudou):** o `clip_NN_base.mp4` deixa de ser o corte exato e passa a ser a JANELA
+`[start-H, end+H]` (clamped a `[0, dur_vídeo]`; `H=config.CLIP_HANDLE_SECONDS`, default 10),
+reenquadrada 9:16. Por clipe, persistimos em `clip_captions` (4 colunas novas via `_ensure_column`):
+`window_start` (s absolutos no original), `window_dur` (duração real do base, via ffprobe do
+produzido), `in_point`/`out_point` (corte oficial, relativos à janela). Os **segmentos de legenda
+passam a ser relativos à janela** (`segments_for_clip(transcript, win_start, win_end)`, cobrindo as
+sobras), então estender o corte traz a legenda nova de graça. `NULL` nas 4 colunas = clipe sem
+handles (legado ou `H=0`): comporta-se como antes (sem trim).
+
+**Onde foi mexido:**
+- `config.py`: `CLIP_HANDLE_SECONDS` (default 10, env-tunável; 0 desliga e volta ao corte exato).
+- `db.py`: 4 colunas em `clip_captions` + `get_clip_window`/`set_clip_window`/`set_clip_inout`.
+- `processor.py`: `_cut_clips(..., handle)` corta a janela e guarda `win_start`; `run_thread2` mede
+  `window_dur` (`_probe_duration`), persiste window/in/out, ancora a legenda na janela;
+  `_generate_thumbnail` extrai o frame de DENTRO do corte (não da sobra-cabeça).
+- `app.py`: queima com **trim** em `_build_burn_cmd`/`_burn_clip`/`clip_video`; `clip_video` lê a
+  janela, calcula `trim_needed`, suporta `?nocap=1` (corte cru, cache `_trim.mp4`); `_invalidate_cap`
+  apaga `_cap.mp4` E `_trim.mp4`; GET `/captions` expõe `bounds`, PUT aceita `in`/`out` (clamp +
+  mínimo de 1s, 409 sem handles). `_MIN_CUT_SECONDS=1`.
+- `test_backend.py`: 4 casos de `_build_burn_cmd` COM trim + `test_clip_window`.
+
+**Mecânica do trim na queima (VALIDADA empiricamente com o ffmpeg 4.4.2 da VPS, NÃO assumida):** a
+queima corta `[in,out]` da janela via **output seek** (`-ss <in> -t <dur>` DEPOIS do `-i`, com
+`-avoid_negative_ts make_zero`). Ponto contraintuitivo (uma proposta inicial errou): o filtro
+`subtitles` enxerga o **PTS da JANELA** (não rezerado) e o corte/reset acontece depois; então a
+legenda **NÃO é deslocada** (fica na escala da janela) e casa frame a frame. A música em loop é
+limitada ao corte pelo `amix duration=first` (segue `[0:a]`, a fala), sem `-t` próprio. A regra de
+áudio antiga não regrediu (`-map 0:a?` + `-c:a copy` no caso só-legenda; deslize de áudio <= 1 frame
+AAC, imperceptível). Experimento: vídeo com contador queimado + legenda em tempo conhecido, cortado e
+inspecionado frame a frame (a legenda deslocada SUMIA; a da janela casava). E2e real: `run_thread2`
+num vídeo horizontal de teste produziu a janela 9:16 e o corte queimado bateu (trecho certo + legenda
+sincronizada + áudio), com cleanup total.
+
+**Front:** ver FRONTEND_CONTEXT §15 (alças de trim + máscara das sobras; play vira prévia do corte;
+"Exportar sem legenda" usa `/video?nocap=1`).
+
+**Limites honestos:** corte só dentro da sobra de 10s (erro maior = reprocessar); clipe sem fala
+segue "Edição indisponível"; clipes ANTIGOS (sem janela) não têm alças (só encurtam dentro do que há).
+Custo aceito: reframe mais longo por clipe de origem horizontal (proporcional à sobra; origem já
+vertical pula o reframe) e ~40-50% mais storage por clipe (ainda ~50x menos que reter o original).
+
+## 19. Estabilidade da queima + reframe mais rápido e travado (2026-06-23)
+
+Três frentes nascidas de um incidente e de feedbacks dos cortes. Tudo deployado (backup db+código
+em `/opt/opussb_backups/`, restart com `active_jobs=0`, `test_backend.py` + `tests/test_reframer.py`
+verdes). Memória do projeto: `reframe-burn-perf-and-gpu-plan`.
+
+### 19.1 Queda do site sob carga: semáforo global de queima (crítico)
+**Sintoma:** ao terminar um job e abrir vários clipes, o site ficava "fora do ar" (nginx/Next de
+pé, mas `/api` e `/health` em timeout). **Causa raiz:** a queima sob demanda (`clip_video`) só tinha
+lock POR CLIPE (`_clip_burn_lock`); clipes diferentes queimavam em paralelo (uma por thread do
+gunicorn), cada ffmpeg libx264 usando os 3 vCPUs -> load ~10, RAM no swap, threads sem CPU pra
+responder. NÃO é falta de hardware: é concorrência (nenhum tamanho de box remove o bug).
+**Correção (`app.py`):** semáforo GLOBAL `_burn_sem = BoundedSemaphore(config.BURN_CONCURRENCY)`
+(default 1) adquirido em `clip_video` antes do `_burn_clip`, liberado SEMPRE no `finally` (blindado:
+`tmp=None` + release garantido mesmo se o `mkdtemp` falhar, senão vazaria slot). Se o slot não vier
+em `BURN_QUEUE_TIMEOUT` (default 120s), serve a BASE sem legenda (clipe sempre toca, re-tenta depois)
+em vez de prender a thread. Config nova em `config.py`: `BURN_CONCURRENCY`, `BURN_QUEUE_TIMEOUT`.
+Teste: `test_burn_semaphore` (nunca concede além do teto). Diagnóstico no `journalctl`: load alto +
+vários `ffmpeg ... burn_*` simultâneos.
+
+### 19.2 Reframe em encode ÚNICO (mais rápido, sem regressão)
+**Antes:** o `reframer.py` fazia DOIS encodes: cv2.VideoWriter gravava um `.tmp.mp4` em **mp4v** e
+depois o `_mux_audio` re-encodava tudo em libx264 **sem `-preset`** (ou seja, `medium`, lento).
+**Agora:** `_pipe_reframe_encode` envia os frames recortados direto pro ffmpeg via stdin (rawvideo
+bgr24 1080x1920) num ÚNICO encode libx264 `-preset veryfast -crf 20 -pix_fmt yuv420p`, com o áudio
+do original (`-map 1:a:0?`) e `-shortest`. Remove um encode inteiro + o temp em disco + a perda de
+geração do mp4v. **Cuidado de implementação:** stderr do ffmpeg vai pra ARQUIVO temporário (não PIPE;
+um PIPE não drenado travaria o ffmpeg em deadlock enquanto escrevemos no stdin); BrokenPipe/timeout
+-> levanta e o `run_thread2` cai no `_center_crop_fallback`. `_mux_audio` foi REMOVIDO (substituído).
+Passe 1 do YOLO agora usa `grab()` nos frames pulados + `retrieve()` só nos amostrados (menos
+conversão BGR). `_encode_with_subtitles` (caso já-9:16) também ganhou `-preset veryfast -crf 20`.
+
+### 19.3 Enquadramento TRAVADO (feedback "se mexe muito, ideal fixo no rosto")
+O rastreamento por YOLO balançava. Causas: pulava pro CENTRO quando perdia a detecção; pegava a
+maior confiança do frame (saltava entre pessoas); seguia cada gesto sem zona morta nem limite de
+velocidade. **Correção (`reframer.py`):** câmera virtual TRAVADA.
+- `_detect_subject_cx` devolve o CENTRO do sujeito (ou None se não há pessoa >= `REFRAME_MIN_CONF`);
+  com sujeito anterior, escolhe o box mais PRÓXIMO do anterior (continuidade), não o mais confiante.
+- No passe 1, None = "sem detecção" -> SEGURA a última posição (não pula pro centro).
+- `_build_locked_trajectory`: monta o centro desejado por frame (segura o último válido) e roda uma
+  câmera virtual com ZONA MORTA (`REFRAME_DEADZONE_FRAC`, 35% da largura: dentro dela não mexe) +
+  PAN LIMITADO (`REFRAME_MAX_PAN_FRAC`, 18%/s: quando precisa andar, vai devagar, sem salto) +
+  polimento por média móvel. Sem nada detectado no clipe inteiro -> corte central fixo.
+- Config nova: `REFRAME_DEADZONE_FRAC`, `REFRAME_MAX_PAN_FRAC`, `REFRAME_MIN_CONF` (env-tunáveis:
+  deadzone maior + pan menor = mais fixo). Só vale pra clipes NOVOS. Testes:
+  `tests/test_reframer.py` (sujeito parado = corte fixo, continuidade segue o mais próximo, salto =
+  segue devagar) + reframe real validado (1080x1920 + áudio). **NÃO voltar a deixar o corte
+  "perseguir" o movimento.**
+
+### 19.4 Log de tempo por etapa (instrumentação)
+`run_thread2` loga `[timing] corte: ...`, `[timing] reframe clip N: ...` e `[timing] reframe total:
+...` (via `time.monotonic`). Com isso o próximo job mostra no `journalctl -u opussb | grep timing`
+quanto é corte vs reframe, pra decidir com número se o reframe vai pra GPU (RunPod serverless;
+plano na memória `reframe-burn-perf-and-gpu-plan`). O corte ainda usa OUTPUT seek (`-ss` depois do
+`-i`, decodifica do zero a cada clipe); otimizar pra INPUT seek ficou pendente (timing-sensível pelos
+handles, decidir com o dado do log).

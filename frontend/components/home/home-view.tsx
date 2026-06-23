@@ -24,21 +24,21 @@ export function HomeView() {
 
   return (
     <div>
-      <section className="hero">
+      <section className={job ? "hero hero--busy" : "hero"}>
         <ShaderBackground />
         <div className="hero-glows" aria-hidden="true">
           <div className="glow glow-a" style={{ top: "-10%", left: "8%" }} />
           <div className="glow glow-b" style={{ top: 0, right: "6%" }} />
         </div>
         <Hero />
-        {!job && (
+        {job ? (
+          <JobProgress jobId={job.id} filename={job.filename} onReset={onReset} />
+        ) : (
           <div className="upload-wrap">
             <UploadConsole onStarted={onStarted} />
           </div>
         )}
       </section>
-
-      {job && <JobProgress jobId={job.id} filename={job.filename} onReset={onReset} />}
 
       <HowItWorks />
       <Recent />

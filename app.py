@@ -963,6 +963,16 @@ def favorite_remove(clip_id):
 _burn_locks = {}
 _burn_locks_guard = threading.Lock()
 
+# Semáforo GLOBAL de queima (não por clipe): limita quantos ffmpeg de queima rodam ao
+# mesmo tempo no processo todo. O lock por clipe (_clip_burn_lock) só evita queimar o
+# MESMO clipe em duplicata; clipes DIFERENTES tinham locks diferentes, então abrir vários
+# clipes de um job recém-terminado disparava até 4 queimas em paralelo (uma por thread do
+# gunicorn), cada ffmpeg usando os 3 núcleos -> load 10, RAM no swap, /health timava (a
+# app parecia fora do ar). Com BURN_CONCURRENCY=1, uma queima por vez, rápida, e a VPS
+# fica de pé. Quem não pega o slot dentro de _BURN_QUEUE_TIMEOUT serve a base (ver clip_video).
+_burn_sem = threading.BoundedSemaphore(max(1, config.BURN_CONCURRENCY))
+_BURN_QUEUE_TIMEOUT = config.BURN_QUEUE_TIMEOUT
+
 
 def _clip_burn_lock(clip_id: str) -> threading.Lock:
     """Lock por clipe: duas aberturas simultâneas do mesmo clipe não-cacheado não
@@ -987,17 +997,35 @@ def _filter_escape(path: str) -> str:
 _BURN_TIMEOUT = 180
 
 
-def _build_burn_cmd(base_path: str, ass_path, music_path, music_vol, out_path: str) -> list:
+def _build_burn_cmd(base_path: str, ass_path, music_path, music_vol, out_path: str,
+                    in_point=None, out_point=None) -> list:
     """Monta o comando ffmpeg da queima (função pura, sem efeito colateral, pra ser
     testável). Regras de mapeamento de stream:
       - vídeo: filtro de legenda (.ass) se houver, senão o vídeo da base direto;
       - áudio: se houver música, mixa fala+música; SENÃO mapeia o áudio original da
         base explicitamente (`0:a?`). Sem esse map, o `-map [v]` da legenda desliga
         o mapeamento automático do ffmpeg e o clipe sairia MUDO (era o bug). O `?`
-        deixa o áudio opcional pra não quebrar caso a base não tenha trilha."""
+        deixa o áudio opcional pra não quebrar caso a base não tenha trilha.
+
+    Com handles, a base é a JANELA estendida; in_point/out_point (relativos à janela) cortam o
+    corte oficial via OUTPUT seek (-ss/-t DEPOIS do -i): decodifica desde 0 e rezera o PTS, então
+    o filtro subtitles vê a escala do corte (a legenda já vem deslocada por shift_segments_to_cut,
+    casando frame a frame). O seek se aplica ao input 0 (janela); a música (input 1, em loop) é
+    limitada ao corte pelo amix duration=first (que segue [0:a], a fala). Sem in/out válidos, não
+    corta (comportamento antigo). `-c:a copy` no caso só-legenda corta em borda de pacote AAC
+    (deslize <= ~1 frame de áudio, imperceptível; o vídeo é re-encodado e a legenda casa com ele)."""
     cmd = ["ffmpeg", "-y", "-i", base_path]
     if music_path:
         cmd += ["-stream_loop", "-1", "-i", music_path]   # loopa a música pra cobrir o clipe
+    do_trim = False
+    try:
+        if in_point is not None and out_point is not None and float(out_point) > float(in_point):
+            do_trim = True
+    except (TypeError, ValueError):
+        do_trim = False
+    if do_trim:
+        cmd += ["-ss", f"{float(in_point):.3f}", "-t", f"{float(out_point) - float(in_point):.3f}",
+                "-avoid_negative_ts", "make_zero"]
     fc = []
     if ass_path:
         fc.append(f"[0:v]subtitles={_filter_escape(ass_path)}[v]")
@@ -1030,37 +1058,44 @@ def _build_burn_cmd(base_path: str, ass_path, music_path, music_vol, out_path: s
     return cmd
 
 
-def _burn_clip(base_path: str, ass_path, music_path, music_vol, out_path: str) -> None:
+def _burn_clip(base_path: str, ass_path, music_path, music_vol, out_path: str,
+               in_point=None, out_point=None) -> None:
     """Renderiza o clipe final a partir da base (já 1080x1920): queima a legenda
     (.ass, se houver) no vídeo e mixa a música de fundo (se houver, em loop e com
-    volume) no áudio. Levanta se o ffmpeg falhar, sair vazio, ou estourar
-    _BURN_TIMEOUT (o subprocess é morto). O chamador só sobe pro S3 DEPOIS que isto
-    retorna ok, então uma render que falha no meio nunca vira um _cap.mp4 corrompido."""
-    cmd = _build_burn_cmd(base_path, ass_path, music_path, music_vol, out_path)
+    volume) no áudio. Com handles, corta a janela em [in_point, out_point]. Levanta se
+    o ffmpeg falhar, sair vazio, ou estourar _BURN_TIMEOUT (o subprocess é morto). O
+    chamador só sobe pro S3 DEPOIS que isto retorna ok, então uma render que falha no
+    meio nunca vira um cache corrompido."""
+    cmd = _build_burn_cmd(base_path, ass_path, music_path, music_vol, out_path, in_point, out_point)
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=_BURN_TIMEOUT)
     if r.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1024:
         raise RuntimeError(f"ffmpeg render falhou: {r.stderr[-400:]}")
 
 
 def _invalidate_cap(base_key: str) -> None:
-    """Apaga o _cap.mp4 (idempotente). Chamado quando legenda ou música mudam, pra
-    a próxima abertura re-renderizar com o conteúdo novo."""
-    cap_key = base_key.replace("_base.mp4", "_cap.mp4")
-    if cap_key == base_key:
-        return
-    try:
-        s3_client.delete_object(cap_key)
-    except Exception as e:
-        log.warning("[cache] falha ao invalidar %s: %s", cap_key, e)
+    """Apaga os derivados renderizados (_cap.mp4 COM legenda e _trim.mp4 do corte sem legenda),
+    idempotente. Chamado quando legenda, música, posição/estilo OU os pontos de corte (in/out)
+    mudam, pra a próxima abertura re-renderizar com o conteúdo novo."""
+    for suffix in ("_cap.mp4", "_trim.mp4"):
+        derived = base_key.replace("_base.mp4", suffix)
+        if derived == base_key:
+            continue
+        try:
+            s3_client.delete_object(derived)
+        except Exception as e:
+            log.warning("[cache] falha ao invalidar %s: %s", derived, e)
 
 
 @app.route("/api/clips/<path:clip_id>/video")
 @login_required
 def clip_video(clip_id):
-    """Entrega o vídeo do clipe via 302 pra URL presignada do S3. Queima a legenda
-    sob demanda (cacheada). Em qualquer falha de queima, faz 302 pra base SEM
-    legenda (o clipe sempre toca) e nunca deixa _cap.mp4 corrompido no S3."""
+    """Entrega o vídeo do clipe via 302 pra URL presignada do S3. Queima a legenda sob demanda
+    (cacheada) e, com handles, CORTA a janela em [in_point, out_point]. `?nocap=1` entrega o
+    corte SEM legenda (cache separado _trim.mp4), usado pelo "Exportar sem legenda" do editor.
+    Em qualquer falha de queima, faz 302 pra base (o clipe sempre toca) e nunca deixa cache
+    corrompido no S3."""
     job, idx, base_key = _clip_lookup(clip_id)
+    want_trim = request.args.get("nocap") in ("1", "true", "yes")
 
     segments_json = db.get_clip_captions(clip_id)
     music = db.get_clip_music(clip_id)
@@ -1070,46 +1105,85 @@ def clip_video(clip_id):
         caption_style = json.loads(raw_style) if raw_style else None
     except (TypeError, ValueError):
         caption_style = None
+    window = db.get_clip_window(clip_id)
+
     cap_key = base_key.replace("_base.mp4", "_cap.mp4")
     is_new = cap_key != base_key                         # _base (novo) vs _9x16 (antigo, já queimado)
+
+    # Trim da janela: só pra clipe novo com janela persistida cujo corte NÃO cobre a janela
+    # inteira (in > 0 ou out < window_dur). eps absorve arredondamento.
+    in_pt = out_pt = None
+    trim_needed = False
+    if is_new and window and window.get("window_dur"):
+        win_dur = float(window["window_dur"])
+        in_pt = max(0.0, float(window.get("in_point") or 0.0))
+        out_pt = float(window["out_point"]) if window.get("out_point") is not None else win_dur
+        trim_needed = (in_pt > 0.05) or (out_pt < win_dur - 0.05)
+
     use_caps = bool(job.get("captions", 1)) and bool(segments_json)
     use_music = bool(music and music.get("music_key"))
-    # Sem render quando: clipe antigo, ou nada a aplicar (sem legenda e sem música).
-    if not (is_new and (use_caps or use_music)):
-        return redirect(s3_client.get_presigned_url(base_key), code=302)
 
-    if s3_client.exists(cap_key):                        # cache quente
-        return redirect(s3_client.get_presigned_url(cap_key), code=302)
+    if want_trim:
+        # Export sem legenda: corte cru reenquadrado (sem legenda, sem música). Sem trim real,
+        # a base já é o entregável.
+        if not trim_needed:
+            return redirect(s3_client.get_presigned_url(base_key), code=302)
+        target_key = base_key.replace("_base.mp4", "_trim.mp4")
+        do_caps = do_music = False
+    else:
+        # Sem nada a fazer (clipe antigo, ou novo sem legenda/música e sem trim): serve a base.
+        if not (is_new and (use_caps or use_music or trim_needed)):
+            return redirect(s3_client.get_presigned_url(base_key), code=302)
+        target_key = cap_key
+        do_caps, do_music = use_caps, use_music
+
+    if s3_client.exists(target_key):                     # cache quente
+        return redirect(s3_client.get_presigned_url(target_key), code=302)
 
     with _clip_burn_lock(clip_id):
-        if s3_client.exists(cap_key):                    # outra thread renderizou enquanto esperávamos
-            return redirect(s3_client.get_presigned_url(cap_key), code=302)
-        tmp = tempfile.mkdtemp(prefix="burn_")
+        if s3_client.exists(target_key):                 # outra thread renderizou enquanto esperávamos
+            return redirect(s3_client.get_presigned_url(target_key), code=302)
+        # Slot global de queima: garante 1 ffmpeg pesado por vez (protege a VPS da estampida
+        # que derrubava o /health). Se a fila estiver cheia, serve a base SEM legenda em vez
+        # de prender a thread do gunicorn; o clipe sempre toca e a próxima abertura re-tenta.
+        if not _burn_sem.acquire(timeout=_BURN_QUEUE_TIMEOUT):
+            log.warning("[burn] fila de queima cheia para %s; servindo base", clip_id)
+            return redirect(s3_client.get_presigned_url(base_key), code=302)
+        tmp = None
         try:
+            tmp = tempfile.mkdtemp(prefix="burn_")
             base_path = os.path.join(tmp, "base.mp4")
             out_path = os.path.join(tmp, "out.mp4")
             s3_client.download_file(base_key, base_path)
             ass_path = None
-            if use_caps:
+            if do_caps:
+                # A legenda fica na escala da JANELA (mesma do base.mp4). Com o output seek do
+                # trim, o filtro subtitles usa o PTS da janela e o corte/reset do ffmpeg cuida do
+                # resto: a legenda do trecho [in,out] casa frame a frame e a das sobras cai em
+                # frames descartados (validado empiricamente com o ffmpeg da VPS). Sem deslocar.
                 ass = captions.build_ass_from_segments(json.loads(segments_json), caption_y, caption_style)
                 if ass:
                     ass_path = os.path.join(tmp, "cap.ass")
                     with open(ass_path, "w", encoding="utf-8") as f:
                         f.write(ass)
             music_path = None
-            if use_music:
+            if do_music:
                 music_path = os.path.join(tmp, "music" + os.path.splitext(music["music_key"])[1])
                 s3_client.download_file(music["music_key"], music_path)
-            if not ass_path and not music_path:          # nada a aplicar -> base
+            if not ass_path and not music_path and not trim_needed:   # nada a aplicar -> base
                 return redirect(s3_client.get_presigned_url(base_key), code=302)
-            _burn_clip(base_path, ass_path, music_path, (music or {}).get("volume"), out_path)
-            s3_client.upload_file(out_path, cap_key)      # só após render local ok
+            burn_in, burn_out = (in_pt, out_pt) if trim_needed else (None, None)
+            _burn_clip(base_path, ass_path, music_path, (music or {}).get("volume"), out_path,
+                       burn_in, burn_out)
+            s3_client.upload_file(out_path, target_key)   # só após render local ok
         except Exception as e:
             log.warning("[burn] clip %s falhou (%s); servindo base", clip_id, e)
             return redirect(s3_client.get_presigned_url(base_key), code=302)
         finally:
-            shutil.rmtree(tmp, ignore_errors=True)
-    return redirect(s3_client.get_presigned_url(cap_key), code=302)
+            if tmp:
+                shutil.rmtree(tmp, ignore_errors=True)
+            _burn_sem.release()                          # libera o slot SEMPRE (o acquire acima deu certo)
+    return redirect(s3_client.get_presigned_url(target_key), code=302)
 
 
 @app.route("/api/clips/<path:clip_id>/base")
@@ -1126,6 +1200,8 @@ def clip_base(clip_id):
 # ─── Legenda editável do clipe (correção pelo usuário; base do mini editor) ───
 _MAX_SEGMENTS = 1000
 _MAX_TEXT_LEN = 300
+# Duração mínima do corte (in/out) ajustado no editor. Evita salvar um corte degenerado.
+_MIN_CUT_SECONDS = 1.0
 
 
 def _clip_lookup(clip_id):
@@ -1250,8 +1326,19 @@ def clip_captions_get(clip_id):
         style_obj = json.loads(raw_style) if raw_style else None
     except (TypeError, ValueError):
         style_obj = None
+    # bounds = janela/handles (window_dur + corte in/out, relativos à janela). null = clipe sem
+    # handles (legado): o editor trata a base inteira como o clipe (só encurta, não estende).
+    window = db.get_clip_window(clip_id)
+    bounds = None
+    if window and window.get("window_dur"):
+        win_dur = float(window["window_dur"])
+        bounds = {
+            "window_dur": round(win_dur, 3),
+            "in": round(max(0.0, float(window.get("in_point") or 0.0)), 3),
+            "out": round(float(window["out_point"]) if window.get("out_point") is not None else win_dur, 3),
+        }
     return jsonify({"segments": segs, "editable": editable, "music": music_info,
-                    "caption_y": caption_y, "style": style_obj})
+                    "caption_y": caption_y, "style": style_obj, "bounds": bounds})
 
 
 @app.route("/api/clips/<path:clip_id>/captions", methods=["PUT"])
@@ -1286,7 +1373,26 @@ def clip_captions_put(clip_id):
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         db.set_clip_caption_style(clip_id, json.dumps(st, ensure_ascii=False) if st else None)
-    _invalidate_cap(base_key)   # próxima abertura re-renderiza com o texto/estilo corrigido
+    if "in" in data or "out" in data:
+        # Reposiciona o corte (handles) dentro da janela. Só faz sentido pra clipe com janela
+        # persistida; clampa a [0, window_dur] e exige uma duração mínima.
+        window = db.get_clip_window(clip_id)
+        if not window or not window.get("window_dur"):
+            return jsonify({"error": "Este clipe não tem margem (handles) para reposicionar o corte."}), 409
+        win_dur = float(window["window_dur"])
+        try:
+            in_pt = float(data.get("in"))
+            out_pt = float(data.get("out"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "in/out inválidos."}), 400
+        if not (math.isfinite(in_pt) and math.isfinite(out_pt)):
+            return jsonify({"error": "in/out inválidos."}), 400
+        in_pt = max(0.0, round(in_pt, 3))
+        out_pt = round(min(out_pt, win_dur), 3)
+        if out_pt - in_pt < _MIN_CUT_SECONDS:
+            return jsonify({"error": f"O corte precisa ter pelo menos {_MIN_CUT_SECONDS:g}s."}), 400
+        db.set_clip_inout(clip_id, in_pt, out_pt)
+    _invalidate_cap(base_key)   # próxima abertura re-renderiza com o texto/estilo/corte corrigido
     return jsonify({"ok": True, "segments": segs})
 
 

@@ -61,6 +61,32 @@ def test_burn_cmd():
     cmd = app._build_burn_cmd("base.mp4", None, None, None, "out.mp4")
     check("0:v" in cmd and "0:a?" in cmd, "sem nada mapeia 0:v e preserva 0:a?")
 
+    # ── Com trim (handles): output seek -ss/-t DEPOIS do -i, sem regredir o áudio ──
+    cmd = app._build_burn_cmd("base.mp4", "cap.ass", None, None, "out.mp4", 10.0, 25.0)
+    check("0:a?" in cmd and cmd[cmd.index("-c:a") + 1] == "copy",
+          "trim+legenda preserva e copia o áudio original (0:a?)")
+    check(cmd.index("-ss") > cmd.index("base.mp4"), "trim: -ss DEPOIS do -i (output seek)")
+    check(cmd[cmd.index("-ss") + 1] == "10.000", "trim: -ss = in_point")
+    check(cmd[cmd.index("-t") + 1] == "15.000", "trim: -t = out - in")
+    check("make_zero" in cmd, "trim usa -avoid_negative_ts make_zero")
+
+    # Só música + trim: um único -t (a música em loop é limitada pelo amix duration=first).
+    cmd = app._build_burn_cmd("base.mp4", None, "m.mp3", 0.2, "out.mp4", 10.0, 25.0)
+    check(cmd.count("-t") == 1, "trim+música: um único -t (a música não recebe -t)")
+    check("duration=first" in " ".join(cmd), "música cobre só o corte (amix duration=first)")
+    check("-shortest" in cmd, "trim+música mantém -shortest")
+
+    # Sem nada + trim (export sem legenda): corte cru, áudio preservado, sem -shortest.
+    cmd = app._build_burn_cmd("base.mp4", None, None, None, "out.mp4", 10.0, 25.0)
+    check("0:v" in cmd and "0:a?" in cmd, "trim sem nada: 0:v + 0:a? (export sem legenda)")
+    check("-ss" in cmd and "-shortest" not in cmd, "trim sem música: tem -ss e não tem -shortest")
+
+    # Trim inválido (out <= in) ou ausente NÃO corta: cai no comportamento antigo.
+    cmd = app._build_burn_cmd("base.mp4", "cap.ass", None, None, "out.mp4", 25.0, 10.0)
+    check("-ss" not in cmd and "-t" not in cmd, "trim inválido (out<=in) não corta")
+    cmd = app._build_burn_cmd("base.mp4", "cap.ass", None, None, "out.mp4")
+    check("-ss" not in cmd and "-t" not in cmd, "sem in/out (default) não corta")
+
 
 # ─── 2. Validação de segmentos de legenda ─────────────────────────────────────
 def test_validate_segments():
@@ -384,10 +410,87 @@ def test_sessions_extra():
         cc.execute("DELETE FROM users WHERE email IN (?, ?)", ("reuse@test", "pwd@test"))
 
 
+def test_clip_window():
+    print("[clip window: db + validação de in/out na rota]")
+    import db
+    import json as _json
+    from werkzeug.security import generate_password_hash
+
+    # round-trip no banco
+    db.set_clip_captions("JW:0", _json.dumps([{"start": 0.0, "end": 1.0, "text": "x"}]))
+    db.set_clip_window("JW:0", 12.0, 30.0, 10.0, 25.0)
+    w = db.get_clip_window("JW:0")
+    check(w is not None and abs(w["window_dur"] - 30.0) < 1e-6 and abs(w["in_point"] - 10.0) < 1e-6,
+          "set/get_clip_window round-trip")
+    db.set_clip_inout("JW:0", 8.0, 20.0)
+    w = db.get_clip_window("JW:0")
+    check(abs(w["in_point"] - 8.0) < 1e-6 and abs(w["out_point"] - 20.0) < 1e-6,
+          "set_clip_inout atualiza in/out")
+    check(abs(w["window_dur"] - 30.0) < 1e-6, "set_clip_inout não mexe na janela")
+    check(db.get_clip_window("NOPE:0") is None, "clipe sem janela -> None")
+
+    # validação da rota PUT /captions com in/out (clipe novo, editável)
+    db.upsert_user("win@test", generate_password_hash("pw12345678"), must_change=False)
+    db.create_job("JW", "v.mp4", 10, 60, "/x", "win@test")
+    db.update_job("JW", status="done",
+                  result_urls=_json.dumps([{"key": "jobs/JW/clips/clip_01_base.mp4"},
+                                           {"key": "jobs/JW/clips/clip_02_base.mp4"}]))
+    c = app.app.test_client()
+    c.post("/api/login", json={"email": "win@test", "password": "pw12345678"})
+    segs = [{"start": 0, "end": 1, "text": "a"}]
+
+    r = c.put("/api/clips/JW:0/captions", json={"segments": segs, "in": 9.0, "out": 22.0})
+    check(r.status_code == 200, "PUT in/out válido -> 200")
+    w = db.get_clip_window("JW:0")
+    check(abs(w["in_point"] - 9.0) < 1e-6 and abs(w["out_point"] - 22.0) < 1e-6, "PUT grava in/out")
+
+    r = c.put("/api/clips/JW:0/captions", json={"segments": segs, "in": 20.0, "out": 20.3})
+    check(r.status_code == 400, "corte curto demais (< mínimo) -> 400")
+
+    r = c.put("/api/clips/JW:0/captions", json={"segments": segs, "in": 5.0, "out": 999.0})
+    check(r.status_code == 200 and abs(db.get_clip_window("JW:0")["out_point"] - 30.0) < 1e-6,
+          "out além da janela é clampado ao window_dur")
+
+    db.set_clip_captions("JW:1", _json.dumps(segs))   # editável, mas SEM janela persistida
+    r = c.put("/api/clips/JW:1/captions", json={"segments": segs, "in": 1.0, "out": 5.0})
+    check(r.status_code == 409, "clipe sem handles: PUT in/out -> 409")
+
+    # bounds no GET /captions
+    js = c.get("/api/clips/JW:0/captions").get_json()
+    check(js.get("bounds") and abs(js["bounds"]["window_dur"] - 30.0) < 1e-6,
+          "GET /captions expõe bounds do clipe com janela")
+    js1 = c.get("/api/clips/JW:1/captions").get_json()
+    check(js1.get("bounds") is None, "GET /captions: bounds null pra clipe sem janela")
+
+    db.delete_job("JW")   # cascade apaga clip_captions/favorites/music de JW:*
+    with db._conn() as cc:
+        cc.execute("DELETE FROM users WHERE email = ?", ("win@test",))
+
+
+def test_burn_semaphore():
+    """O semáforo global de queima nunca pode conceder mais que BURN_CONCURRENCY slots:
+    é o que impede N ffmpeg em paralelo (a estampida que derrubava a VPS)."""
+    print("[burn semaphore]")
+    import config
+    n = max(1, config.BURN_CONCURRENCY)
+    got = [app._burn_sem.acquire(timeout=0.1) for _ in range(n)]
+    check(all(got), f"adquire os {n} slot(s) de queima")
+    extra = app._burn_sem.acquire(timeout=0.1)            # o slot a mais NÃO pode vir
+    check(not extra, "bloqueia a queima além do teto (timeout -> serve a base)")
+    if extra:                                             # defensivo: não corrompe o semáforo
+        app._burn_sem.release()
+    for _ in range(n):
+        app._burn_sem.release()
+    reacquired = app._burn_sem.acquire(timeout=0.1)       # release devolve o slot
+    check(reacquired, "release devolve o slot pra próxima queima")
+    if reacquired:
+        app._burn_sem.release()
+
+
 def main():
-    for t in (test_burn_cmd, test_validate_segments, test_parse_clips_json,
+    for t in (test_burn_cmd, test_burn_semaphore, test_validate_segments, test_parse_clips_json,
               test_captions_roundtrip, test_caption_style, test_youtube_helpers,
-              test_snap_clip_bounds, test_thumbnail,
+              test_snap_clip_bounds, test_thumbnail, test_clip_window,
               test_sessions_helpers, test_sessions_ownership, test_sessions_flow,
               test_sessions_extra):
         t()

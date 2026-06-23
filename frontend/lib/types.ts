@@ -115,12 +115,22 @@ export interface CaptionStyle {
   shadow?: number; // intensidade da sombra (0..1 = opacidade do halo); padrão 0.86
 }
 
+// Janela/handles do clipe: o vídeo base tem uma sobra (margem) antes e depois do corte. O
+// corte "oficial" que o usuário vê fica em [in, out] (segundos, relativos à janela), e ele
+// arrasta as alças na timeline pra abrir/fechar dentro da sobra. window_dur = duração da janela.
+export interface CaptionBounds {
+  window_dur: number;
+  in: number;
+  out: number;
+}
+
 export interface Captions {
   editable: boolean;
   segments?: Segment[];
   music?: Music | null;
   caption_y?: number | null; // posição vertical (fração 0..1); null = padrão SB
   style?: CaptionStyle | null; // estilo da fonte; null = padrão SB
+  bounds?: CaptionBounds | null; // handles do corte; null = clipe sem margem (legado)
 }
 
 export interface Preferences {

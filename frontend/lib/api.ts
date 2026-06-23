@@ -189,11 +189,17 @@ export const putCaptions = (
   segments: Segment[],
   captionY: number | null = null,
   style: CaptionStyle | null = null,
+  cut: { in: number; out: number } | null = null, // pontos de corte (handles); omitido = não mexe
 ) =>
   request("/api/clips/" + encodeURIComponent(id) + "/captions", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ segments, caption_y: captionY, style }),
+    body: JSON.stringify({
+      segments,
+      caption_y: captionY,
+      style,
+      ...(cut ? { in: cut.in, out: cut.out } : {}),
+    }),
   }).then((r) => asJson<{ ok?: boolean }>(r));
 
 export function uploadMusic(id: string, file: File, volume?: number): Promise<{ music?: Music }> {
