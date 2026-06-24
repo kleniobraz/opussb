@@ -262,8 +262,8 @@ Contrato completo dessas rotas: `BACKEND_INTEGRATION.md` seção 3.1.
 
 ## 9. Pendências e decisões em aberto
 
-- `POST /api/projects/<id>/reprocess` e `GET /api/projects/<id>/download_all`: o front
-  já chama, **backend ainda não implementou** (cai em toast).
+- `POST /api/projects/<id>/reprocess`: o front já chama, **backend ainda não implementou** (cai em
+  toast). `GET /api/projects/<id>/download_all`: **FEITO (§23)**.
 - Campos extras do upload `language`/`aspect_ratio`: ignorados (saída sempre 9:16).
   `captions` é honrado (default ligado).
 - ~~TLS/HTTPS~~ **FEITO** (§14): HTTPS em https://sbclips.space.
@@ -827,3 +827,69 @@ no meio poderia ceifar um job VIVO. Correção (`processor.py`):
   `with _heartbeat(job_id, "reframing")`. Cobre tanto o reframe na GPU (poll longo) quanto o fallback CPU.
 - `test_backend.py` (puro) verde + `py_compile`; deploy com `active_jobs=0` + backup (DB + tarball) e restart
   do `opussb`. **Pushado em 2026-06-23** (`origin/master` em `dbef94d`).
+
+## 23. "Baixar todos os clipes" (download_all) (2026-06-23)
+
+Implementa o `GET /api/projects/<id>/download_all` que o front já chamava (antes caía em toast). SEM zip no
+servidor (custo de CPU/RAM e travaria o `/health`): a rota lista os clipes e o front baixa um a um; as
+queimas seguem serializadas pelo semáforo (§19.1/§21.2). Deployado + pushado (`origin/master`).
+
+- **`GET /api/projects/<id>/download_all`** (`app.py`, `@login_required`, biblioteca compartilhada): devolve
+  `{clips: [{id, filename, url}], count}`; `url = /api/clips/<id>/video?dl=1`. 404 se o job não existe; lista
+  vazia se ainda não há clipes (job processando).
+- **`clip_video` aceita `?dl=1`**: deriva um nome de arquivo amigável (`_clip_download_name`, do título do
+  `clips_json` -> "NN titulo.mp4", senão "clip_NN.mp4") e aplica em TODAS as redireções via o helper novo
+  `_clip_redirect(key, download_name)`. Sem `dl`, comportamento idêntico ao de antes.
+- **`s3_client.get_presigned_url(key, expiry, download_name=None)`**: com `download_name`, embute
+  `ResponseContentDisposition: attachment; filename="..."` na presignada -> o S3 devolve `Content-Disposition:
+  attachment` e o navegador BAIXA (não toca inline). É necessário porque o `/video` faz 302 pro S3
+  (cross-origin), e aí o atributo `download` de um `<a>` é ignorado; a disposition na própria URL presignada
+  resolve, sem alterar o objeto nem o player.
+- Helpers novos (`app.py`): `_safe_filename` (NFKD->ASCII, só `[A-Za-z0-9 ._-]`, limita), `_clip_download_name`,
+  `_clip_redirect`. Teste `test_download_all` (helpers + presigned com/sem disposition + rota 200/404/shape).
+- Front: FRONTEND §19. Validado e2e (usuário TEST) + `test_backend.py` verde.
+
+## 24. Reframe: troca de câmera por GEOMETRIA (Fase 0, anti-vazio multicam) (2026-06-24)
+
+**Problema (feedback de cliente):** em podcast multicam (3 câmeras, MESMO cenário), o auto-reframe caía no
+"vazio" (cenário/letreiro/mesa) nas TROCAS de câmera, principalmente no plano aberto (dois apresentadores
+afastados não cabem no 9:16). Diagnóstico (workflow + 2 clipes reais): a câmera virtual travada (§19.3) NÃO
+re-adquiria o sujeito após um corte; e quando o YOLO não detectava ninguém, segurava a posição do plano
+anterior (= o vazio).
+
+**Decisão (dono):** detectar a troca por GEOMETRIA, NÃO por cor (cor não distingue câmeras do mesmo cenário)
+nem por identidade (muda a cada episódio). O layout é FIXO: **host sempre à esquerda, convidado sempre à
+direita.**
+
+**`reframe_core.py` (puro, compartilhado CPU+GPU; a trava de câmera + a segmentação por plano do §19.3
+ficaram INTOCADAS, mudou só o SINAL de troca e a escolha do sujeito no pass-1):**
+- `detect_people`: todas as pessoas (conf, cx, box_w) ordenadas por cx (generaliza o antigo `detect_subject_cx`,
+  removido).
+- `_merge_boxes`: funde caixas duplicadas (o YOLO conta a mesma pessoa 2x) -> contagem estável (senão oscilava
+  2/3/4 e quebrava a classificação de plano).
+- `_classify`: 1 pessoa = CLOSE (enquadra nela); 2+ = PLANO ABERTO, default = CONVIDADO (mais à direita), com
+  HOLD quando ele some um frame (não pula pro host/vazio); 0 = CENTRO. (Trocou a "continuidade pelo lado do
+  último close", que era cara-ou-coroa num close centralizado, pelo default convidado-direita.)
+- `_cuts_from_kinds`: a troca de câmera sai do histórico de tipos com DEBOUNCE (>=3 amostras) -> absorve o YOLO
+  piscando (num clipe real, 6 cortes falsos viraram 0).
+- `_motion_bias_wide`: STUB (TODO Fase 2: viés por movimento esquerda/direita no plano aberto pra escolher quem
+  fala; o keyframe da Fase 1 cobre por enquanto).
+- Knob `REFRAME_CUT_DETECT` (`config.py`, default `true`; `false` = um plano só / rollback). Fiação: `reframer.py`
+  (CPU), `gpu_reframe/handler.py` + `processor.py` (param `detect_cuts` no submit do RunPod).
+
+**Validação:** `tests/test_reframer.py` (`_merge_boxes`, `_classify`, `_cuts_from_kinds`, `detect_people`,
+segmentação) + `test_backend.py` verdes; e empírica em 2 clipes reais do podcast (closes perfeitos; plano aberto
+segue o convidado de forma estável, sem vazio nem cortes falsos). Resíduo honesto: se for o HOST falando no plano
+aberto, mostra o convidado, e é o keyframe (Fase 1) que corrige.
+
+**Deploy (2026-06-24):** restart `opussb` (active_jobs=0 + backup) pro caminho CPU/processor; **REBUILD da imagem
+Docker GPU na VPS** (`docker build -f gpu_reframe/Dockerfile -t kleniobraz/opussb-reframe:latest .` + `docker push`
++ `docker builder prune -af`) pra a GPU herdar a geometria; git push (`origin/master` em `fc1c9c3`). **CUIDADO
+RunPod:** workers serverless idle NÃO atualizam num push de `:latest` (cache); pra o próximo job usar a imagem
+nova, LIBERAR os workers idle no painel (Manage -> Release workers). Só afeta clipes NOVOS.
+
+**Roadmap Fase 1 (crop manual por KEYFRAME, não-destrutivo; aguarda OK de storage do dono):** o auto vira a
+trajetória base; o usuário fixa keyframes só onde errar (ex.: host falando no plano aberto), aplicado por
+RE-RENDER via `reframe_core` (NÃO crop variável no tempo na queima, que seria caro/estampida). Exige reter o
+corte 16:9 por clipe no S3 (~100GB steady com TTL 30d, ~10% de 1TB); o corte 16:9 JÁ é produzido e no caminho
+GPU já sobe pro S3 (bastaria parar de deletar). Memória do projeto: `reframe-void-fix-and-crop-editor`.

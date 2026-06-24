@@ -48,7 +48,7 @@ de API) e a memória do projeto (`frontend-stack-decision`).
 - **Sessão:** cookie same-origin (Nginx em prod; rewrite do Next em dev). Zero CORS/token. 401 de
   qualquer query dispara um evento global que derruba pro `/login`.
 - **Sem modo demonstração/mock:** o backend já implementa quase tudo; queries reais + estados de
-  erro/vazio. (Faltam só `reprocess` e `download_all`, que degradam em toast.)
+  erro/vazio. (Falta só `reprocess`, que degrada em toast; `download_all` **FEITO**, §19.)
 
 ---
 
@@ -162,8 +162,8 @@ next.config.ts  components.json  tsconfig.json  package.json
   `JobProgress` (barra/status + resultados em `ClipGrid`) + `HowItWorks` (IntersectionObserver) +
   `Recent` (featured + grid dos recentes via `getStats`).
 - **Projetos (`/projetos`):** grade + ordenação (Todos/Melhores notas/Mais recentes) + skeleton +
-  empty. **Detalhe (`/projetos/[id]`):** cabeçalho com meta + ações (Baixar todos / Reprocessar /
-  Excluir, as duas primeiras degradam em toast) + `ClipGrid`. **Favoritos.** **Config** (Tabs:
+  empty. **Detalhe (`/projetos/[id]`):** cabeçalho com meta + ações (Baixar todos = §19 / Reprocessar
+  degrada em toast / Excluir) + `ClipGrid`. **Favoritos.** **Config** (Tabs:
   Padrões de clipe / Segurança = trocar senha + sessões ativas / Conta = email + "Sua produção"
   com count-up).
 - **Clipe:** `ClipCard` (vídeo com overlay "preparando", nota, duração, favoritar, abrir, baixar,
@@ -395,7 +395,7 @@ antigo `clip-max`). Agora tem controles PRÓPRIOS, claros:
 - **`app/(app)/projetos/[id]/page.tsx`**: usa `useAuth`; a meta mostra "· enviado por \<nome\>";
   `canDelete = user && (user.is_admin || user.email === p.owner_email)` e o botão **Excluir** só
   renderiza quando `canDelete`. O backend reforça (403), então esconder o botão é só cosmético.
-  **Reprocessar** e **Baixar todos** seguem visíveis pra todos (não destrutivos / no-op por ora).
+  **Reprocessar** segue visível pra todos (no-op por ora); **Baixar todos** agora funciona (§19).
 - Não mexe em favoritos/preferências (seguem individuais). `tsc --noEmit` e `next build` limpos.
 
 ---
@@ -513,3 +513,17 @@ travava o site). O backend já tem rede (semáforo de queima BACKEND §19.1 + ca
   mostram o play idle (que dispara a queima) e escondem o spinner até o load real começar.
 - O diálogo (`ClipPlayerDialog`, `autoPlay`) e o editor (não usa `ClipVideo`) seguem iguais. `tsc --noEmit`
   e `next build` limpos; deploy via `npm run build` + `systemctl restart opussb-web` (com `active_jobs=0`).
+
+## 19. "Baixar todos os clipes" (download_all) (2026-06-23)
+
+Liga o botão **"Baixar todos"** do detalhe do projeto (antes caía em toast). Backend correspondente:
+BACKEND §23 (sem zip no servidor; o front baixa um a um, as queimas seguem serializadas pelo semáforo).
+
+- **`app/(app)/projetos/[id]/page.tsx`**: `downloadAll` agora bate em `GET /api/projects/<id>/download_all`,
+  recebe `{clips: [{url, filename}]}` e dispara **um download por clipe, escalonado (700ms)**, criando um
+  `<a download>` por item e clicando programaticamente. Cada `url` aponta pra `/api/clips/<id>/video?dl=1`,
+  que o backend entrega já como anexo (`Content-Disposition: attachment`), então o navegador BAIXA em vez de
+  abrir o vídeo numa aba. Toast de progresso ("Baixando N clipes..."); vazio e erro tratados.
+- O navegador pede "permitir múltiplos downloads" na 1a vez (o usuário permite); o escalonamento evita a
+  rajada. Mudança só de DOM/React (sem API nova do Next, respeitando o `AGENTS.md`). `tsc --noEmit` +
+  `next build` limpos; deploy via `npm run build` + `systemctl restart opussb-web`.
