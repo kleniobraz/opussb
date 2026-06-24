@@ -527,3 +527,56 @@ BACKEND §23 (sem zip no servidor; o front baixa um a um, as queimas seguem seri
 - O navegador pede "permitir múltiplos downloads" na 1a vez (o usuário permite); o escalonamento evita a
   rajada. Mudança só de DOM/React (sem API nova do Next, respeitando o `AGENTS.md`). `tsc --noEmit` +
   `next build` limpos; deploy via `npm run build` + `systemctl restart opussb-web`.
+
+## 20. Plano: overhaul de usabilidade do editor (PLANEJAMENTO, nada implementado) (2026-06-24)
+
+> Pedido do dono: a usabilidade do editor (`/editar/[clipId]`) ainda está ruim / "não do jeito que eu
+> queria". Por ora é **SÓ PLANO** (nenhuma linha de código). **Regra nova do dono: tudo isto (e a Fase 1 do
+> crop, BACKEND §24) será feito em SERVIDOR DE TESTES/staging primeiro, NÃO direto em produção.** Plano em
+> fases, de ponta a ponta (backend ao front).
+
+**Princípios (engenharia senior):** (1) não redesenhar no escuro: AUDITAR e fixar as dores reais antes;
+(2) separar ENABLERS (backend/infra que destrava) de POLIMENTO; (3) entregar em fases pequenas,
+independentes e REVERSÍVEIS, validando cada uma com o dono; (4) reusar a arquitetura atual
+(transcrição-como-editor + timeline + queima sob demanda), sem rewrite; (5) staging primeiro, prod intocada.
+
+**Fase 0 — Descoberta e fundação (sem mudança visível):**
+- Auditoria heurística do editor atual: mapear cada interação (editar transcrição, tempo, dividir/juntar,
+  arrastar legenda, alças de trim, estilo, música, exportar) e pontuar a fricção.
+- **Sentar com o dono / observar uma edição real** pra capturar as dores ESPECÍFICAS (o "não do jeito que
+  eu queria" é o input que falta hoje; sem isso, o resto vira chute).
+- Definir critérios de sucesso + métrica (tempo pra editar um clipe, nº de cliques errados, satisfação).
+- Montar o **ambiente de TESTES/staging**: instância separada (ex.: unit `opussb-web-staging` + branch de
+  staging + prefixo S3 de teste + DB de teste), pra Fase 1 e o editor nunca tocarem prod. Documentar.
+- Saída: lista priorizada de dores + critérios de sucesso + staging pronto.
+
+**Fase 1 — Quick wins (front, alto impacto, baixo risco, NÃO precisam de backend):**
+- Layout/espaçamento, affordances mais claras, descoberta dos atalhos, guarda do botão Voltar do navegador
+  (popstate, pendência da §9), estados de loading/erro/vazio, responsividade, e os ajustes da "timeline
+  difícil". Cada um deployável e reversível sozinho.
+
+**Fase 2 — Enablers de backend (destravar o que hoje é "neutro"/falso):**
+- **Waveform + filmstrip REAIS** na timeline (hoje neutros por falta de CORS no S3, §7). Decisão senior:
+  (a) habilitar CORS no bucket (barato, mas expõe o bucket a fetch do browser -> revisão de segurança), ou
+  (b) gerar waveform (JSON) + filmstrip (sprite) **no backend, no processamento** (mais storage/compute,
+  porém sem expor o bucket e confiável). Recomendo (b). Destrava uma timeline de verdade (pistas de áudio +
+  scrub visual), que é uma das maiores alavancas de usabilidade.
+
+**Fase 3 — Editor de crop por KEYFRAME (a "Fase 1" do reframe, BACKEND §24):**
+- A correção manual de enquadramento É uma feature de usabilidade do editor. Integra aqui: reter o 16:9 +
+  caixa de crop arrastável + trilha de keyframes na timeline, aplicada por re-render via `reframe_core`.
+  Depende do OK de storage do dono. Reusa a timeline e o padrão de overlay/arraste que já existem.
+
+**Fase 4 — Redesign do fluxo do editor (informado pela Fase 0, NÃO no escuro):**
+- Com a auditoria na mão, um redesign coeso do layout/fluxo se necessário: melhor arranjo dos painéis, troca
+  de MODO clara (legenda / crop / trim), timeline unificada, hierarquia visual.
+
+**Fase 5 — Validação e hardening:**
+- Re-teste de usabilidade com o dono contra os critérios da Fase 0; performance; casos de borda (clipe
+  antigo sem base re-queimável, clipe sem fala); acessibilidade básica.
+
+**Transversal:** staging primeiro em TUDO; cada fase shippável e reversível; sem travessão; deploys de
+backend com backup + `active_jobs=0`.
+
+> **STATUS: PLANO. Nada implementado.** Próximo passo concreto quando o dono retomar: **Fase 0** (fixar as
+> dores específicas + montar o staging). As fases 1-5 dependem do output da Fase 0 (a priorização pode mudar).

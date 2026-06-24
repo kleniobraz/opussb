@@ -892,4 +892,7 @@ nova, LIBERAR os workers idle no painel (Manage -> Release workers). Só afeta c
 trajetória base; o usuário fixa keyframes só onde errar (ex.: host falando no plano aberto), aplicado por
 RE-RENDER via `reframe_core` (NÃO crop variável no tempo na queima, que seria caro/estampida). Exige reter o
 corte 16:9 por clipe no S3 (~100GB steady com TTL 30d, ~10% de 1TB); o corte 16:9 JÁ é produzido e no caminho
-GPU já sobe pro S3 (bastaria parar de deletar). Memória do projeto: `reframe-void-fix-and-crop-editor`.
+GPU já sobe pro S3 (bastaria parar de deletar). **DECISÃO do dono (2026-06-24): a Fase 1 será desenvolvida e
+validada em SERVIDOR DE TESTES/staging primeiro, NÃO direto em produção, pra não arriscar o que está no ar**
+(montar o staging é a Fase 0 do plano de usabilidade; ver FRONTEND §20). Memória do projeto:
+`reframe-void-fix-and-crop-editor`.
