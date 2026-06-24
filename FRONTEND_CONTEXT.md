@@ -25,9 +25,15 @@ de API) e a memória do projeto (`frontend-stack-decision`).
   (§13), e personalização de fonte da legenda + importar do YouTube + console estilo OpusClip
   + hero preenchendo a viewport (§14). As seções 0-10 são da migração inicial; onde divergirem
   das §11-14, **as §11-14 valem** (são mais recentes).
-- **Falta:** waveform/filmstrip reais do editor (bloqueados por CORS do S3 hoje); remover a SPA
-  `static/` depois de alguns dias de cutover validado; guarda do botão Voltar do *navegador*
-  (popstate) no editor — ver §7 e §9.
+- **Ondas 2026-06-23/24 (em produção):** corte ajustável por handles (§15), lacuna da Home (§16),
+  lazy-load anti-estampida (§18) e **"Baixar todos" / download_all (§19)**. E, como PLANO (nada
+  implementado ainda): o **overhaul de usabilidade do editor (§20)** + a Fase 1 do crop por keyframe
+  (BACKEND §24), ambos a serem feitos em STAGING (decisão do dono). O reframe por GEOMETRIA (anti-vazio
+  multicam) está em BACKEND §24, e o estado atual + próximos passos em BACKEND §25.
+- **Falta (pendente):** overhaul de usabilidade do editor (§20, próximo passo = Fase 0: dores + staging);
+  waveform/filmstrip reais (bloqueados por CORS do S3 hoje, ver §20 Fase 2); remover a SPA `static/`
+  depois de alguns dias de cutover validado; guarda do botão Voltar do *navegador* (popstate) no editor
+  (ver §7 e §9).
 
 ---
 

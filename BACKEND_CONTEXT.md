@@ -896,3 +896,26 @@ GPU já sobe pro S3 (bastaria parar de deletar). **DECISÃO do dono (2026-06-24)
 validada em SERVIDOR DE TESTES/staging primeiro, NÃO direto em produção, pra não arriscar o que está no ar**
 (montar o staging é a Fase 0 do plano de usabilidade; ver FRONTEND §20). Memória do projeto:
 `reframe-void-fix-and-crop-editor`.
+
+## 25. Estado atual e próximos passos (fim da sessão 2026-06-24)
+
+Resumo vivo pra retomar rápido depois de um clear. Produção saudável (`active_jobs=0`, `opussb` + `opussb-web`
+ativos; https://sbclips.space).
+
+**EM PRODUÇÃO (`origin/master` em `fc1c9c3`):** tudo das §1-24. Destaques recentes: reframe por GEOMETRIA (§24,
+deployado + imagem GPU rebuildada/pushada + validado em 2 clipes reais), `download_all` (§23), cap da queima +
+corte input-seek (§21), reframe na GPU (§20-21), e a rotação do token Docker Hub (§21, antigo revogado).
+
+**LOOSE ENDS / PRÓXIMOS PASSOS:**
+1. **2 commits de DOC locais NÃO pushados** (regra 9): `a7409a3` (docs download_all + reframe) e `34534c6`
+   (docs Fase 1 staging + plano do editor §20). Rodar `git push origin master` quando o dono autorizar.
+2. **RunPod:** liberar os workers idle do endpoint `wni4gr0w1j76t3` (Manage -> Release workers) pra o próximo
+   job puxar a imagem nova da geometria (worker idle pode ter a imagem antiga em cache; §24).
+3. **Validar** o reframe novo no próximo job multicam real: gerar contact sheets do 9:16 (close + plano aberto
+   seguindo o convidado, sem vazio nem cortes falsos). Receita usada na sessão: baixar o `clip_NN_base.mp4` do
+   S3, `ffmpeg fps+tile` num mosaico, e ler a imagem.
+4. **Usabilidade do editor:** plano em fases em FRONTEND §20 (nada implementado). Próximo passo concreto =
+   **Fase 0** (fixar as dores específicas COM o dono + montar o STAGING). **Decisão do dono:** a Fase 1 do crop
+   (§24) e todo o trabalho de editor serão feitos em STAGING primeiro, NÃO em produção.
+5. **Pendências antigas que seguem:** `reprocess` (§9), waveform/filmstrip reais (CORS no S3 ou server-side, ver
+   FRONTEND §20 Fase 2), atualizar `ultralytics` (achado de RCE, §14), parar/blindar o `static/` legado (§14).
