@@ -2,6 +2,7 @@ import os
 import sys
 import re
 import math
+import array
 import time
 import unicodedata
 import uuid
@@ -1343,6 +1344,70 @@ def clip_thumb(clip_id):
             _thumb_sem.release()
             if tmp:
                 shutil.rmtree(tmp, ignore_errors=True)
+
+
+_WAVE_TIMEOUT = 60
+_WAVE_BUCKETS = 400
+
+
+def _compute_peaks(url: str, buckets: int = _WAVE_BUCKETS) -> list:
+    """Picos da forma de onda do audio (mono 8kHz) pra a faixa de audio do editor. Roda no
+    SERVIDOR (o WebAudio do navegador e bloqueado pelo CORS do S3). Le o PCM via ffmpeg e reduz
+    a `buckets` valores normalizados 0..1. Niced pra ceder CPU ao web."""
+    cmd = ["ffmpeg", "-v", "quiet", "-i", url, "-ac", "1", "-ar", "8000", "-f", "s16le", "-"]
+    p = subprocess.run(cmd, capture_output=True, timeout=_WAVE_TIMEOUT,
+                       preexec_fn=lambda: os.nice(config.BURN_NICE))
+    data = p.stdout or b""
+    samples = array.array("h")
+    samples.frombytes(data[: len(data) // 2 * 2])
+    n = len(samples)
+    if n == 0:
+        return []
+    block = max(1, n // buckets)
+    peaks, mx = [], 1
+    for i in range(buckets):
+        s = i * block
+        if s >= n:
+            break
+        e = min(s + block, n)
+        pk = 0
+        for j in range(s, e):
+            v = samples[j]
+            av = v if v >= 0 else -v
+            if av > pk:
+                pk = av
+        peaks.append(pk)
+        if pk > mx:
+            mx = pk
+    return [round(x / mx, 3) for x in peaks]
+
+
+@app.route("/api/clips/<path:clip_id>/waveform")
+@login_required
+def clip_waveform(clip_id):
+    """Picos da forma de onda do clipe pra a faixa de audio do editor (JSON {peaks:[0..1]}).
+    Gerado no servidor (o WebAudio do navegador e bloqueado pelo CORS do S3) e cacheado no banco
+    (coluna aditiva). Reusa o semaforo leve dos posters. Best-effort: falha/fila cheia -> {peaks:[]}
+    (a faixa fica neutra, sem quebrar o editor). NAO queima legenda. Biblioteca compartilhada."""
+    _job, _idx, base_key = _clip_lookup(clip_id)
+    cached = db.get_clip_waveform(clip_id)
+    if cached:
+        try:
+            return jsonify({"peaks": json.loads(cached)})
+        except (TypeError, ValueError):
+            pass
+    if not _thumb_sem.acquire(timeout=config.THUMB_QUEUE_TIMEOUT):
+        return jsonify({"peaks": []})
+    try:
+        peaks = _compute_peaks(s3_client.get_presigned_url(base_key))
+        if peaks:
+            db.set_clip_waveform(clip_id, json.dumps(peaks))
+        return jsonify({"peaks": peaks})
+    except Exception as e:
+        log.warning("[waveform] clip %s: %s", clip_id, e)
+        return jsonify({"peaks": []})
+    finally:
+        _thumb_sem.release()
 
 
 # ─── Legenda editável do clipe (correção pelo usuário; base do mini editor) ───

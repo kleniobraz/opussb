@@ -125,6 +125,10 @@ def init_clip_captions() -> None:
         # a janela: JSON [{start,end,word}]. NULL = clipe sem word-level (legado ou fetch falhou): a
         # legenda usa o metodo por frase e o editor cai no karaoke por frase. Pro editor OpusClip.
         _ensure_column(conn, "clip_captions", "words", "TEXT")
+        # Picos da forma de onda do clipe (JSON [0..1]) pra a faixa de audio do editor, gerados sob
+        # demanda no servidor (o WebAudio do navegador e bloqueado pelo CORS do S3). NULL = ainda
+        # nao gerado (a 1a abertura do clipe no editor gera e cacheia aqui).
+        _ensure_column(conn, "clip_captions", "waveform", "TEXT")
 
 
 def init_clip_music() -> None:
@@ -409,6 +413,25 @@ def set_clip_words(clip_id: str, words_json) -> None:
         conn.execute(
             "UPDATE clip_captions SET words = ?, updated_at = ? WHERE clip_id = ?",
             (words_json, _now(), clip_id),
+        )
+
+
+def get_clip_waveform(clip_id: str):
+    """Picos da forma de onda do clipe (JSON string [0..1]) ou None (= ainda não gerado)."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT waveform FROM clip_captions WHERE clip_id = ?", (clip_id,)
+        ).fetchone()
+        return row["waveform"] if row else None
+
+
+def set_clip_waveform(clip_id: str, waveform_json) -> None:
+    """Cacheia os picos da forma de onda (JSON serializado). Só atualiza a coluna (a linha já existe
+    pra clipe editável: set_clip_captions rodou no processamento)."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE clip_captions SET waveform = ?, updated_at = ? WHERE clip_id = ?",
+            (waveform_json, _now(), clip_id),
         )
 
 

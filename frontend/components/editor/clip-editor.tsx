@@ -246,7 +246,7 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
   const editable = data?.editable ?? false;
   const previewSrc = usingBurned ? burnedSrc : baseSrc;
   const frames = useFilmstrip(usingBurned ? null : baseSrc, duration, 12);
-  const peaks = useWaveform(usingBurned ? null : baseSrc);
+  const peaks = useWaveform(editable ? clipId : null);
 
   // Vista sempre em ordem cronologica (a lista e os blocos leem por aqui). O estado bruto
   // pode estar em qualquer ordem; a identidade vem do _id, entao reordenar nunca perde a selecao.
