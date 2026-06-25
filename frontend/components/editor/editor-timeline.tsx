@@ -2,7 +2,6 @@
 
 import { useEffect, useRef } from "react";
 import { Maximize2, Minus, Pause, Play, Plus, SkipBack, SkipForward } from "lucide-react";
-import type { Frame } from "@/hooks/use-filmstrip";
 import type { EditSeg } from "./clip-editor";
 
 const MIN_BLOCK_W = 26; // largura minima clicavel de um bloco, mesmo pra legenda curtissima
@@ -43,7 +42,7 @@ export function EditorTimeline({
   segments,
   selectedId,
   pxPerSec,
-  frames,
+  filmstrip,
   peaks,
   hasHandles,
   cutIn,
@@ -62,7 +61,7 @@ export function EditorTimeline({
   segments: EditSeg[];
   selectedId: string | null;
   pxPerSec: number;
-  frames: Frame[];
+  filmstrip: string | null; // URL do sprite (filmstrip) gerado no servidor, ou null = sem frames
   peaks: number[] | null;
   hasHandles: boolean; // o clipe tem sobra (handles) editável? legado = false (sem alças)
   cutIn: number; // início do corte (s, relativo à janela)
@@ -330,17 +329,11 @@ export function EditorTimeline({
           </div>
 
           <div className="editor-track editor-track--film">
-            {frames.length > 0 &&
-              frames.map((f, i) => (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  key={i}
-                  src={f.url}
-                  alt=""
-                  className="editor-film-frame"
-                  style={{ left: (i / frames.length) * trackWidth, width: trackWidth / frames.length }}
-                />
-              ))}
+            {filmstrip && (
+              // O sprite (N frames lado a lado) e esticado na largura da trilha: distribui os frames
+              // ao longo do tempo (o nº exato de frames nao importa). Gerado no servidor (CORS do S3).
+              <div className="editor-film-strip" style={{ backgroundImage: `url(${filmstrip})` }} />
+            )}
           </div>
 
           <div className="editor-track editor-track--wave">

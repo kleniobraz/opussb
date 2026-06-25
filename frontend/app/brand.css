@@ -792,7 +792,9 @@
 .editor-end-block { position: absolute; top: 4px; bottom: 4px; transform: translateX(-100%); display: flex; align-items: center; padding: 0 9px; border-radius: 7px; background: rgba(47,224,191,0.16); border: 1px solid rgba(47,224,191,0.6); color: #bff7ec; font-size: 0.66rem; font-weight: 600; white-space: nowrap; pointer-events: none; z-index: 2; }
 .editor-end-empty { display: inline-block; margin: 6px 0 0 10px; font-size: 0.64rem; color: var(--ink-muted); pointer-events: none; }
 .editor-endscreen-note { font-size: 0.78rem; color: var(--ink-muted); line-height: 1.45; margin-top: 2px; }
-.editor-film-frame { position: absolute; top: 0; height: 100%; object-fit: cover; opacity: 0.9; pointer-events: none; }
+/* Filmstrip: o sprite (N frames lado a lado) esticado na largura da trilha (100% 100%), distribuindo
+   os frames ao longo do tempo. pointer-events:none pra nao roubar o scrub. */
+.editor-film-strip { position: absolute; inset: 0; background-size: 100% 100%; background-repeat: no-repeat; opacity: 0.92; pointer-events: none; }
 .editor-wave-canvas { display: block; height: 100%; }
 .editor-cap-block { position: absolute; top: 6px; bottom: 6px; background: rgba(245,197,24,0.16); border: 1px solid rgba(245,197,24,0.7); border-radius: 8px; overflow: hidden; cursor: grab; display: flex; align-items: center; padding: 0 10px; user-select: none; }
 .editor-cap-block:active { cursor: grabbing; }

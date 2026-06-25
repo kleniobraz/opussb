@@ -1634,6 +1634,72 @@ def clip_waveform(clip_id):
         _thumb_sem.release()
 
 
+_STRIP_TIMEOUT = 60
+_STRIP_COLS = 12   # nº de frames no sprite; o front estica o sprite na largura da trilha (N exato não importa)
+
+
+def _strip_key_for(base_key: str) -> str:
+    """Chave S3 do sprite do filmstrip: clip_NN_base.mp4 -> clip_NN_strip.jpg (e qualquer .mp4)."""
+    if base_key.endswith("_base.mp4"):
+        return base_key[:-len("_base.mp4")] + "_strip.jpg"
+    return re.sub(r"\.mp4$", "_strip.jpg", base_key)
+
+
+@app.route("/api/clips/<path:clip_id>/filmstrip")
+@login_required
+def clip_filmstrip(clip_id):
+    """Tira do video (sprite de N frames lado a lado) pra a CAMADA DE VIDEO do editor. Gerado no
+    SERVIDOR (capturar frames no navegador e bloqueado pelo CORS do S3) e cacheado como sprite no S3.
+    Retorna {url: presigned-do-sprite} ou {url: null}. O front estica o sprite na largura da trilha (o
+    nº exato de frames nao importa). Reusa o semaforo leve dos posters; ffmpeg niced + 1 thread.
+    Best-effort: falha/fila cheia -> {url: null} (a faixa fica neutra). NAO queima legenda."""
+    _job, _idx, base_key = _clip_lookup(clip_id)
+    strip_key = _strip_key_for(base_key)
+    if s3_client.exists(strip_key):
+        return jsonify({"url": s3_client.get_presigned_url(strip_key)})
+    if not _thumb_sem.acquire(timeout=config.THUMB_QUEUE_TIMEOUT):
+        return jsonify({"url": None})
+    tmp = None
+    try:
+        if s3_client.exists(strip_key):                      # outra thread gerou enquanto esperavamos
+            return jsonify({"url": s3_client.get_presigned_url(strip_key)})
+        url = s3_client.get_presigned_url(base_key)
+        # duracao pra espacar N frames uniformes: a janela persistida (sem custo), senao ffprobe.
+        dur = None
+        win = db.get_clip_window(clip_id)
+        if win and win.get("window_dur"):
+            dur = float(win["window_dur"])
+        if not dur or dur <= 0:
+            pr = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                 "-of", "default=nk=1:nw=1", url],
+                                capture_output=True, text=True, timeout=30)
+            try:
+                dur = float(pr.stdout.strip())
+            except ValueError:
+                dur = 0.0
+        if not dur or dur <= 0:
+            return jsonify({"url": None})
+        tmp = tempfile.mkdtemp(prefix="strip_")
+        out = os.path.join(tmp, "strip.jpg")
+        vf = f"fps={_STRIP_COLS}/{dur:.3f},scale=80:-2,tile={_STRIP_COLS}x1"
+        r = subprocess.run(["ffmpeg", "-y", "-i", url, "-frames:v", "1", "-vf", vf, "-q:v", "5",
+                            "-threads", "1", out],
+                           capture_output=True, text=True, timeout=_STRIP_TIMEOUT,
+                           preexec_fn=lambda: os.nice(config.BURN_NICE))
+        if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) >= 256:
+            s3_client.upload_file(out, strip_key)
+            return jsonify({"url": s3_client.get_presigned_url(strip_key)})
+        log.warning("[filmstrip] clip %s: ffmpeg falhou (%s)", clip_id, r.stderr[-200:])
+        return jsonify({"url": None})
+    except Exception as e:
+        log.warning("[filmstrip] clip %s: %s", clip_id, e)
+        return jsonify({"url": None})
+    finally:
+        _thumb_sem.release()
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ─── Legenda editável do clipe (correção pelo usuário; base do mini editor) ───
 _MAX_SEGMENTS = 1000
 _MAX_TEXT_LEN = 300

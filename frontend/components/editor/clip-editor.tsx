@@ -309,7 +309,7 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
 
   const editable = data?.editable ?? false;
   const previewSrc = usingBurned ? burnedSrc : baseSrc;
-  const frames = useFilmstrip(usingBurned ? null : baseSrc, duration, 12);
+  const filmstrip = useFilmstrip(editable ? clipId : null); // sprite gerado no servidor (CORS do S3)
   const peaks = useWaveform(editable ? clipId : null);
 
   // Vista sempre em ordem cronologica (a lista e os blocos leem por aqui). O estado bruto
@@ -886,7 +886,7 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
             segments={ordered}
             selectedId={selectedId}
             pxPerSec={pxPerSec}
-            frames={frames}
+            filmstrip={filmstrip}
             peaks={peaks}
             hasHandles={hasHandles}
             cutIn={cutIn}
