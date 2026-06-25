@@ -121,12 +121,15 @@ export function TranscriptPanel({
 }) {
   const activeRowRef = useRef<HTMLDivElement>(null);
 
-  // Karaoke: enquanto toca, traz a linha falada pra vista (sem brigar com scroll manual
-  // quando pausado).
+  // Karaoke: enquanto toca, traz a linha falada pra vista. Mas NAO arrasta o painel
+  // quando o usuario esta editando (cursor num campo de texto/tempo): o auto-follow nao
+  // pode "puxar" a tela no meio da correcao. Era o "painel fica acompanhando o video"
+  // que atrapalhava corrigir legenda. Ao parar de editar (campo perde o foco) o follow volta.
   useEffect(() => {
-    if (playing && activeId != null) {
-      activeRowRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-    }
+    if (!playing || activeId == null) return;
+    const ae = document.activeElement as HTMLElement | null;
+    if (ae && (ae.tagName === "TEXTAREA" || ae.tagName === "INPUT" || ae.isContentEditable)) return;
+    activeRowRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [activeId, playing]);
 
   return (
