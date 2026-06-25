@@ -211,18 +211,37 @@ export const putCaptions = (
     }),
   }).then((r) => asJson<{ ok?: boolean }>(r));
 
-// Biblioteca de telas finais disponíveis (id + rótulo).
+// Biblioteca de telas finais disponíveis (id + rótulo + duração).
 export const getEndScreens = () =>
   getJson<{ end_screens: EndScreenOption[] }>("/api/end_screens");
 
-// Override da tela final do clipe: null = herda o projeto, "none" = remove, "<id>" = força. Não
-// re-queima a legenda (só refaz o anexo na próxima abertura).
-export const putClipEndScreen = (id: string, endScreen: string | null) =>
+// Sobe uma tela final nova (mp4 até 10s) pra a biblioteca. Retorna a opção criada.
+export function uploadEndScreen(file: File, label?: string): Promise<{ ok?: boolean; end_screen?: EndScreenOption }> {
+  const fd = new FormData();
+  fd.append("file", file);
+  if (label) fd.append("label", label);
+  return request("/api/end_screens", { method: "POST", body: fd }).then((r) =>
+    asJson<{ ok?: boolean; end_screen?: EndScreenOption }>(r),
+  );
+}
+
+// Remove uma tela final da biblioteca (e o asset). Projetos/clipes que a usavam degradam pra nenhuma.
+export const deleteEndScreen = (id: string) =>
+  request("/api/end_screens/" + encodeURIComponent(id), { method: "DELETE" }).then((r) => r.ok);
+
+// Override da tela final do clipe: end_screen (null=herda, "none"=remove, "<id>"=força) e/ou dur
+// (encurtar: s, ou null = tela inteira). Não re-queima a legenda (só refaz o anexo).
+export const putClipEndScreen = (
+  id: string,
+  patch: { end_screen?: string | null; dur?: number | null },
+) =>
   request("/api/clips/" + encodeURIComponent(id) + "/end_screen", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ end_screen: endScreen }),
-  }).then((r) => asJson<{ ok?: boolean; end_screen?: string | null; end_screen_effective?: string | null }>(r));
+    body: JSON.stringify(patch),
+  }).then((r) =>
+    asJson<{ ok?: boolean; end_screen?: string | null; end_screen_effective?: string | null; end_screen_dur?: number | null }>(r),
+  );
 
 export function uploadMusic(id: string, file: File, volume?: number): Promise<{ music?: Music }> {
   const fd = new FormData();

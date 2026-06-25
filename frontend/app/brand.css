@@ -587,7 +587,11 @@
 .project-endscreen { display: inline-flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 0.78rem; color: var(--ink-soft); flex-wrap: wrap; }
 .project-endscreen select { background: var(--surface-2); color: var(--ink); border: 1px solid var(--border); border-radius: 8px; padding: 5px 9px; font-size: 0.8rem; cursor: pointer; }
 .project-endscreen select:disabled { opacity: 0.5; cursor: default; }
-.project-endscreen-hint { color: var(--ink-muted); font-size: 0.72rem; }
+.project-es-btn { background: var(--surface-2); color: var(--ink-soft); border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; font-size: 0.78rem; cursor: pointer; transition: border-color .15s, color .15s; }
+.project-es-btn:hover:not(:disabled) { border-color: var(--gold); color: var(--ink); }
+.project-es-btn:disabled { opacity: 0.5; cursor: default; }
+.project-es-del:hover:not(:disabled) { border-color: #e0584f; color: #f0a098; }
+.project-endscreen-hint { color: var(--ink-muted); font-size: 0.72rem; flex-basis: 100%; }
 .project-open { display: inline-block; margin-top: 12px; font-size: 0.78rem; font-weight: 600; color: var(--gold); opacity: 0; transform: translateX(-4px); transition: opacity 0.18s, transform 0.18s; }
 .project-card:hover .project-open { opacity: 1; transform: none; }
 @media (max-width: 980px) { .projects-grid { grid-template-columns: repeat(3,1fr); } }
@@ -786,11 +790,14 @@
 .editor-track--film { height: 52px; background: #0e0e10; }
 .editor-track--wave { height: 46px; background: #0e0e10; }
 .editor-track--caps { height: 46px; }
-/* 4a camada (tela final): so visual. Verde-agua igual ao trim (continuidade). pointer-events:none
-   pra nao roubar o scrub; o bloco cresce pra esquerda (translateX -100%) a partir do fim do corte. */
-.editor-track--end { height: 28px; background: #0c0c0e; }
-.editor-end-block { position: absolute; top: 4px; bottom: 4px; transform: translateX(-100%); display: flex; align-items: center; padding: 0 9px; border-radius: 7px; background: rgba(47,224,191,0.16); border: 1px solid rgba(47,224,191,0.6); color: #bff7ec; font-size: 0.66rem; font-weight: 600; white-space: nowrap; pointer-events: none; z-index: 2; }
-.editor-end-empty { display: inline-block; margin: 6px 0 0 10px; font-size: 0.64rem; color: var(--ink-muted); pointer-events: none; }
+/* 4a camada (tela final): verde-agua igual ao trim (continuidade). Bloco a partir do fim do corte,
+   largura = duracao usada; a alca direita arrasta pra encurtar. */
+.editor-track--end { height: 30px; background: #0c0c0e; }
+.editor-end-block { position: absolute; top: 4px; bottom: 4px; display: flex; align-items: center; padding: 0 9px; border-radius: 7px; background: rgba(47,224,191,0.16); border: 1px solid rgba(47,224,191,0.6); color: #bff7ec; font-size: 0.66rem; font-weight: 600; white-space: nowrap; overflow: hidden; z-index: 2; }
+.editor-end-block-text { pointer-events: none; overflow: hidden; text-overflow: ellipsis; }
+.editor-end-handle { position: absolute; right: 0; top: 0; bottom: 0; width: 11px; cursor: ew-resize; background: linear-gradient(90deg, transparent, rgba(47,224,191,0.55)); border-radius: 0 7px 7px 0; }
+.editor-end-handle:hover { background: rgba(47,224,191,0.8); }
+.editor-end-empty { display: inline-block; margin: 7px 0 0 10px; font-size: 0.64rem; color: var(--ink-muted); pointer-events: none; }
 .editor-endscreen-note { font-size: 0.78rem; color: var(--ink-muted); line-height: 1.45; margin-top: 2px; }
 /* Filmstrip: o sprite (N frames lado a lado) esticado na largura da trilha (100% 100%), distribuindo
    os frames ao longo do tempo. pointer-events:none pra nao roubar o scrub. */

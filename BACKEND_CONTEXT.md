@@ -1047,5 +1047,38 @@ antes de comecar o editor.
    RE-SKIN (nao rewrite), em STAGING, com o `clip_words` que ja guardamos. Decisao fechada nesta sessao
    (painel multi-lente + probe). "Remover pausa/jump-cut" = v2.
 3. **Push dos 5 commits + o commit da tela final** quando autorizado.
-4. Pendencias antigas: `reprocess`, filmstrip real (mesma ideia sob demanda do /thumb e /waveform),
-   ultralytics RCE, static/ legado.
+4. Pendencias antigas: `reprocess`, ~~filmstrip real~~ FEITO (§31), ultralytics RCE, static/ legado.
+
+## 31. Camada de video (filmstrip) + biblioteca DINAMICA de telas finais + encurtar (2026-06-25)
+
+Continuacao da §29 (tela final), atendendo 3 pedidos do dono no editor.
+
+### 31.1 Camada de VIDEO no editor (filmstrip server-side)
+A trilha de video ficava vazia (capturar frames no navegador e bloqueado pelo CORS do S3, igual a
+waveform era). Resolvido igual /thumb e /waveform: **`GET /api/clips/<id>/filmstrip`** gera um SPRITE de
+N=12 frames lado a lado (ffmpeg `fps=N/dur,scale=80:-2,tile=Nx1`, presigned como input, niced + 1 thread,
+semaforo `_thumb_sem`), cacheia no S3 (`clip_NN_strip.jpg`) e retorna `{url: presigned}`. O front estica o
+sprite na largura da trilha (o nº exato de frames nao importa). `_strip_key_for`. Front: `use-filmstrip`
+busca a rota (clipId). **Deployado + commit `0e72eb8` (pushado).** e2e: sprite 960x142, cache na 2a.
+
+### 31.2 Biblioteca DINAMICA de telas finais (upload/trocar/excluir)
+A tela final deixou de ser hardcoded no config e virou uma **tabela `end_screens`** (id, label, s3_key,
+duration). O config.END_SCREENS agora so SEMEIA a clubcast no boot (`db.ensure_end_screen`); a fonte de
+verdade e o DB. `_resolve_end_screen_id`/`_end_screen_options`/`_produce_endscreen` leem do DB.
+- **`POST /api/end_screens`** (multipart `file`, opcional `label`): valida formato + duracao <=
+  `END_SCREEN_MAX_SECONDS`(10) via ffprobe, **re-encoda/normaliza** (h264/aac/yuv420p) e sobe pro S3
+  (`assets/end_screens/<uuid>.mp4`), grava no DB. Rejeita >10s (400). `END_SCREEN_MAX_BYTES`(60MB).
+- **`DELETE /api/end_screens/<id>`**: apaga do DB + asset no S3 + os `_matched/<id>_*` cacheados. Clipes
+  que referenciavam degradam pra "sem tela" (o resolve ignora id inexistente).
+- O asset NAO precisa ser 1080x1920: o `_ensure_matched_outro` agora **escala+pad** pra 1080x1920
+  (`force_original_aspect_ratio=decrease` + `pad`), entao upload de qualquer resolucao casa no concat-copy.
+
+### 31.3 Encurtar a tela final por clipe (trim, arrastar na timeline)
+Coluna `clip_captions.end_screen_dur` (REAL, NULL=tela inteira). `_ensure_matched_outro` recebe `dur` e
+corta o outro nos primeiros N s (`-t`), com a duracao na assinatura do cache do matched. O
+`PUT /api/clips/<id>/end_screen` aceita `dur` (clampado a [0,5s .. duracao do asset/teto]); `GET /captions`
+expoe `end_screen_dur` + a `duration` de cada opcao. Front: alca arrastavel na 4a trilha.
+
+**Validacao:** `test_end_screen` ampliado (biblioteca via DB, dur/clamp, DELETE) + 3 e2e reais (render
+sem-trim, trim=2s -> final=base+2, upload 720x1280 -> render final 1080x1920 decode limpo). `tsc` limpo.
+**STATUS: codigo pronto + testado; 31.2/31.3 e o front AGUARDAM deploy (restart) + commit/push.**

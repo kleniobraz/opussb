@@ -74,10 +74,14 @@ THUMB_QUEUE_TIMEOUT: float = float(os.environ.get("THUMB_QUEUE_TIMEOUT", "20"))
 # concat-copy cru corrompe os timestamps com fps diferente; concat filter explode em frames
 # duplicados sem normalizar fps; casar so o outro e concat-copy do longo e o caminho certo).
 END_SCREEN_PREFIX: str = "assets/end_screens/"
+# Seed inicial da biblioteca (a fonte de verdade passou a ser a tabela end_screens no DB; isto so
+# semeia no boot se a tela ainda nao existir). O usuario sobe/troca/exclui pelo sistema.
 END_SCREENS: dict = {
-    "clubcast": {"key": END_SCREEN_PREFIX + "clubcast.mp4", "label": "Clubcast (Carbone)"},
+    "clubcast": {"key": END_SCREEN_PREFIX + "clubcast.mp4", "label": "Clubcast (Carbone)", "duration": 4.586667},
 }
 END_SCREEN_TIMEOUT: int = int(os.environ.get("END_SCREEN_TIMEOUT", "120"))  # teto do ffmpeg do anexo (s)
+END_SCREEN_MAX_SECONDS: float = float(os.environ.get("END_SCREEN_MAX_SECONDS", "10"))  # teto da tela final
+END_SCREEN_MAX_BYTES: int = int(os.environ.get("END_SCREEN_MAX_BYTES", str(60 * 1024 * 1024)))  # upload
 
 # Sobra (handles) cortada de cada lado do clipe, em segundos. O clip_NN_base.mp4 passa a ser
 # a janela [start-H, end+H] (clamped ao vídeo) reenquadrada, e o editor abre/fecha o corte

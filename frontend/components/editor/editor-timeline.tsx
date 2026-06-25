@@ -48,6 +48,10 @@ export function EditorTimeline({
   cutIn,
   cutOut,
   endScreenLabel,
+  endScreenDur,
+  endScreenAssetDur,
+  onChangeEndDur,
+  onCommitEndDur,
   onSeek,
   onPlayPause,
   onSelect,
@@ -67,6 +71,10 @@ export function EditorTimeline({
   cutIn: number; // início do corte (s, relativo à janela)
   cutOut: number; // fim do corte (s, relativo à janela)
   endScreenLabel: string | null; // tela final anexada no fim (rótulo) ou null = nenhuma
+  endScreenDur: number; // duração da tela final usada neste clipe (s); 0 = sem tela
+  endScreenAssetDur: number; // duração total do asset da tela (s); teto do encurtar
+  onChangeEndDur: (dur: number) => void; // durante o arraste (visual)
+  onCommitEndDur: (dur: number) => void; // ao soltar (persiste)
   onSeek: (t: number) => void;
   onPlayPause: () => void;
   onSelect: (id: string) => void;
@@ -163,6 +171,27 @@ export function EditorTimeline({
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  // Arrasta a borda direita do bloco da tela final pra ENCURTAR (usar menos que o asset inteiro).
+  // Clampa a [0,5s .. duração do asset]. Atualiza visual no move; persiste no up.
+  function startEndDur(e: React.PointerEvent) {
+    e.stopPropagation();
+    const startX = e.clientX;
+    const orig = endScreenDur;
+    const maxDur = endScreenAssetDur || endScreenDur;
+    let last = orig;
+    const move = (ev: PointerEvent) => {
+      last = Math.max(0.5, Math.min(maxDur, orig + (ev.clientX - startX) / pxPerSec));
+      onChangeEndDur(r2(last));
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      onCommitEndDur(r2(last));
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -356,16 +385,26 @@ export function EditorTimeline({
             ))}
           </div>
 
-          {/* 4a camada: tela final. So visual (pointer-events:none, nao mexe no scrub). Ancorada no
-              fim do corte; o bloco cresce pra esquerda (translateX -100% no CSS) pra ficar legivel. */}
+          {/* 4a camada: tela final. Bloco a partir do fim do corte, com largura = duração usada;
+              arraste a alça direita pra encurtar. So o bloco e clicavel (resto pointer-events:none). */}
           <div className="editor-track editor-track--end">
             {endScreenLabel ? (
               <div
                 className="editor-end-block"
-                style={{ left: (hasHandles ? cutOut : dur) * pxPerSec }}
-                title={`${endScreenLabel} é anexada ~5s no fim do clipe`}
+                style={{
+                  left: (hasHandles ? cutOut : dur) * pxPerSec,
+                  width: Math.max(MIN_BLOCK_W, endScreenDur * pxPerSec),
+                }}
+                title={`${endScreenLabel} · ${endScreenDur.toFixed(1)}s no fim (arraste a alça pra encurtar)`}
               >
-                ▸ {endScreenLabel}
+                <span className="editor-end-block-text">▸ {endScreenLabel} · {endScreenDur.toFixed(1)}s</span>
+                {endScreenAssetDur > 0.6 && (
+                  <div
+                    className="editor-end-handle"
+                    onPointerDown={startEndDur}
+                    title="Arraste pra encurtar a tela final"
+                  />
+                )}
               </div>
             ) : (
               <span className="editor-end-empty">sem tela final</span>

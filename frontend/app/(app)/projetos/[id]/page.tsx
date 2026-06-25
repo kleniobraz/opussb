@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -25,6 +25,7 @@ export default function ProjetoPage() {
   const [reprocessOpen, setReprocessOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [endSaving, setEndSaving] = useState(false);
+  const esFileRef = useRef<HTMLInputElement>(null);
 
   // Tela final PADRAO do projeto (os clipes herdam; removivel por clipe no editor). Acao imediata:
   // grava e recarrega o projeto + invalida as legendas (editores abertos releem a heranca).
@@ -38,6 +39,49 @@ export default function ProjetoPage() {
       qc.invalidateQueries({ queryKey: ["captions"] });
     } catch {
       toast.error("Falha ao definir a tela final do projeto.");
+    } finally {
+      setEndSaving(false);
+    }
+  }
+
+  // Sobe uma tela final nova (mp4 até 10s) e já a define como padrão deste projeto.
+  async function onUploadEndScreen(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // permite re-subir o mesmo arquivo depois
+    if (!file) return;
+    setEndSaving(true);
+    toast.info("Enviando tela final…");
+    try {
+      const r = await api.uploadEndScreen(file);
+      const newId = r.end_screen?.id;
+      if (!newId) throw new Error("upload");
+      await api.putProjectEndScreen(id, newId); // já usa no projeto
+      toast.success("Tela final enviada e aplicada ao projeto.");
+      qc.invalidateQueries({ queryKey: ["endScreens"] });
+      qc.invalidateQueries({ queryKey: ["project", id] });
+      qc.invalidateQueries({ queryKey: ["captions"] });
+    } catch (err) {
+      toast.error((err as Error)?.message || "Falha ao enviar a tela final (máx. 10s, .mp4).");
+    } finally {
+      setEndSaving(false);
+    }
+  }
+
+  // Remove a tela final selecionada da BIBLIOTECA (some de todos os projetos que a usavam).
+  async function deleteSelectedEndScreen() {
+    const cur = p?.end_screen;
+    if (!cur) return;
+    const label = endScreens?.end_screens.find((o) => o.id === cur)?.label ?? "esta tela final";
+    if (!window.confirm(`Excluir "${label}" da biblioteca? Ela sai de todos os projetos que a usam.`)) return;
+    setEndSaving(true);
+    try {
+      await api.deleteEndScreen(cur);
+      toast.success("Tela final excluída da biblioteca.");
+      qc.invalidateQueries({ queryKey: ["endScreens"] });
+      qc.invalidateQueries({ queryKey: ["project", id] });
+      qc.invalidateQueries({ queryKey: ["captions"] });
+    } catch {
+      toast.error("Falha ao excluir a tela final.");
     } finally {
       setEndSaving(false);
     }
@@ -131,26 +175,50 @@ export default function ProjetoPage() {
           <p className="eyebrow">Projeto</p>
           <h2 className="results-title">{p.title || p.filename || "Projeto"}</h2>
           <p className="project-meta">{meta}</p>
-          {(endScreens?.end_screens?.length ?? 0) > 0 && (
-            <label className="project-endscreen">
-              <span>Tela final</span>
-              <select
-                value={p.end_screen ?? ""}
+          <div className="project-endscreen">
+            <span>Tela final</span>
+            <select
+              value={p.end_screen ?? ""}
+              disabled={endSaving}
+              onChange={(e) => changeProjectEndScreen(e.target.value)}
+            >
+              <option value="">Nenhuma</option>
+              {(endScreens?.end_screens ?? []).map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="project-es-btn"
+              disabled={endSaving}
+              onClick={() => esFileRef.current?.click()}
+            >
+              + Enviar
+            </button>
+            {p.end_screen && (
+              <button
+                type="button"
+                className="project-es-btn project-es-del"
                 disabled={endSaving}
-                onChange={(e) => changeProjectEndScreen(e.target.value)}
+                onClick={deleteSelectedEndScreen}
+                title="Excluir esta tela final da biblioteca"
               >
-                <option value="">Nenhuma</option>
-                {endScreens!.end_screens.map((o) => (
-                  <option key={o.id} value={o.id}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-              <span className="project-endscreen-hint">
-                os clipes herdam (removível por clipe no editor)
-              </span>
-            </label>
-          )}
+                Excluir
+              </button>
+            )}
+            <input
+              ref={esFileRef}
+              type="file"
+              accept="video/mp4,video/quicktime"
+              hidden
+              onChange={onUploadEndScreen}
+            />
+            <span className="project-endscreen-hint">
+              .mp4 até 10s · os clipes herdam (removível/encurtável por clipe no editor)
+            </span>
+          </div>
         </div>
         <div className="head-actions">
           <Button variant="gold" onClick={downloadAll}>

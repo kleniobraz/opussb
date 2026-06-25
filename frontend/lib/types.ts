@@ -84,6 +84,7 @@ export interface Project {
 export interface EndScreenOption {
   id: string;
   label: string;
+  duration?: number | null; // duração total do asset (s); usada pra calibrar o "encurtar"
 }
 
 export interface Stats {
@@ -143,6 +144,7 @@ export interface Captions {
   // project_end_screen = default do projeto; end_screens = biblioteca de opções.
   end_screen?: string | null;
   end_screen_effective?: string | null;
+  end_screen_dur?: number | null; // duração da tela final neste clipe (s); null = tela inteira
   project_end_screen?: string | null;
   end_screens?: EndScreenOption[];
 }

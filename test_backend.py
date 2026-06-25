@@ -680,7 +680,7 @@ def test_end_screen():
     import config
     from werkzeug.security import generate_password_hash
 
-    config.END_SCREENS.setdefault("clubcast", {"key": "assets/end_screens/clubcast.mp4", "label": "Clubcast"})
+    db.ensure_end_screen("clubcast", "Clubcast", "assets/end_screens/clubcast.mp4", 4.586667)
 
     # _endscreen_key: content -> final
     check(app._endscreen_key("jobs/J/clips/clip_01_cap.mp4") == "jobs/J/clips/clip_01_cap_es.mp4",
@@ -707,10 +707,12 @@ def test_end_screen():
     check(app._resolve_end_screen_id(job_none, "JES:0") is None, "id desconhecido -> None")
     db.set_clip_end_screen("JES:0", None)
 
-    # invalidação (monkeypatch do delete_object: sem rede, captura as chaves)
+    # invalidação (monkeypatch do delete_object/delete_prefix: sem rede, captura as chaves)
     deleted = []
     _orig_del = s3_client.delete_object
+    _orig_delp = s3_client.delete_prefix
     s3_client.delete_object = lambda k: deleted.append(k)
+    s3_client.delete_prefix = lambda p: deleted.append(p) or 0
     try:
         app._invalidate_cap("jobs/J/clips/clip_01_base.mp4")
         check(set(deleted) == {"jobs/J/clips/clip_01_cap.mp4", "jobs/J/clips/clip_01_trim.mp4",
@@ -769,15 +771,39 @@ def test_end_screen():
         check(c.put("/api/clips/JES:0/end_screen", json={"end_screen": "xxx"}).status_code == 400,
               "PUT clipe id inválido -> 400")
 
+        # duração (encurtar a tela final por clipe): grava, clampa ao asset, rejeita inválida, limpa
+        r = c.put("/api/clips/JES:0/end_screen", json={"dur": 3.0})
+        check(r.status_code == 200 and abs((db.get_clip_end_screen_dur("JES:0") or 0) - 3.0) < 1e-6,
+              "PUT clipe dur=3 grava a duração")
+        c.put("/api/clips/JES:0/end_screen", json={"dur": 999})
+        check(abs((db.get_clip_end_screen_dur("JES:0") or 0) - 4.586667) < 0.05,
+              "dur acima do asset é clampada à duração da tela (clubcast ~4,59s)")
+        check(c.put("/api/clips/JES:0/end_screen", json={"dur": -1}).status_code == 400, "dur <=0 -> 400")
+        c.put("/api/clips/JES:0/end_screen", json={"dur": None})
+        check(db.get_clip_end_screen_dur("JES:0") is None, "dur null volta a usar a tela inteira")
+        check(c.get("/api/clips/JES:0/captions").get_json().get("end_screen_dur") is None,
+              "GET /captions expõe end_screen_dur")
+        opt = next((o for o in app._end_screen_options() if o["id"] == "clubcast"), {})
+        check(abs((opt.get("duration") or 0) - 4.586667) < 0.05, "biblioteca traz a duração do asset")
+
+        # biblioteca: add + DELETE (rota)
+        db.add_end_screen("testes_es_x", "Teste", "assets/end_screens/testes_es_x.mp4", 5.0)
+        check(db.get_end_screen("testes_es_x") is not None, "add_end_screen grava na biblioteca")
+        r = c.delete("/api/end_screens/testes_es_x")
+        check(r.status_code == 200 and db.get_end_screen("testes_es_x") is None,
+              "DELETE remove da biblioteca")
+
         db.update_job("JES", result_urls=_json.dumps([{"key": "jobs/JES/clips/clip_01_9x16.mp4"}]))
         check(c.put("/api/clips/JES:0/end_screen", json={"end_screen": "clubcast"}).status_code == 409,
               "PUT clipe antigo (não editável) -> 409")
     finally:
         s3_client.delete_object = _orig_del
+        s3_client.delete_prefix = _orig_delp
 
     db.delete_job("JES")
     with db._conn() as cc:
         cc.execute("DELETE FROM users WHERE email = ?", ("es@test",))
+        cc.execute("DELETE FROM end_screens WHERE id = ?", ("testes_es_x",))
 
 
 def main():

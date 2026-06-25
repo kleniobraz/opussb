@@ -73,6 +73,15 @@ db.init_preferences()
 db.init_clip_captions()
 db.init_clip_music()
 db.init_sessions()
+db.init_end_screens()
+
+# Semeia a biblioteca de telas finais (config.END_SCREENS) no DB se ainda nao existir. A partir
+# daqui a fonte de verdade e o DB (o usuario sobe/troca/exclui pelo sistema); o config so semeia.
+for _es_id, _es in config.END_SCREENS.items():
+    try:
+        db.ensure_end_screen(_es_id, _es["label"], _es["key"], _es.get("duration"))
+    except Exception as e:
+        log.warning("falha ao semear tela final %s (%s)", _es_id, e)
 
 # Semeia admins iniciais (config ADMIN_EMAILS) como is_admin + active. Idempotente:
 # cria a linha se não existir (sem senha utilizável; ele entra via Zoho) ou só promove.
@@ -930,7 +939,7 @@ def project_end_screen_put(job_id):
         return jsonify({"error": "Projeto não encontrado."}), 404
     data = request.get_json(silent=True) or {}
     val = data.get("end_screen")
-    if val is not None and val not in config.END_SCREENS:
+    if val is not None and not db.get_end_screen(val):
         return jsonify({"error": "Tela final inválida."}), 400
     db.update_job(job_id, end_screen=val)
     try:
@@ -1227,20 +1236,21 @@ def _invalidate_endscreen(base_key: str) -> None:
 
 def _resolve_end_screen_id(job, clip_id):
     """Tela final efetiva do clipe. Override do clipe tem prioridade: "none" = sem tela; "<id>" =
-    força essa tela; NULL = herda o default do projeto (jobs.end_screen). Retorna um id válido em
-    config.END_SCREENS ou None (sem tela final)."""
+    força essa tela; NULL = herda o default do projeto (jobs.end_screen). Retorna um id que EXISTE na
+    biblioteca (tabela end_screens) ou None (sem tela final ou id apagado)."""
     choice = db.get_clip_end_screen(clip_id)
     if choice == "none":
         return None
     es_id = choice or job.get("end_screen")
-    if es_id and es_id in config.END_SCREENS:
+    if es_id and db.get_end_screen(es_id):
         return es_id
     return None
 
 
 def _end_screen_options():
-    """Biblioteca de telas finais pro front (id + rótulo). Ordem estável (dict ordenado)."""
-    return [{"id": k, "label": v.get("label", k)} for k, v in config.END_SCREENS.items()]
+    """Biblioteca de telas finais pro front (id + rótulo + duração do asset). Lê do DB."""
+    return [{"id": e["id"], "label": e.get("label", e["id"]), "duration": e.get("duration")}
+            for e in db.list_end_screens()]
 
 
 def _endscreen_key(content_key: str) -> str:
@@ -1281,23 +1291,29 @@ def _probe_av_signature(path: str):
         return None
 
 
-def _ensure_matched_outro(es_id: str, outro_src_key: str, sig: dict, tmp: str):
-    """Re-encoda o outro pros params do clipe (fps/timescale/áudio) e cacheia no S3 por assinatura.
-    Devolve o path local do outro casado (baixado), ou None em falha. ~0,7s na 1a vez por assinatura,
-    instantâneo depois (raro variar entre clipes do mesmo job)."""
+def _ensure_matched_outro(es_id: str, outro_src_key: str, sig: dict, tmp: str, dur=None):
+    """Re-encoda o outro pros params do clipe (fps/timescale/áudio + escala 1080x1920 pra aceitar
+    upload de qualquer resolução) e cacheia no S3 por assinatura. Com `dur`, corta nos primeiros N
+    segundos (encurtar a tela final). Devolve o path local do outro casado (baixado), ou None em
+    falha. Cacheado por assinatura+duração: instantâneo nas próximas."""
     sig_str = f"{sig['fps_s']}_{sig['timescale']}_{sig['ar']}_{sig['ac']}".replace("/", "-")
-    matched_key = config.END_SCREEN_PREFIX + f"_matched/{es_id}_{sig_str}.mp4"
+    dur_tag = f"_{dur:.2f}" if (dur and dur > 0) else ""
+    matched_key = config.END_SCREEN_PREFIX + f"_matched/{es_id}_{sig_str}{dur_tag}.mp4"
     matched_path = os.path.join(tmp, "matched.mp4")
     if s3_client.exists(matched_key):
         s3_client.download_file(matched_key, matched_path)
         return matched_path
     src_path = os.path.join(tmp, "outro_src.mp4")
     s3_client.download_file(outro_src_key, src_path)
-    cmd = ["ffmpeg", "-y", "-i", src_path,
-           "-r", sig["fps_s"], "-video_track_timescale", str(sig["timescale"]),
-           "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-           "-c:a", "aac", "-ar", str(sig["ar"]), "-ac", str(sig["ac"]),
-           "-threads", str(config.BURN_FFMPEG_THREADS), "-movflags", "+faststart", matched_path]
+    cmd = ["ffmpeg", "-y", "-i", src_path]
+    if dur and dur > 0:
+        cmd += ["-t", f"{float(dur):.3f}"]                # encurta a tela final (primeiros N s)
+    cmd += ["-r", sig["fps_s"], "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,"
+            "pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1",
+            "-video_track_timescale", str(sig["timescale"]),
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-ar", str(sig["ar"]), "-ac", str(sig["ac"]),
+            "-threads", str(config.BURN_FFMPEG_THREADS), "-movflags", "+faststart", matched_path]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=config.END_SCREEN_TIMEOUT,
                        preexec_fn=lambda: os.nice(config.BURN_NICE))
     if r.returncode != 0 or not os.path.exists(matched_path) or os.path.getsize(matched_path) < 1024:
@@ -1326,12 +1342,13 @@ def _append_end_screen(content_path: str, outro_path: str, out_path: str, tmp: s
     return True
 
 
-def _produce_endscreen(content_key: str, es_id: str, final_key: str) -> bool:
-    """Baixa o content, casa o outro, concat-copy [content + outro] -> final_key no S3. Sob o semáforo
-    GLOBAL de queima (ffmpeg pesado-ish; não pode ser chamado com o semáforo já segurado). Retorna
-    True se subiu o final; False em qualquer falha (o chamador serve o content sem tela final)."""
-    es = config.END_SCREENS.get(es_id)
-    if not es:
+def _produce_endscreen(content_key: str, es_id: str, final_key: str, dur=None) -> bool:
+    """Baixa o content, casa o outro (encurtado a `dur` se informado), concat-copy [content + outro]
+    -> final_key no S3. Sob o semáforo GLOBAL de queima (ffmpeg pesado-ish; não pode ser chamado com o
+    semáforo já segurado). Retorna True se subiu o final; False em qualquer falha (o chamador serve o
+    content sem tela final)."""
+    es = db.get_end_screen(es_id)
+    if not es or not es.get("s3_key"):
         return False
     if not _burn_sem.acquire(timeout=_BURN_QUEUE_TIMEOUT):
         log.warning("[endscreen] fila cheia para %s; sem tela final", content_key)
@@ -1347,7 +1364,7 @@ def _produce_endscreen(content_key: str, es_id: str, final_key: str) -> bool:
         if not sig:
             log.warning("[endscreen] %s sem assinatura A/V (áudio?); sem tela final", content_key)
             return False
-        matched_path = _ensure_matched_outro(es_id, es["key"], sig, tmp)
+        matched_path = _ensure_matched_outro(es_id, es["s3_key"], sig, tmp, dur)
         if not matched_path:
             return False
         out_path = os.path.join(tmp, "final.mp4")
@@ -1364,11 +1381,11 @@ def _produce_endscreen(content_key: str, es_id: str, final_key: str) -> bool:
         _burn_sem.release()
 
 
-def _serve_clip(content_key: str, es_id, dl_name):
-    """302 pro entregável do clipe, anexando a tela final (es_id) se houver. Sem es_id, serve o content
-    direto. Com es_id, garante <content>_es.mp4 e serve ele; se o anexo falhar, serve o content sem
-    tela final (o clipe sempre toca). Só pode ser chamado FORA do semáforo de queima (o anexo o
-    adquire)."""
+def _serve_clip(content_key: str, es_id, dl_name, es_dur=None):
+    """302 pro entregável do clipe, anexando a tela final (es_id, encurtada a es_dur se informado) se
+    houver. Sem es_id, serve o content direto. Com es_id, garante <content>_es.mp4 e serve ele; se o
+    anexo falhar, serve o content sem tela final (o clipe sempre toca). Só pode ser chamado FORA do
+    semáforo de queima (o anexo o adquire)."""
     if not es_id:
         return _clip_redirect(content_key, dl_name)
     final_key = _endscreen_key(content_key)
@@ -1376,7 +1393,7 @@ def _serve_clip(content_key: str, es_id, dl_name):
         return _clip_redirect(content_key, dl_name)
     if s3_client.exists(final_key):                           # cache quente do final
         return _clip_redirect(final_key, dl_name)
-    if _produce_endscreen(content_key, es_id, final_key):
+    if _produce_endscreen(content_key, es_id, final_key, es_dur):
         return _clip_redirect(final_key, dl_name)
     return _clip_redirect(content_key, dl_name)               # anexo falhou: degrada (clipe toca)
 
@@ -1473,20 +1490,21 @@ def clip_video(clip_id):
     use_music = bool(music and music.get("music_key"))
 
     es_id = _resolve_end_screen_id(job, clip_id)         # tela final efetiva (id) ou None
+    es_dur = db.get_clip_end_screen_dur(clip_id) if es_id else None   # encurtar a tela neste clipe
 
     if want_trim:
         # Export sem legenda: corte cru reenquadrado (sem legenda, sem música). A tela final ENTRA
         # aqui também (decisão do dono: em todo entregável), anexada por _serve_clip. Sem trim real,
         # a base já é o content.
         if not trim_needed:
-            return _serve_clip(base_key, es_id, dl_name)
+            return _serve_clip(base_key, es_id, dl_name, es_dur)
         target_key = base_key.replace("_base.mp4", "_trim.mp4")
         do_caps = do_music = False
     else:
         # Sem queima/trim (clipe antigo, ou novo sem legenda/música e sem trim): o content é a base
         # (a tela final ainda pode entrar por cima dela).
         if not (is_new and (use_caps or use_music or trim_needed)):
-            return _serve_clip(base_key, es_id, dl_name)
+            return _serve_clip(base_key, es_id, dl_name, es_dur)
         target_key = cap_key
         do_caps, do_music = use_caps, use_music
 
@@ -1496,7 +1514,7 @@ def clip_video(clip_id):
                                caption_y, caption_style, music, trim_needed, in_pt, out_pt)
     if content_key is None:                              # fallback da queima: serve a base SEM tela final
         return _clip_redirect(base_key, dl_name)
-    return _serve_clip(content_key, es_id, dl_name)
+    return _serve_clip(content_key, es_id, dl_name, es_dur)
 
 
 @app.route("/api/clips/<path:clip_id>/base")
@@ -1846,6 +1864,7 @@ def clip_captions_get(clip_id):
                     "caption_y": caption_y, "style": style_obj, "bounds": bounds,
                     "end_screen": db.get_clip_end_screen(clip_id),
                     "end_screen_effective": _resolve_end_screen_id(job, clip_id),
+                    "end_screen_dur": db.get_clip_end_screen_dur(clip_id),
                     "project_end_screen": job.get("end_screen"),
                     "end_screens": _end_screen_options()})
 
@@ -1915,22 +1934,119 @@ def end_screens_list():
 @app.route("/api/clips/<path:clip_id>/end_screen", methods=["PUT"])
 @login_required
 def clip_end_screen_put(clip_id):
-    """Override da tela final do clipe: body {end_screen: null|"none"|"<id>"}. null = herda o projeto;
-    "none" = remove neste clipe; "<id>" = força essa tela. Invalida só os finais (_es): NÃO re-queima
-    a legenda (o content cap/trim continua válido). Exige clipe editável (tem base re-renderizável)."""
+    """Override da tela final do clipe: body {end_screen: null|"none"|"<id>", dur: número|null}.
+    end_screen: null herda o projeto, "none" remove, "<id>" força. dur (opcional): encurta a tela
+    final neste clipe (s; null = inteira; clampado a [0,5s .. duração do asset/teto]). Invalida só os
+    finais (_es): NÃO re-queima a legenda. Exige clipe editável (tem base re-renderizável)."""
     job, idx, base_key = _clip_lookup(clip_id)
     if "_base.mp4" not in base_key:
         return jsonify({"error": "Este clipe não é editável."}), 409
     if db.get_clip_captions(clip_id) is None:
         return jsonify({"error": "Este clipe não tem legenda editável."}), 409
     data = request.get_json(silent=True) or {}
-    val = data.get("end_screen")
-    if val is not None and val != "none" and val not in config.END_SCREENS:
-        return jsonify({"error": "Tela final inválida."}), 400
-    db.set_clip_end_screen(clip_id, val)
+    if "end_screen" in data:
+        val = data.get("end_screen")
+        if val is not None and val != "none" and not db.get_end_screen(val):
+            return jsonify({"error": "Tela final inválida."}), 400
+        db.set_clip_end_screen(clip_id, val)
+    if "dur" in data:
+        d = data.get("dur")
+        if d is None:
+            db.set_clip_end_screen_dur(clip_id, None)
+        else:
+            try:
+                df = float(d)
+            except (TypeError, ValueError):
+                return jsonify({"error": "dur inválida."}), 400
+            if not math.isfinite(df) or df <= 0:
+                return jsonify({"error": "dur inválida."}), 400
+            cap = config.END_SCREEN_MAX_SECONDS
+            eff = _resolve_end_screen_id(job, clip_id)
+            if eff:
+                es = db.get_end_screen(eff)
+                if es and es.get("duration"):
+                    cap = min(cap, float(es["duration"]))
+            db.set_clip_end_screen_dur(clip_id, round(max(0.5, min(df, cap)), 3))
     _invalidate_endscreen(base_key)
-    return jsonify({"ok": True, "end_screen": val,
-                    "end_screen_effective": _resolve_end_screen_id(job, clip_id)})
+    return jsonify({"ok": True, "end_screen": db.get_clip_end_screen(clip_id),
+                    "end_screen_effective": _resolve_end_screen_id(job, clip_id),
+                    "end_screen_dur": db.get_clip_end_screen_dur(clip_id)})
+
+
+@app.route("/api/end_screens", methods=["POST"])
+@login_required
+def end_screen_upload():
+    """Sobe uma tela final (multipart 'file', mp4 ate END_SCREEN_MAX_SECONDS) pra a biblioteca. Valida
+    com ffprobe (tem video + duracao no teto). Sobe pro S3 e grava no DB. Retorna a opcao nova.
+    Biblioteca compartilhada: qualquer usuario ativo sobe."""
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"error": "Envie um arquivo de vídeo (campo 'file')."}), 400
+    if os.path.splitext(f.filename)[1].lower() not in (".mp4", ".mov", ".m4v"):
+        return jsonify({"error": "Formato inválido. Envie um .mp4."}), 400
+    label = (request.form.get("label") or os.path.splitext(f.filename)[0]).strip()[:60] or "Tela final"
+    tmp = None
+    try:
+        tmp = tempfile.mkdtemp(prefix="es_up_")
+        local = os.path.join(tmp, "src" + os.path.splitext(f.filename)[1].lower())
+        f.save(local)
+        size = os.path.getsize(local)
+        if size < 1024 or size > config.END_SCREEN_MAX_BYTES:
+            return jsonify({"error": "Arquivo vazio ou grande demais."}), 400
+        pr = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                             "stream=codec_type:format=duration", "-of", "default=nk=1:nw=1", local],
+                            capture_output=True, text=True, timeout=30)
+        parts = pr.stdout.split()
+        if pr.returncode != 0 or "video" not in pr.stdout:
+            return jsonify({"error": "O arquivo não parece um vídeo válido."}), 400
+        try:
+            dur = float(parts[-1])
+        except (ValueError, IndexError):
+            return jsonify({"error": "Não consegui ler a duração do vídeo."}), 400
+        if dur <= 0 or dur > config.END_SCREEN_MAX_SECONDS + 0.5:
+            return jsonify({"error": f"A tela final pode ter no máximo {config.END_SCREEN_MAX_SECONDS:g}s."}), 400
+        es_id = uuid.uuid4().hex[:12]
+        key = config.END_SCREEN_PREFIX + es_id + ".mp4"
+        # normaliza pra mp4 h264/aac yuv420p (garante que o casamento do outro funcione depois)
+        out = os.path.join(tmp, "es.mp4")
+        r = subprocess.run(["ffmpeg", "-y", "-i", local, "-c:v", "libx264", "-preset", "veryfast",
+                            "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart",
+                            "-threads", str(config.BURN_FFMPEG_THREADS), out],
+                           capture_output=True, text=True, timeout=config.END_SCREEN_TIMEOUT,
+                           preexec_fn=lambda: os.nice(config.BURN_NICE))
+        if r.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) < 1024:
+            log.warning("[endscreen] normalizar upload falhou: %s", r.stderr[-300:])
+            return jsonify({"error": "Falha ao processar o vídeo."}), 400
+        s3_client.upload_file(out, key)
+        db.add_end_screen(es_id, label, key, round(dur, 3))
+        return jsonify({"ok": True, "end_screen": {"id": es_id, "label": label, "duration": round(dur, 3)}})
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "O vídeo demorou demais pra processar."}), 400
+    except Exception as e:
+        log.warning("[endscreen] upload falhou: %s", e)
+        return jsonify({"error": "Falha no upload."}), 500
+    finally:
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+@app.route("/api/end_screens/<es_id>", methods=["DELETE"])
+@login_required
+def end_screen_delete(es_id):
+    """Remove uma tela final da biblioteca (DB + asset no S3 + matched cacheados). Clipes/projetos que
+    a referenciavam degradam pra 'sem tela final' (o _resolve ignora id inexistente). Idempotente."""
+    es = db.get_end_screen(es_id)
+    db.delete_end_screen(es_id)
+    if es and es.get("s3_key"):
+        try:
+            s3_client.delete_object(es["s3_key"])
+        except Exception as e:
+            log.warning("[endscreen] falha ao apagar asset %s: %s", es["s3_key"], e)
+    try:
+        s3_client.delete_prefix(config.END_SCREEN_PREFIX + f"_matched/{es_id}_")
+    except Exception as e:
+        log.warning("[endscreen] falha ao limpar matched de %s: %s", es_id, e)
+    return jsonify({"ok": True})
 
 
 # ─── Música de fundo do clipe (mixada na queima sob demanda) ──────────────────

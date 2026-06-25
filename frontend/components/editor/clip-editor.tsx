@@ -302,6 +302,7 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
   // (id ou null), o default do projeto, e a biblioteca de opções.
   const [endOverride, setEndOverride] = useState<string | null>(null);
   const [endEffective, setEndEffective] = useState<string | null>(null);
+  const [endDur, setEndDur] = useState<number | null>(null); // duração da tela neste clipe; null = inteira
   const [projectEnd, setProjectEnd] = useState<string | null>(null);
   const [endScreens, setEndScreens] = useState<EndScreenOption[]>([]);
   const [endBusy, setEndBusy] = useState(false);
@@ -355,6 +356,7 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
     }
     setEndOverride(data.end_screen ?? null);
     setEndEffective(data.end_screen_effective ?? null);
+    setEndDur(data.end_screen_dur ?? null);
     setProjectEnd(data.project_end_screen ?? null);
     setEndScreens(data.end_screens ?? []);
   }, [data]);
@@ -643,7 +645,7 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
   async function applyEndScreen(value: string | null) {
     setEndBusy(true);
     try {
-      const r = await api.putClipEndScreen(clipId, value);
+      const r = await api.putClipEndScreen(clipId, { end_screen: value });
       setEndOverride(r.end_screen ?? value);
       setEndEffective(r.end_screen_effective ?? null);
       toast.success(
@@ -654,6 +656,20 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
       toast.error((e as Error)?.message || "Falha ao atualizar a tela final.");
     } finally {
       setEndBusy(false);
+    }
+  }
+
+  // Encurtar a tela final arrastando a alça na timeline: durante o arraste só atualiza o visual;
+  // ao soltar, persiste (rota dedicada, não re-queima a legenda).
+  function onChangeEndDur(d: number) {
+    setEndDur(d);
+  }
+  async function commitEndDur(d: number) {
+    setEndDur(d);
+    try {
+      await api.putClipEndScreen(clipId, { dur: d });
+    } catch {
+      toast.error("Falha ao ajustar a duração da tela final.");
     }
   }
 
@@ -894,6 +910,14 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
             endScreenLabel={
               endEffective ? (endScreens.find((o) => o.id === endEffective)?.label ?? "Tela final") : null
             }
+            endScreenDur={
+              endEffective
+                ? endDur ?? endScreens.find((o) => o.id === endEffective)?.duration ?? 0
+                : 0
+            }
+            endScreenAssetDur={endScreens.find((o) => o.id === endEffective)?.duration ?? 0}
+            onChangeEndDur={onChangeEndDur}
+            onCommitEndDur={commitEndDur}
             onSeek={seek}
             onPlayPause={togglePlay}
             onSelect={setSelectedId}

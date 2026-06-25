@@ -671,3 +671,25 @@ nenhuma), os clipes **herdam**, e é **removível/forçável por clipe** no edit
 **FALTA:** só o **DEPLOY** (`next build` + restart `opussb-web`, junto com o restart do `opussb` do backend),
 bloqueado até o dono autorizar. Nada commitado/pushado (regra 9). Depois: ligar a tela final nos projetos da
 Carbone pelo seletor.
+
+## 24. Camada de vídeo (filmstrip) + biblioteca de telas finais + encurtar (2026-06-25)
+
+Três pedidos do dono no editor (backend: BACKEND §31).
+
+### Camada de VÍDEO (filmstrip) — DEPLOYADA (commit `0e72eb8`, pushado)
+A trilha de vídeo do editor ficava vazia (canvas tainted pelo CORS do S3). `hooks/use-filmstrip.ts`
+passou a buscar a rota server-side `/api/clips/<id>/filmstrip` (sprite) e retorna a URL; a
+`editor-timeline.tsx` desenha a trilha `editor-track--film` esticando o sprite (`.editor-film-strip`,
+`background-size:100% 100%`). `clip-editor` chama `useFilmstrip(editable ? clipId : null)`. **No ar.**
+
+### Biblioteca de telas finais + encurtar — código pronto, AGUARDA deploy
+- **`lib/types.ts`**: `EndScreenOption.duration`; `Captions.end_screen_dur`.
+- **`lib/api.ts`**: `uploadEndScreen(file,label)`, `deleteEndScreen(id)`; `putClipEndScreen(id, {end_screen?, dur?})`
+  (assinatura virou patch).
+- **Projeto (`projetos/[id]/page.tsx`)**: ao lado do seletor "Tela final", botão **+ Enviar** (upload .mp4
+  até 10s, já aplica ao projeto) e **Excluir** (tira da biblioteca). `.project-es-btn`.
+- **Editor**: o `EndScreenControl` (liga/desliga) segue; a **4a trilha vira arrastável** — alça direita
+  (`.editor-end-handle`) encurta a tela final (bloco com largura = duração; persiste no soltar via
+  `putClipEndScreen({dur})`, sem re-queimar). `clip-editor` mantém `endDur` + passa
+  `endScreenDur`/`endScreenAssetDur`/`onChangeEndDur`/`onCommitEndDur` pra timeline.
+- `tsc --noEmit` limpo. **FALTA:** `next build` + restart `opussb-web` (junto com o `opussb`).

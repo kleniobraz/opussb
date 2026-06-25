@@ -138,6 +138,9 @@ def init_clip_captions() -> None:
         #   "none" = o usuario removeu a tela final NESTE clipe (mesmo que o projeto tenha uma);
         #   "<id>" = forca uma tela especifica neste clipe (mesmo sem default no projeto).
         _ensure_column(conn, "clip_captions", "end_screen", "TEXT")
+        # Duracao (s) da tela final A USAR neste clipe (encurtar arrastando na timeline). NULL =
+        # usa a tela inteira; senao corta nos primeiros N segundos (clampado a duracao do asset).
+        _ensure_column(conn, "clip_captions", "end_screen_dur", "REAL")
 
 
 def init_clip_music() -> None:
@@ -152,6 +155,65 @@ def init_clip_music() -> None:
                 updated_at TEXT
             )
         """)
+
+
+def init_end_screens() -> None:
+    """Biblioteca de telas finais (outros) que o usuario sobe pelo sistema. id = slug/uuid;
+    s3_key aponta pro mp4 no S3 (assets/end_screens/<id>.mp4); duration = duracao total do asset.
+    Os projetos referenciam por id (jobs.end_screen) e os clipes herdam/sobrescrevem."""
+    with _conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS end_screens (
+                id         TEXT PRIMARY KEY,
+                label      TEXT NOT NULL,
+                s3_key     TEXT NOT NULL,
+                duration   REAL,
+                created_at TEXT
+            )
+        """)
+
+
+def list_end_screens() -> list:
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT id, label, s3_key, duration FROM end_screens ORDER BY created_at, id"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_end_screen(es_id: str) -> dict | None:
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT id, label, s3_key, duration FROM end_screens WHERE id = ?", (es_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def add_end_screen(es_id: str, label: str, s3_key: str, duration) -> None:
+    """Insere/atualiza uma tela final na biblioteca (upsert por id)."""
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO end_screens (id, label, s3_key, duration, created_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET label=excluded.label, s3_key=excluded.s3_key,
+                                             duration=excluded.duration""",
+            (es_id, label, s3_key, duration, _now()),
+        )
+
+
+def ensure_end_screen(es_id: str, label: str, s3_key: str, duration) -> None:
+    """Semeia uma tela final se ela ainda nao existir (nao sobrescreve edicoes do usuario)."""
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO end_screens (id, label, s3_key, duration, created_at)
+               VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING""",
+            (es_id, label, s3_key, duration, _now()),
+        )
+
+
+def delete_end_screen(es_id: str) -> None:
+    with _conn() as conn:
+        conn.execute("DELETE FROM end_screens WHERE id = ?", (es_id,))
 
 
 def init_sessions() -> None:
@@ -461,6 +523,24 @@ def set_clip_end_screen(clip_id: str, value) -> None:
         conn.execute(
             "UPDATE clip_captions SET end_screen = ?, updated_at = ? WHERE clip_id = ?",
             (value, _now(), clip_id),
+        )
+
+
+def get_clip_end_screen_dur(clip_id: str):
+    """Duracao (s) da tela final a usar neste clipe, ou None (= tela inteira)."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT end_screen_dur FROM clip_captions WHERE clip_id = ?", (clip_id,)
+        ).fetchone()
+        return row["end_screen_dur"] if row else None
+
+
+def set_clip_end_screen_dur(clip_id: str, dur) -> None:
+    """Grava a duracao da tela final do clipe (s, ou None pra usar inteira). Só atualiza a coluna."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE clip_captions SET end_screen_dur = ?, updated_at = ? WHERE clip_id = ?",
+            (dur, _now(), clip_id),
         )
 
 
