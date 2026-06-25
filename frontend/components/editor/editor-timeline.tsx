@@ -48,6 +48,7 @@ export function EditorTimeline({
   hasHandles,
   cutIn,
   cutOut,
+  endScreenLabel,
   onSeek,
   onPlayPause,
   onSelect,
@@ -66,6 +67,7 @@ export function EditorTimeline({
   hasHandles: boolean; // o clipe tem sobra (handles) editável? legado = false (sem alças)
   cutIn: number; // início do corte (s, relativo à janela)
   cutOut: number; // fim do corte (s, relativo à janela)
+  endScreenLabel: string | null; // tela final anexada no fim (rótulo) ou null = nenhuma
   onSeek: (t: number) => void;
   onPlayPause: () => void;
   onSelect: (id: string) => void;
@@ -359,6 +361,22 @@ export function EditorTimeline({
                 <div className="editor-cap-handle right" onPointerDown={(e) => startDrag(e, s._id, "right")} />
               </div>
             ))}
+          </div>
+
+          {/* 4a camada: tela final. So visual (pointer-events:none, nao mexe no scrub). Ancorada no
+              fim do corte; o bloco cresce pra esquerda (translateX -100% no CSS) pra ficar legivel. */}
+          <div className="editor-track editor-track--end">
+            {endScreenLabel ? (
+              <div
+                className="editor-end-block"
+                style={{ left: (hasHandles ? cutOut : dur) * pxPerSec }}
+                title={`${endScreenLabel} é anexada ~5s no fim do clipe`}
+              >
+                ▸ {endScreenLabel}
+              </div>
+            ) : (
+              <span className="editor-end-empty">sem tela final</span>
+            )}
           </div>
 
           {hasHandles && dur > 0 && (

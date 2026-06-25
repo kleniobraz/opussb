@@ -16,7 +16,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { PreviewStage } from "./preview-stage";
 import { TranscriptPanel } from "./transcript-panel";
 import { EditorTimeline } from "./editor-timeline";
-import type { Music, Segment } from "@/lib/types";
+import type { EndScreenOption, Music, Segment } from "@/lib/types";
 
 // Segmento como vive no estado do editor: o {start,end,text} do contrato + um id de
 // cliente NAO persistido. O id deixa a selecao, o karaoke e o split/merge estaveis mesmo
@@ -201,6 +201,63 @@ function StyleControl({
   );
 }
 
+// 4a camada do clipe: a tela final (outro) anexada ~5s no fim. Estado efetivo herda o default do
+// projeto; aqui o usuario liga/desliga POR CLIPE (override). Acao imediata (rota dedicada, nao
+// re-queima a legenda); refaz so o anexo no proximo play.
+function EndScreenControl({
+  options,
+  effectiveId,
+  override,
+  projectDefault,
+  busy,
+  onChange,
+}: {
+  options: EndScreenOption[];
+  effectiveId: string | null; // o que sera anexado (id) ou null
+  override: string | null; // null = herda | "none" = removida | "<id>" = forcada
+  projectDefault: string | null;
+  busy: boolean;
+  onChange: (value: string | null) => void;
+}) {
+  const labelOf = (id: string | null) =>
+    options.find((o) => o.id === id)?.label ?? id ?? "tela final";
+  const on = effectiveId != null;
+  const hasLibrary = options.length > 0;
+  const toggle = () => {
+    if (on) onChange(projectDefault ? "none" : null); // remove neste clipe
+    else onChange(projectDefault ? null : options[0]?.id ?? null); // herda ou forca a 1a
+  };
+  return (
+    <div className="editor-style">
+      <div className="editor-sec-head">
+        <strong className="text-[0.85rem]">Tela final</strong>
+        <button
+          type="button"
+          className={cn("chip !rounded-full !border-0 !px-3 !py-1", on && "is-active")}
+          onClick={toggle}
+          disabled={busy || (!on && !hasLibrary)}
+        >
+          {busy ? "…" : on ? "Remover" : "Adicionar"}
+        </button>
+      </div>
+      <p className="editor-endscreen-note">
+        {on
+          ? `${labelOf(effectiveId)} entra ~5s no fim` +
+            (override && override !== "none"
+              ? " (definida neste clipe)."
+              : projectDefault
+                ? " (padrão do projeto)."
+                : ".")
+          : override === "none" && projectDefault
+            ? `Removida neste clipe (o projeto usa ${labelOf(projectDefault)}).`
+            : hasLibrary
+              ? "Sem tela final neste clipe."
+              : "Nenhuma tela final disponível."}
+      </p>
+    </div>
+  );
+}
+
 export function ClipEditor({ clipId, title }: { clipId: string; title?: string }) {
   const qc = useQueryClient();
   const router = useRouter();
@@ -241,6 +298,13 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
   const [hasHandles, setHasHandles] = useState(false);
   const [cutIn, setCutIn] = useState(0);
   const [cutOut, setCutOut] = useState(0);
+  // Tela final (outro) por clipe: override (null=herda, "none"=removida, id=forçada), o efetivo
+  // (id ou null), o default do projeto, e a biblioteca de opções.
+  const [endOverride, setEndOverride] = useState<string | null>(null);
+  const [endEffective, setEndEffective] = useState<string | null>(null);
+  const [projectEnd, setProjectEnd] = useState<string | null>(null);
+  const [endScreens, setEndScreens] = useState<EndScreenOption[]>([]);
+  const [endBusy, setEndBusy] = useState(false);
   const didSeekInitial = useRef(false);
 
   const editable = data?.editable ?? false;
@@ -289,6 +353,10 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
       setCutIn(0);
       setCutOut(0);
     }
+    setEndOverride(data.end_screen ?? null);
+    setEndEffective(data.end_screen_effective ?? null);
+    setProjectEnd(data.project_end_screen ?? null);
+    setEndScreens(data.end_screens ?? []);
   }, [data]);
 
   // Aviso nativo do navegador ao recarregar / fechar a aba / sair pra fora do app
@@ -570,6 +638,25 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
     }
   }
 
+  // Liga/desliga a tela final POR CLIPE (ação imediata, fora do Salvar geral: rota dedicada que
+  // não re-queima a legenda). O backend já invalida o cache do anexo; refaz no próximo play.
+  async function applyEndScreen(value: string | null) {
+    setEndBusy(true);
+    try {
+      const r = await api.putClipEndScreen(clipId, value);
+      setEndOverride(r.end_screen ?? value);
+      setEndEffective(r.end_screen_effective ?? null);
+      toast.success(
+        (r.end_screen_effective ? "Tela final ligada" : "Tela final removida") +
+          " (re-renderiza no próximo play).",
+      );
+    } catch (e) {
+      toast.error((e as Error)?.message || "Falha ao atualizar a tela final.");
+    } finally {
+      setEndBusy(false);
+    }
+  }
+
   async function save() {
     // Monta um array limpo {start,end,text}, em ordem cronologica, sem o _id de cliente.
     const out: Segment[] = [];
@@ -740,6 +827,14 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
                 onChange={patchStyle}
                 onReset={resetStyle}
               />
+              <EndScreenControl
+                options={endScreens}
+                effectiveId={endEffective}
+                override={endOverride}
+                projectDefault={projectEnd}
+                busy={endBusy}
+                onChange={applyEndScreen}
+              />
             </div>
 
             <PreviewStage
@@ -796,6 +891,9 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
             hasHandles={hasHandles}
             cutIn={cutIn}
             cutOut={cutOut}
+            endScreenLabel={
+              endEffective ? (endScreens.find((o) => o.id === endEffective)?.label ?? "Tela final") : null
+            }
             onSeek={seek}
             onPlayPause={togglePlay}
             onSelect={setSelectedId}

@@ -65,6 +65,10 @@ def init_db() -> None:
         # Frame real do projeto (thumbnail do card). NULL = sem frame: jobs antigos
         # degradam pra capa generativa no front, sem quebrar.
         _ensure_column(conn, "jobs", "thumbnail_key", "TEXT")
+        # Tela final PADRAO do projeto (id da tela na biblioteca, ex.: "clubcast"). NULL = nenhuma
+        # (a marca so entra nos projetos que o usuario escolher; nao estampa cliente errado). Os
+        # clipes herdam isto, com override por clipe em clip_captions.end_screen.
+        _ensure_column(conn, "jobs", "end_screen", "TEXT")
         # Índices: list_jobs filtra por dono e ordena por created_at; count_active e
         # reap_stale filtram por status. Baratos e ajudam conforme o histórico cresce.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs(user_email, created_at)")
@@ -129,6 +133,11 @@ def init_clip_captions() -> None:
         # demanda no servidor (o WebAudio do navegador e bloqueado pelo CORS do S3). NULL = ainda
         # nao gerado (a 1a abertura do clipe no editor gera e cacheia aqui).
         _ensure_column(conn, "clip_captions", "waveform", "TEXT")
+        # Tela final do clipe (OVERRIDE sobre o default do projeto, jobs.end_screen):
+        #   NULL   = herda o default do projeto;
+        #   "none" = o usuario removeu a tela final NESTE clipe (mesmo que o projeto tenha uma);
+        #   "<id>" = forca uma tela especifica neste clipe (mesmo sem default no projeto).
+        _ensure_column(conn, "clip_captions", "end_screen", "TEXT")
 
 
 def init_clip_music() -> None:
@@ -432,6 +441,26 @@ def set_clip_waveform(clip_id: str, waveform_json) -> None:
         conn.execute(
             "UPDATE clip_captions SET waveform = ?, updated_at = ? WHERE clip_id = ?",
             (waveform_json, _now(), clip_id),
+        )
+
+
+def get_clip_end_screen(clip_id: str):
+    """Override da tela final do clipe: None (herda o projeto), "none" (removida neste clipe) ou
+    "<id>" (forca uma tela especifica neste clipe)."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT end_screen FROM clip_captions WHERE clip_id = ?", (clip_id,)
+        ).fetchone()
+        return row["end_screen"] if row else None
+
+
+def set_clip_end_screen(clip_id: str, value) -> None:
+    """Grava o override da tela final do clipe ("none" pra remover, "<id>" pra forcar uma, None pra
+    voltar a herdar do projeto). Só atualiza a coluna (a linha já existe pra clipe editável)."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE clip_captions SET end_screen = ?, updated_at = ? WHERE clip_id = ?",
+            (value, _now(), clip_id),
         )
 
 

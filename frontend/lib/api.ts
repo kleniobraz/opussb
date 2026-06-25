@@ -6,6 +6,7 @@ import type {
   Captions,
   CaptionStyle,
   Clip,
+  EndScreenOption,
   JobStatus,
   LoginResponse,
   Me,
@@ -181,6 +182,14 @@ export const reprocess = (id: string, params: Record<string, unknown>) =>
 export const downloadAllUrl = (id: string) =>
   "/api/projects/" + encodeURIComponent(id) + "/download_all";
 
+// Tela final padrão do projeto: null = nenhuma, "<id>" = uma da biblioteca. Os clipes herdam.
+export const putProjectEndScreen = (id: string, endScreen: string | null) =>
+  request("/api/projects/" + encodeURIComponent(id) + "/end_screen", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ end_screen: endScreen }),
+  }).then((r) => asJson<{ ok?: boolean; end_screen?: string | null }>(r));
+
 // ── Editor: legenda + musica ────────────────────────────────────────────────
 export const getCaptions = (id: string) =>
   getJson<Captions>("/api/clips/" + encodeURIComponent(id) + "/captions");
@@ -201,6 +210,19 @@ export const putCaptions = (
       ...(cut ? { in: cut.in, out: cut.out } : {}),
     }),
   }).then((r) => asJson<{ ok?: boolean }>(r));
+
+// Biblioteca de telas finais disponíveis (id + rótulo).
+export const getEndScreens = () =>
+  getJson<{ end_screens: EndScreenOption[] }>("/api/end_screens");
+
+// Override da tela final do clipe: null = herda o projeto, "none" = remove, "<id>" = força. Não
+// re-queima a legenda (só refaz o anexo na próxima abertura).
+export const putClipEndScreen = (id: string, endScreen: string | null) =>
+  request("/api/clips/" + encodeURIComponent(id) + "/end_screen", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ end_screen: endScreen }),
+  }).then((r) => asJson<{ ok?: boolean; end_screen?: string | null; end_screen_effective?: string | null }>(r));
 
 export function uploadMusic(id: string, file: File, volume?: number): Promise<{ music?: Music }> {
   const fd = new FormData();

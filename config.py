@@ -66,6 +66,19 @@ BURN_NICE: int = int(os.environ.get("BURN_NICE", "15"))                       # 
 THUMB_CONCURRENCY: int = int(os.environ.get("THUMB_CONCURRENCY", "2"))
 THUMB_QUEUE_TIMEOUT: float = float(os.environ.get("THUMB_QUEUE_TIMEOUT", "20"))
 
+# Tela final (outro) anexada ao fim do clipe sob demanda. Escopo POR PROJETO (jobs.end_screen =
+# id da tela ou NULL=nenhuma) com override por clipe (clip_captions.end_screen: NULL herda, "none"
+# remove, "<id>" forca). Default do projeto = NULL: a marca so entra nos projetos que o usuario
+# escolher (nao estampa cliente errado). Biblioteca = id -> {chave no S3, rotulo}. O anexo e
+# concat-copy com o outro re-encodado pra CASAR os params do clipe (validado empiricamente:
+# concat-copy cru corrompe os timestamps com fps diferente; concat filter explode em frames
+# duplicados sem normalizar fps; casar so o outro e concat-copy do longo e o caminho certo).
+END_SCREEN_PREFIX: str = "assets/end_screens/"
+END_SCREENS: dict = {
+    "clubcast": {"key": END_SCREEN_PREFIX + "clubcast.mp4", "label": "Clubcast (Carbone)"},
+}
+END_SCREEN_TIMEOUT: int = int(os.environ.get("END_SCREEN_TIMEOUT", "120"))  # teto do ffmpeg do anexo (s)
+
 # Sobra (handles) cortada de cada lado do clipe, em segundos. O clip_NN_base.mp4 passa a ser
 # a janela [start-H, end+H] (clamped ao vídeo) reenquadrada, e o editor abre/fecha o corte
 # dentro dessa sobra (ajuste fino quando a IA erra o ponto de corte). 0 desliga (corte exato,

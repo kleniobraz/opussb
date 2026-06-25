@@ -30,10 +30,18 @@ de API) e a memória do projeto (`frontend-stack-decision`).
   implementado ainda): o **overhaul de usabilidade do editor (§20)** + a Fase 1 do crop por keyframe
   (BACKEND §24), ambos a serem feitos em STAGING (decisão do dono). O reframe por GEOMETRIA (anti-vazio
   multicam) está em BACKEND §24, e o estado atual + próximos passos em BACKEND §25.
-- **Falta (pendente):** overhaul de usabilidade do editor (§20, próximo passo = Fase 0: dores + staging);
-  waveform/filmstrip reais (bloqueados por CORS do S3 hoje, ver §20 Fase 2); remover a SPA `static/`
-  depois de alguns dias de cutover validado; guarda do botão Voltar do *navegador* (popstate) no editor
-  (ver §7 e §9).
+- **Onda 2026-06-25 (em produção, §21):** painel da transcrição **para de seguir o vídeo ao editar**;
+  diálogo do clipe **maior** + **pausa o card ao abrir** (fim de 2 vídeos juntos); projetos com **poster
+  real por clipe** + **"Ver mais"** + **loading lazy**; e a **waveform REAL** na camada de áudio do editor.
+  Mais a **legenda sincronizada** (tempo por palavra, BACKEND §26). **Editor estilo OpusClip:** decisão
+  fechada (§22).
+- **Tela final CLUBCAST (§23 / BACKEND §29): FEITA no código (front + back), testada + e2e, escopo POR
+  PROJETO** (default nenhuma; liga por projeto; removível por clipe; entra em todo entregável). **Falta só
+  o DEPLOY** (`next build` + restart `opussb-web` + restart `opussb`, juntos), bloqueado até o dono autorizar.
+- **Falta (pendente):** **deployar a tela final** (acima); o **editor estilo OpusClip** (§22, decidido, em
+  STAGING); **filmstrip de vídeo real** no editor (mesma ideia sob demanda do poster/waveform, adiado pelo
+  dono); remover a SPA `static/`; popstate (botão Voltar do navegador) no editor (§7/§9). A **waveform deixou
+  de ser pendência** (§21). Estado completo + git em **BACKEND §30**.
 
 ---
 
@@ -586,3 +594,80 @@ backend com backup + `active_jobs=0`.
 
 > **STATUS: PLANO. Nada implementado.** Próximo passo concreto quando o dono retomar: **Fase 0** (fixar as
 > dores específicas + montar o staging). As fases 1-5 dependem do output da Fase 0 (a priorização pode mudar).
+>
+> **ATUALIZAÇÃO 2026-06-25:** a Fase 0 ACONTECEU (auditoria + dores fixadas com o dono + staging montado como
+> git worktree `/opt/opussb-staging`). Vários itens da Fase 1/2 já foram entregues fora do plano original (§21:
+> painel para de seguir o vídeo, waveform real). A direção do editor mudou pra OpusClip texto-corrido (§22).
+> Onde §20 divergir de §21-23, **valem as §21-23** (mais recentes).
+
+---
+
+## 21. Onda de ajustes 2026-06-25 (deployada em produção)
+
+Tudo via `npm run build` + restart do `opussb-web` (e restart `opussb` pros backends), `active_jobs=0`,
+com backup. Backend correspondente: BACKEND §26-28. Commits LOCAIS no `master`, **NÃO pushados** (BACKEND §30).
+
+- **Painel da transcrição para de seguir o vídeo ao editar** (`components/editor/transcript-panel.tsx`): o
+  auto-scroll do karaokê (`scrollIntoView`) agora é guardado quando o foco está num campo
+  (textarea/input/contentEditable), então não "puxa" a tela no meio da correção. Resolve o "saco de corrigir
+  legenda lá" / "painel fica acompanhando o vídeo". Commit `9bae09e`.
+- **Diálogo do clipe maior + fim de 2 vídeos juntos** (`clip-player-dialog.tsx`, `clip-video.tsx`,
+  `clip-card.tsx`): `ClipVideo` ganhou prop **`paused`**; o card passa `paused={open}` pra pausar quando o
+  diálogo abre (antes tocavam os dois). O diálogo dimensiona o vídeo pela **altura** (`h-[68vh] max-h-[620px]
+  w-auto`, layout centralizado, modal 880 -> 560). Commit `891b7b3`.
+- **Projetos: poster por clipe + "Ver mais" + lazy** (`clip-video.tsx`, `clip-card.tsx`, `clip-grid.tsx`,
+  `project-card.tsx`, `brand.css`): `ClipVideo` ganhou prop **`poster`** (1 frame real enquanto idle, via rota
+  `/api/clips/<id>/thumb`, BACKEND §27) em vez do card preto. `ClipGrid` ganhou **"Ver mais"** (`PAGE_SIZE=9`,
+  client-side, reseta na busca/filtro) pra não renderizar/baixar poster de todos de uma vez. `loading="lazy"`
+  nas thumbs do projeto e nos posters. `.clip-poster`/`.clip-more` em brand.css. Commit `cda4dcc`.
+- **Editor: camada de ÁUDIO real** (`hooks/use-waveform.ts`, `editor/clip-editor.tsx`): `use-waveform` passou
+  a **buscar a rota `/api/clips/<id>/waveform`** (MESMA ORIGEM; o WebAudio do navegador era bloqueado por CORS
+  do S3) e o `clip-editor` chama `useWaveform(editable ? clipId : null)` (gera só ao abrir aquele clipe). A
+  faixa de áudio deixou de ser neutra. Backend §28. Commit `b1e7f07`. (O **filmstrip de VÍDEO segue neutro**;
+  mesma ideia sob demanda fica pra depois, decisão do dono.)
+
+## 22. Editor estilo OpusClip: DECISÃO + plano (2026-06-25) [refina §20]
+
+Pedido do dono (mostrou prints do OpusClip): a transcrição vira **texto corrido** (não a lista de
+linhas-com-relógio de hoje), com **palavra acesa ao vivo** (karaokê por palavra) e **pausas inline** (pílulas
+tipo `0.22s`). Decisão fechada nesta sessão (pesquisa + painel multi-lente + probe real do Whisper):
+- **RE-SKIN, não rewrite:** troca o `transcript-panel.tsx` por um bloco de texto corrido onde palavras são
+  spans, mantendo o MESMO modelo `{start,end,text}` por baixo (o `save()` re-serializa pro schema; o backend
+  `_validate_segments` descarta chave que não seja start/end/text).
+- **Tempo de PALAVRA REAL** (`clip_words`, BACKEND §26), nunca interpolação (enganaria justo no ponto que o
+  dono mostrou).
+- **"Remover pausa / jump-cut" = v2** (custo: corte não-linear + re-render, ideal na GPU). FORA do v1.
+- **Em STAGING** (worktree `/opt/opussb-staging`). A timeline (faixas) continua na visão nova, então §21
+  (waveform) e a tela final (§23) não são retrabalho.
+- Aberto (gate): karaokê palavra-a-palavra no EXPORT (libass `\k`) muda `captions.py`; decidir se entra.
+
+## 23. Tela final (CLUBCAST) no editor — FEITO no código, deploy pendente de OK (2026-06-25)
+
+4a camada do editor (vídeo / áudio / legenda / **tela final**): um bloco de ~5s no fim. **Decisão do dono
+(esta sessão): escopo POR PROJETO** (a Clubcast é do cliente Carbone; não existe campo de cliente, então
+ligar global estamparia clipe de qualquer cliente). Então: a tela final é o **padrão do projeto** (default
+nenhuma), os clipes **herdam**, e é **removível/forçável por clipe** no editor. Entra em **todo entregável**
+(player, baixar, exportar com E sem legenda). Mecânica de render + backend: **BACKEND §29**.
+
+**FEITO (front, `tsc --noEmit` limpo):**
+- **`lib/types.ts`**: `EndScreenOption`; `Captions` ganhou `end_screen` (override do clipe: null/"none"/id),
+  `end_screen_effective` (o que será anexado), `project_end_screen` (default do projeto) e `end_screens`
+  (biblioteca); `Project` ganhou `end_screen`.
+- **`lib/api.ts`**: `getEndScreens`, `putClipEndScreen` (rota dedicada, não re-queima a legenda),
+  `putProjectEndScreen`.
+- **Editor (`components/editor/clip-editor.tsx`)**: componente `EndScreenControl` (no painel, ao lado de
+  Música/Estilo): botão **Adicionar/Remover** + nota do estado (herda do projeto / removida neste clipe /
+  definida neste clipe). Ação **imediata** (`putClipEndScreen`, fora do Salvar geral; re-renderiza no
+  próximo play). Passa o rótulo efetivo pra timeline.
+- **Timeline (`components/editor/editor-timeline.tsx`)**: 4a trilha `editor-track--end` (só visual,
+  `pointer-events:none`, não mexe no scrub/trim): um bloco verde-água ancorado no fim do corte indicando
+  a tela final, ou "sem tela final".
+- **Projeto (`app/(app)/projetos/[id]/page.tsx`)**: seletor **"Tela final" (Nenhuma / Clubcast)** que grava
+  o padrão do projeto (`putProjectEndScreen`) e invalida `["project",id]` + `["captions"]` (editores abertos
+  releem a herança). Só aparece se a biblioteca (`getEndScreens`) tiver opções.
+- **`app/brand.css`**: `.editor-track--end`/`.editor-end-block`/`.editor-end-empty`/`.editor-endscreen-note`
+  e `.project-endscreen*`.
+
+**FALTA:** só o **DEPLOY** (`next build` + restart `opussb-web`, junto com o restart do `opussb` do backend),
+bloqueado até o dono autorizar. Nada commitado/pushado (regra 9). Depois: ligar a tela final nos projetos da
+Carbone pelo seletor.

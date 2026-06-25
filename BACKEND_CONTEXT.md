@@ -40,6 +40,8 @@ Trabalha-se **direto na VPS de produção** em `/opt/opussb`.
 10. **Testes nunca tocam dados reais.** Fabrique jobs/usuários com prefixo `TEST` e
     limpe tudo no fim (S3 + banco + usuário).
 
+11. **Nunca comece um chat usando inglês** Inglês apenas para aplicações necessárias em sistema, bash ou qualquer coisa dessa natureza, mas para conversar com Klenio e mostrar o que está acontecendo, nunca usar inglês, apenas se ele disser "fale em inglês comigo".    
+
 ---
 
 ## 2. Infraestrutura
@@ -919,3 +921,131 @@ corte input-seek (§21), reframe na GPU (§20-21), e a rotação do token Docker
    (§24) e todo o trabalho de editor serão feitos em STAGING primeiro, NÃO em produção.
 5. **Pendências antigas que seguem:** `reprocess` (§9), waveform/filmstrip reais (CORS no S3 ou server-side, ver
    FRONTEND §20 Fase 2), atualizar `ultralytics` (achado de RCE, §14), parar/blindar o `static/` legado (§14).
+
+## 26. Legenda ancorada no tempo por PALAVRA (word_timestamps) (2026-06-25)
+
+Conserta a queixa do dono ("legenda adiantada, nao respeita a fala"). Causa: usavamos so tempo por
+FRASE (SRT) + reparticao char-proporcional (`_layout_segment`), entao a legenda entrava antes da fala
+(pior em clipe que comeca no meio de uma frase: o metodo antigo jogava as palavras ja faladas antes da
+janela no inicio do clipe).
+
+**DESCOBERTA CHAVE (probe real, ver memoria `whisper-word-timestamps`):** o worker Whisper do RunPod
+(`RUNPOD_ENDPOINT_ID=fczh1t4sx02j1s`, model turbo) JA devolve `output.word_timestamps` (lista plana
+`{start,end,word}`), de graca, e o N8N DESCARTAVA (so repassava `output.transcription`, o SRT). O
+`segments[].words` por segmento NAO existe nesse worker; o tempo por palavra so vem no top-level
+`output.word_timestamps`. A gente ja manda `input.word_timestamps=true` no "Submit RunPod Job".
+
+- **`captions.py`**: `words_for_clip(words, srt_text, clip_start, clip_end, max_gap=0.6)` monta os
+  eventos ancorados na PALAVRA real (quebra por MAX_LINE_CHARS, por fronteira de frase do SRT, e por
+  pausa > max_gap). Modo DUAL: sem words retorna [] e o chamador cai no `segments_for_clip` (sem
+  regressao). `clip_words_window(words, clip_start, clip_end)` = palavras CRUAS relativas a janela
+  (pro editor word-level). Helpers `_phrase_bounds`/`_phrase_index_at`.
+- **`processor.py`** (`run_thread2`): no INICIO da thread2 (logo apos `transcript`), busca o
+  `word_timestamps` via `runpod_client.fetch_whisper_output(job["runpod_job_id"])` (o N8N ja PATCHa o
+  runpod_job_id pra ca). RETENCAO do RunPod e CURTA (job de minutos vivo; de 2 dias da 404), por isso
+  busca cedo. Best-effort: falha -> metodo por frase. Ao gravar, usa `words_for_clip` se ha words,
+  senao `segments_for_clip`; e guarda `clip_words` por clipe.
+- **`runpod_client.py`**: `fetch_whisper_output(runpod_job_id)` (GET /status no endpoint Whisper; output
+  dict se COMPLETED, senao None; 404 -> None; nunca levanta).
+- **`db.py`**: coluna aditiva `clip_captions.words` (JSON, relativo a janela) + get/set_clip_words.
+- A QUEIMA nao mudou (`build_ass_from_segments` so recebe segmentos melhor cronometrados). Vale pra
+  clipes NOVOS (antigos mantem o char-proporcional; backfill = reprocessar ou re-submeter o audio que
+  persiste no S3). Validado: probe + `test_words_for_clip` + BURN real frame-a-frame. **Commit `8f4378c`
+  (local, NAO pushado). Deployado (backup + restart opussb, active_jobs=0).**
+
+## 27. Poster por clipe (rota /thumb) (2026-06-25)
+
+Pro card do clipe nao ficar PRETO antes do play (a queima/legenda continua so no play).
+- **`GET /api/clips/<id>/thumb`** (`app.py`): 302 pro `clip_NN_thumb.jpg` cacheado no S3; gera na 1a vez
+  extraindo 1 FRAME da base com SEEK POR RANGE (`-ss <in_point+1> -i <presigned>`, NAO baixa o video
+  todo, ~2-3s), sob semaforo PROPRIO `_thumb_sem` (`config.THUMB_CONCURRENCY=2`, `THUMB_QUEUE_TIMEOUT=20`)
+  + lock por clipe + nice/threads. `_thumb_key_for` deriva a chave (cobre `_base.mp4` e clipe antigo).
+  Best-effort: sem slot/falha -> 404 (card cai no fundo). `_clip_objects` passa `thumbnail_url` por clipe.
+- e2e validado (1a ~3s gera+302+cache, 2a 0,12s). **Commit `cda4dcc` (local). Deployado.**
+
+## 28. Waveform por clipe (rota /waveform) (2026-06-25)
+
+A "camada de audio" do editor (era neutra por CORS do S3).
+- **`GET /api/clips/<id>/waveform`** (`app.py`): devolve JSON `{peaks:[0..1]}` (NAO 302 -> tem que ser
+  MESMA ORIGEM, senao o fetch CORS-bloqueia no S3 igual antes). Gera no servidor (`_compute_peaks`:
+  ffmpeg -> PCM mono 8kHz -> 400 buckets via `array`), cacheia em `clip_captions.waveform`. Reusa
+  `_thumb_sem` + nice. ~3,6s na 1a, instantaneo depois. Best-effort: falha -> `{peaks:[]}`.
+- **`db.py`**: coluna `clip_captions.waveform` + get/set_clip_waveform.
+- Front: `use-waveform.ts` busca essa rota; `clip-editor` chama `useWaveform(editable ? clipId : null)`.
+- e2e validado (1a 4,2s, 2a 0,004s cache). **Commit `b1e7f07` (local). Deployado.**
+
+## 29. Tela final / outro (CLUBCAST) — FEITO no codigo, deploy pendente de OK (2026-06-25)
+
+Anexa uma tela final (.mp4 ~5s) ao fim do clipe. "Dividir" (cortar trechos do meio) DESCARTADO por ora.
+Asset real (subido pelo dono): `/opt/opussb/video/TELA FINAL CLUBCAST.mp4` (4,59s, 1080x1920, h264
+yuv420p, 24000/1001 fps, aac 48k), **seedado no S3 em `assets/end_screens/clubcast.mp4`** (binario NAO
+commitado).
+
+**DECISAO DO DONO (esta sessao):** escopo **POR PROJETO** (nao global): a marca Clubcast e do cliente
+Carbone, e nao ha campo de cliente no modelo, entao default-on-global estamparia clipe de qualquer
+cliente. Solucao: `jobs.end_screen` = tela padrao do projeto (NULL=nenhuma), os clipes herdam, com
+override por clipe (`clip_captions.end_screen`: NULL=herda, "none"=removida, "<id>"=forcada). Default
+global = NULL: nada muda em producao ate alguem ligar a tela num projeto. E entra em **TODO entregavel**
+(player, "Baixar", "Baixar todos", "Exportar com" E "sem legenda").
+
+**MECANICA (re-validada empiricamente esta sessao, ver scratchpad/validate_endscreen.sh):** concat-copy
+CRU corrompe os timestamps com fps diferente (no teste, final 19,6s em vez de 12,6); concat FILTER
+explode em frames duplicados sem normalizar fps (descartado). O caminho certo: **re-encodar SO os ~5s do
+outro pra CASAR os params reais do clipe** (fps + `-video_track_timescale` + `-ar`/`-ac`, ~0,7s) e
+**concat-copy do clipe longo** (sem re-encodar). Resta 1 warning de DTS no audio que o ffmpeg
+auto-corrige; o final decodifica limpo (validado).
+
+**FEITO (codigo, testes verdes, e2e real com cleanup):**
+- `db.py`: `jobs.end_screen` (default do projeto) + `clip_captions.end_screen` (override do clipe,
+  semantica de heranca) + get/set_clip_end_screen.
+- `config.py`: `END_SCREENS` (biblioteca id->{key,label}; hoje so `clubcast`), `END_SCREEN_PREFIX`,
+  `END_SCREEN_TIMEOUT`.
+- `app.py`: `_resolve_end_screen_id` (override do clipe > default do projeto), `_endscreen_key`,
+  `_probe_av_signature`, `_ensure_matched_outro` (casa o outro aos params do clipe, cacheia no S3 por
+  assinatura em `assets/end_screens/_matched/<id>_<sig>.mp4`), `_append_end_screen` (concat-copy +
+  faststart), `_produce_endscreen` (sob o `_burn_sem`, re-check do final, degrada honesto), `_serve_clip`
+  (302 pro `<content>_es.mp4`, anexando a tela; falha -> serve content sem tela), `_ensure_burn`
+  (extraido do `clip_video`: garante o content e SEMPRE libera o semaforo antes do anexo, evitando
+  deadlock). `_invalidate_cap` agora inclui os finais `_*_es.mp4`; `_invalidate_endscreen` apaga so os
+  finais (toggle nao re-queima a legenda). Rotas: `GET /api/end_screens`, `PUT /api/clips/<id>/end_screen`,
+  `PUT /api/projects/<id>/end_screen`; `end_screen`/`end_screen_effective`/`project_end_screen`/`end_screens`
+  no `GET /captions`; `end_screen` exposto no projeto.
+- `test_backend.py`: `test_end_screen` (chave, heranca/override, invalidacao novo+antigo, todas as rotas).
+- E2e real (job TEST, S3+ffmpeg, cleanup total): /video=cap_es dur=base+outro decode limpo + frame
+  Clubcast no fim; /video?nocap=1=base_es; matched cacheado; toggle 'none' serve sem tela; herda de volta.
+
+**FALTA:** so o **DEPLOY** (restart `opussb`), bloqueado ate o dono autorizar (backup ja feito em
+`/opt/opussb_backups/*-20260625-183122.*`, active_jobs=0). Front correspondente FEITO (ver FRONTEND §23),
+falta `next build` + restart `opussb-web` (junto). Nada commitado/pushado ainda (regra 9).
+
+## 30. Estado atual e proximos passos (fim da sessao 2026-06-25) [SUPERSEDE §25]
+
+Producao saudavel (`active_jobs=0`, opussb + opussb-web ativos, https://sbclips.space).
+
+**DEPLOYADO nesta sessao** (tudo em `master` LOCAL): §26 legenda por palavra (`8f4378c`), §27 poster /thumb
++ projetos "Ver mais" + loading lazy (`cda4dcc`), §28 waveform (`b1e7f07`), e 2 fixes de front: painel para
+de seguir o video ao editar (`9bae09e`), dialogo do clipe maior + pausa o card ao abrir (`891b7b3`).
+Ver FRONTEND §21.
+
+**GIT (IMPORTANTE):** `origin/master` em `9a9b01e` (3 commits de DOC, pushados no inicio da sessao).
+`master` LOCAL esta **5 commits A FRENTE, SEM PUSH** (regra 9): `9bae09e`, `8f4378c`, `891b7b3`, `cda4dcc`,
+`b1e7f07`. **Pushar quando o dono autorizar.** Ha tambem WIP NAO commitado no working tree: a **tela final
+CLUBCAST inteira** (§29: `db.py`, `config.py`, `app.py`, `test_backend.py` + os 4 arquivos do front) + estes
+docs. Tudo testado (`test_backend.py` verde) e validado por e2e real, **mas NAO deployado** (restart
+bloqueado ate o dono autorizar).
+
+**STAGING:** git worktree em `/opt/opussb-staging` (branch `staging`, em `8f4378c`, atras do master) pro
+futuro editor OpusClip. Tem um `.env` copiado (gitignored). Rebaseline com `git -C /opt/opussb-staging merge master`
+antes de comecar o editor.
+
+**PROXIMOS PASSOS:**
+1. **Tela final CLUBCAST (§29): FEITA no codigo + testes + e2e; falta so o DEPLOY** (autorizar o restart do
+   `opussb` + `next build` + restart do `opussb-web`, juntos, com active_jobs=0; backup ja feito). Depois:
+   ligar a tela final NOS PROJETOS DA CARBONE (seletor na pagina do projeto) e validar um clipe real
+   (verificar a junção do audio num clipe vindo do reframe, nao so no base sintetico do e2e).
+2. **Editor estilo OpusClip** (FRONTEND §22): texto corrido + karaoke por palavra + pilulas de pausa, como
+   RE-SKIN (nao rewrite), em STAGING, com o `clip_words` que ja guardamos. Decisao fechada nesta sessao
+   (painel multi-lente + probe). "Remover pausa/jump-cut" = v2.
+3. **Push dos 5 commits + o commit da tela final** quando autorizado.
+4. Pendencias antigas: `reprocess`, filmstrip real (mesma ideia sob demanda do /thumb e /waveform),
+   ultralytics RCE, static/ legado.

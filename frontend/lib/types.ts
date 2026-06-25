@@ -76,7 +76,14 @@ export interface Project {
   status?: string;
   thumbnail_url?: string | null;
   owner_email?: string | null; // quem subiu o vídeo (biblioteca compartilhada); null = legado
+  end_screen?: string | null; // tela final padrão do projeto (id) ou null = nenhuma; clipes herdam
   clips?: Clip[];
+}
+
+// Uma opção da biblioteca de telas finais (outro anexado ao fim do clipe).
+export interface EndScreenOption {
+  id: string;
+  label: string;
 }
 
 export interface Stats {
@@ -131,6 +138,13 @@ export interface Captions {
   caption_y?: number | null; // posição vertical (fração 0..1); null = padrão SB
   style?: CaptionStyle | null; // estilo da fonte; null = padrão SB
   bounds?: CaptionBounds | null; // handles do corte; null = clipe sem margem (legado)
+  // Tela final (outro) anexada ao fim. end_screen = override do clipe (null=herda, "none"=removida,
+  // "<id>"=forçada); end_screen_effective = o que de fato será anexado (id ou null após herança);
+  // project_end_screen = default do projeto; end_screens = biblioteca de opções.
+  end_screen?: string | null;
+  end_screen_effective?: string | null;
+  project_end_screen?: string | null;
+  end_screens?: EndScreenOption[];
 }
 
 export interface Preferences {

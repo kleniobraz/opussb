@@ -891,6 +891,8 @@ def _project_from_job(job):
         "duration": None,
         "captions": bool(job.get("captions", 1)),
         "owner_email": job.get("user_email"),
+        # Tela final padrão do projeto (id em config.END_SCREENS) ou null = nenhuma. Os clipes herdam.
+        "end_screen": job.get("end_screen"),
     }
 
 
@@ -914,6 +916,32 @@ def get_project(job_id):
     proj = _project_from_job(job)
     proj["clips"] = _clip_objects(job_id, job["result_urls"], _thumb_url(job)) if job["result_urls"] else []
     return jsonify(proj)
+
+
+@app.route("/api/projects/<job_id>/end_screen", methods=["PUT"])
+@login_required
+def project_end_screen_put(job_id):
+    """Define a tela final PADRÃO do projeto: body {end_screen: null|"<id>"}. null = nenhuma (default).
+    Os clipes herdam (com override por clipe em /clips/<id>/end_screen). Invalida os finais (_es) de
+    todos os clipes do projeto pra a próxima abertura refazer o anexo (o content cap/trim/base segue
+    válido). Biblioteca compartilhada: qualquer usuário ativo configura."""
+    job = db.get_job(job_id)
+    if not job:
+        return jsonify({"error": "Projeto não encontrado."}), 404
+    data = request.get_json(silent=True) or {}
+    val = data.get("end_screen")
+    if val is not None and val not in config.END_SCREENS:
+        return jsonify({"error": "Tela final inválida."}), 400
+    db.update_job(job_id, end_screen=val)
+    try:
+        items = json.loads(job.get("result_urls") or "[]")
+    except (TypeError, ValueError):
+        items = []
+    for it in items:
+        key = it if isinstance(it, str) else (it or {}).get("key")
+        if key:
+            _invalidate_endscreen(key)
+    return jsonify({"ok": True, "end_screen": val})
 
 
 @app.route("/api/projects/<job_id>/thumb")
@@ -1159,10 +1187,11 @@ def _burn_clip(base_path: str, ass_path, music_path, music_vol, out_path: str,
 
 
 def _invalidate_cap(base_key: str) -> None:
-    """Apaga os derivados renderizados (_cap.mp4 COM legenda e _trim.mp4 do corte sem legenda),
-    idempotente. Chamado quando legenda, música, posição/estilo OU os pontos de corte (in/out)
-    mudam, pra a próxima abertura re-renderizar com o conteúdo novo."""
-    for suffix in ("_cap.mp4", "_trim.mp4"):
+    """Apaga os derivados renderizados (_cap.mp4 COM legenda, _trim.mp4 do corte sem legenda, e os
+    finais com tela final _*_es.mp4), idempotente. Chamado quando legenda, música, posição/estilo OU
+    os pontos de corte (in/out) mudam, pra a próxima abertura re-renderizar com o conteúdo novo (e a
+    tela final, que vem por cima do content, também precisa ser refeita)."""
+    for suffix in ("_cap.mp4", "_trim.mp4", "_cap_es.mp4", "_trim_es.mp4", "_base_es.mp4"):
         derived = base_key.replace("_base.mp4", suffix)
         if derived == base_key:
             continue
@@ -1172,14 +1201,245 @@ def _invalidate_cap(base_key: str) -> None:
             log.warning("[cache] falha ao invalidar %s: %s", derived, e)
 
 
+def _invalidate_endscreen(base_key: str) -> None:
+    """Apaga SÓ os finais com tela final (_*_es.mp4), idempotente. Chamado quando a escolha de tela
+    final do clipe (ou do projeto) muda, mas o content (cap/trim/base) continua válido: assim o
+    toggle de tela final NÃO re-queima a legenda, só refaz o anexo (barato). Cobre clipe novo
+    (_cap/_trim/_base) e antigo (_9x16)."""
+    keys = set()
+    if base_key.endswith("_base.mp4"):
+        for suffix in ("_cap.mp4", "_trim.mp4", "_base.mp4"):
+            keys.add(_endscreen_key(base_key.replace("_base.mp4", suffix)))
+    else:
+        keys.add(_endscreen_key(base_key))               # clipe antigo (_9x16) só tem o _es direto
+    for k in keys:
+        try:
+            s3_client.delete_object(k)
+        except Exception as e:
+            log.warning("[cache] falha ao invalidar %s: %s", k, e)
+
+
+# ─── Tela final (outro) anexada ao fim do clipe ───────────────────────────────
+# Escopo por projeto (jobs.end_screen) com override por clipe (clip_captions.end_screen). O anexo é
+# concat-copy com o outro RE-ENCODADO pra casar os params do clipe (validado: concat-copy cru
+# corrompe timestamps com fps diferente). Roda no mesmo semáforo da queima (ffmpeg) e degrada
+# honestamente: se qualquer passo falha, serve o clipe SEM tela final (sempre toca).
+
+def _resolve_end_screen_id(job, clip_id):
+    """Tela final efetiva do clipe. Override do clipe tem prioridade: "none" = sem tela; "<id>" =
+    força essa tela; NULL = herda o default do projeto (jobs.end_screen). Retorna um id válido em
+    config.END_SCREENS ou None (sem tela final)."""
+    choice = db.get_clip_end_screen(clip_id)
+    if choice == "none":
+        return None
+    es_id = choice or job.get("end_screen")
+    if es_id and es_id in config.END_SCREENS:
+        return es_id
+    return None
+
+
+def _end_screen_options():
+    """Biblioteca de telas finais pro front (id + rótulo). Ordem estável (dict ordenado)."""
+    return [{"id": k, "label": v.get("label", k)} for k, v in config.END_SCREENS.items()]
+
+
+def _endscreen_key(content_key: str) -> str:
+    """Chave do entregável final (content + tela): clip_NN_cap.mp4 -> clip_NN_cap_es.mp4 (idem _trim
+    e _base, e qualquer .mp4 -> _es.mp4 cobrindo clipe antigo)."""
+    if content_key.endswith("_es.mp4"):
+        return content_key
+    if content_key.endswith(".mp4"):
+        return content_key[:-4] + "_es.mp4"
+    return content_key + "_es.mp4"
+
+
+def _probe_av_signature(path: str):
+    """Params de A/V do content pra casar o outro: {fps_s, timescale, ar, ac} ou None se faltar vídeo
+    OU áudio (sem áudio o concat-copy quebraria por nº de streams diferente -> sem tela final)."""
+    def _probe(stream, entries):
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", stream,
+             "-show_entries", f"stream={entries}", "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, timeout=30,
+        )
+        return r.stdout.split() if r.returncode == 0 else []
+    try:
+        v = _probe("v:0", "r_frame_rate,time_base")
+        a = _probe("a:0", "sample_rate,channels")
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+    if len(v) < 2 or len(a) < 2:
+        return None
+    fps_s = v[0]                              # ex.: "30/1" ou "24000/1001"
+    tb = v[1]                                 # time_base "1/15360"
+    timescale = tb.split("/")[-1] if "/" in tb else "15360"
+    if not fps_s or "/" not in fps_s or fps_s.startswith("0/"):
+        return None
+    try:
+        return {"fps_s": fps_s, "timescale": int(timescale), "ar": int(a[0]), "ac": int(a[1])}
+    except ValueError:
+        return None
+
+
+def _ensure_matched_outro(es_id: str, outro_src_key: str, sig: dict, tmp: str):
+    """Re-encoda o outro pros params do clipe (fps/timescale/áudio) e cacheia no S3 por assinatura.
+    Devolve o path local do outro casado (baixado), ou None em falha. ~0,7s na 1a vez por assinatura,
+    instantâneo depois (raro variar entre clipes do mesmo job)."""
+    sig_str = f"{sig['fps_s']}_{sig['timescale']}_{sig['ar']}_{sig['ac']}".replace("/", "-")
+    matched_key = config.END_SCREEN_PREFIX + f"_matched/{es_id}_{sig_str}.mp4"
+    matched_path = os.path.join(tmp, "matched.mp4")
+    if s3_client.exists(matched_key):
+        s3_client.download_file(matched_key, matched_path)
+        return matched_path
+    src_path = os.path.join(tmp, "outro_src.mp4")
+    s3_client.download_file(outro_src_key, src_path)
+    cmd = ["ffmpeg", "-y", "-i", src_path,
+           "-r", sig["fps_s"], "-video_track_timescale", str(sig["timescale"]),
+           "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+           "-c:a", "aac", "-ar", str(sig["ar"]), "-ac", str(sig["ac"]),
+           "-threads", str(config.BURN_FFMPEG_THREADS), "-movflags", "+faststart", matched_path]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=config.END_SCREEN_TIMEOUT,
+                       preexec_fn=lambda: os.nice(config.BURN_NICE))
+    if r.returncode != 0 or not os.path.exists(matched_path) or os.path.getsize(matched_path) < 1024:
+        log.warning("[endscreen] casar o outro falhou: %s", r.stderr[-300:])
+        return None
+    try:
+        s3_client.upload_file(matched_path, matched_key)   # cacheia pro próximo clipe de mesma assinatura
+    except Exception as e:
+        log.warning("[endscreen] cache do matched outro falhou: %s", e)
+    return matched_path
+
+
+def _append_end_screen(content_path: str, outro_path: str, out_path: str, tmp: str) -> bool:
+    """Concatena content + outro (já casado) por concat-copy (NÃO re-encoda o content, o caro) +
+    faststart. Só funciona porque o outro foi casado aos params do content. Retorna True/False."""
+    list_path = os.path.join(tmp, "concat.txt")
+    with open(list_path, "w", encoding="utf-8") as f:
+        f.write(f"file '{content_path}'\nfile '{outro_path}'\n")
+    cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path,
+           "-c", "copy", "-movflags", "+faststart", out_path]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=config.END_SCREEN_TIMEOUT,
+                       preexec_fn=lambda: os.nice(config.BURN_NICE))
+    if r.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1024:
+        log.warning("[endscreen] concat falhou: %s", r.stderr[-300:])
+        return False
+    return True
+
+
+def _produce_endscreen(content_key: str, es_id: str, final_key: str) -> bool:
+    """Baixa o content, casa o outro, concat-copy [content + outro] -> final_key no S3. Sob o semáforo
+    GLOBAL de queima (ffmpeg pesado-ish; não pode ser chamado com o semáforo já segurado). Retorna
+    True se subiu o final; False em qualquer falha (o chamador serve o content sem tela final)."""
+    es = config.END_SCREENS.get(es_id)
+    if not es:
+        return False
+    if not _burn_sem.acquire(timeout=_BURN_QUEUE_TIMEOUT):
+        log.warning("[endscreen] fila cheia para %s; sem tela final", content_key)
+        return False
+    tmp = None
+    try:
+        if s3_client.exists(final_key):                       # outra thread produziu enquanto esperávamos o slot
+            return True
+        tmp = tempfile.mkdtemp(prefix="es_")
+        content_path = os.path.join(tmp, "content.mp4")
+        s3_client.download_file(content_key, content_path)
+        sig = _probe_av_signature(content_path)
+        if not sig:
+            log.warning("[endscreen] %s sem assinatura A/V (áudio?); sem tela final", content_key)
+            return False
+        matched_path = _ensure_matched_outro(es_id, es["key"], sig, tmp)
+        if not matched_path:
+            return False
+        out_path = os.path.join(tmp, "final.mp4")
+        if not _append_end_screen(content_path, matched_path, out_path, tmp):
+            return False
+        s3_client.upload_file(out_path, final_key)            # só após render local ok
+        return True
+    except Exception as e:
+        log.warning("[endscreen] clip %s falhou (%s); sem tela final", content_key, e)
+        return False
+    finally:
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
+        _burn_sem.release()
+
+
+def _serve_clip(content_key: str, es_id, dl_name):
+    """302 pro entregável do clipe, anexando a tela final (es_id) se houver. Sem es_id, serve o content
+    direto. Com es_id, garante <content>_es.mp4 e serve ele; se o anexo falhar, serve o content sem
+    tela final (o clipe sempre toca). Só pode ser chamado FORA do semáforo de queima (o anexo o
+    adquire)."""
+    if not es_id:
+        return _clip_redirect(content_key, dl_name)
+    final_key = _endscreen_key(content_key)
+    if final_key == content_key:                              # chave sem .mp4 (defensivo)
+        return _clip_redirect(content_key, dl_name)
+    if s3_client.exists(final_key):                           # cache quente do final
+        return _clip_redirect(final_key, dl_name)
+    if _produce_endscreen(content_key, es_id, final_key):
+        return _clip_redirect(final_key, dl_name)
+    return _clip_redirect(content_key, dl_name)               # anexo falhou: degrada (clipe toca)
+
+
+def _ensure_burn(clip_id, base_key, target_key, do_caps, do_music, segments_json,
+                 caption_y, caption_style, music, trim_needed, in_pt, out_pt):
+    """Garante o content_key (queima/trim sob demanda) no S3. Devolve a chave a SERVIR (target_key se
+    renderizou/existe, ou base_key quando não há nada a aplicar), ou None em fallback (servir base SEM
+    tela final). Gerencia o semáforo GLOBAL de queima inteiramente (sempre libera antes de retornar),
+    pra o anexo da tela final (que readquire o semáforo) nunca dar deadlock."""
+    if s3_client.exists(target_key):                          # cache quente
+        return target_key
+    with _clip_burn_lock(clip_id):
+        if s3_client.exists(target_key):                      # outra thread renderizou
+            return target_key
+        if not _burn_sem.acquire(timeout=_BURN_QUEUE_TIMEOUT):
+            log.warning("[burn] fila de queima cheia para %s; servindo base", clip_id)
+            return None                                       # fallback: base sem tela final
+        tmp = None
+        try:
+            tmp = tempfile.mkdtemp(prefix="burn_")
+            base_path = os.path.join(tmp, "base.mp4")
+            out_path = os.path.join(tmp, "out.mp4")
+            s3_client.download_file(base_key, base_path)
+            ass_path = None
+            if do_caps:
+                # A legenda fica na escala da JANELA (mesma do base.mp4). Com o output seek do trim, o
+                # filtro subtitles usa o PTS da janela e o corte/reset do ffmpeg cuida do resto: a
+                # legenda do trecho [in,out] casa frame a frame e a das sobras cai em frames descartados.
+                ass = captions.build_ass_from_segments(json.loads(segments_json), caption_y, caption_style)
+                if ass:
+                    ass_path = os.path.join(tmp, "cap.ass")
+                    with open(ass_path, "w", encoding="utf-8") as f:
+                        f.write(ass)
+            music_path = None
+            if do_music:
+                music_path = os.path.join(tmp, "music" + os.path.splitext(music["music_key"])[1])
+                s3_client.download_file(music["music_key"], music_path)
+            if not ass_path and not music_path and not trim_needed:   # nada a aplicar -> base (com tela final)
+                return base_key
+            burn_in, burn_out = (in_pt, out_pt) if trim_needed else (None, None)
+            _burn_clip(base_path, ass_path, music_path, (music or {}).get("volume"), out_path,
+                       burn_in, burn_out)
+            s3_client.upload_file(out_path, target_key)        # só após render local ok
+            return target_key
+        except Exception as e:
+            log.warning("[burn] clip %s falhou (%s); servindo base", clip_id, e)
+            return None                                        # fallback: base sem tela final
+        finally:
+            if tmp:
+                shutil.rmtree(tmp, ignore_errors=True)
+            _burn_sem.release()
+
+
 @app.route("/api/clips/<path:clip_id>/video")
 @login_required
 def clip_video(clip_id):
     """Entrega o vídeo do clipe via 302 pra URL presignada do S3. Queima a legenda sob demanda
     (cacheada) e, com handles, CORTA a janela em [in_point, out_point]. `?nocap=1` entrega o
     corte SEM legenda (cache separado _trim.mp4), usado pelo "Exportar sem legenda" do editor.
-    Em qualquer falha de queima, faz 302 pra base (o clipe sempre toca) e nunca deixa cache
-    corrompido no S3."""
+    Se o clipe tiver tela final (por projeto ou override do clipe), ela é ANEXADA por cima do
+    entregável (com ou sem legenda). Em qualquer falha, faz 302 pro melhor disponível (o clipe
+    sempre toca) e nunca deixa cache corrompido no S3."""
     job, idx, base_key = _clip_lookup(clip_id)
     want_trim = request.args.get("nocap") in ("1", "true", "yes")
     # ?dl=1: força download (Content-Disposition: attachment, nome amigável) em vez de tocar inline.
@@ -1212,67 +1472,31 @@ def clip_video(clip_id):
     use_caps = bool(job.get("captions", 1)) and bool(segments_json)
     use_music = bool(music and music.get("music_key"))
 
+    es_id = _resolve_end_screen_id(job, clip_id)         # tela final efetiva (id) ou None
+
     if want_trim:
-        # Export sem legenda: corte cru reenquadrado (sem legenda, sem música). Sem trim real,
-        # a base já é o entregável.
+        # Export sem legenda: corte cru reenquadrado (sem legenda, sem música). A tela final ENTRA
+        # aqui também (decisão do dono: em todo entregável), anexada por _serve_clip. Sem trim real,
+        # a base já é o content.
         if not trim_needed:
-            return _clip_redirect(base_key, dl_name)
+            return _serve_clip(base_key, es_id, dl_name)
         target_key = base_key.replace("_base.mp4", "_trim.mp4")
         do_caps = do_music = False
     else:
-        # Sem nada a fazer (clipe antigo, ou novo sem legenda/música e sem trim): serve a base.
+        # Sem queima/trim (clipe antigo, ou novo sem legenda/música e sem trim): o content é a base
+        # (a tela final ainda pode entrar por cima dela).
         if not (is_new and (use_caps or use_music or trim_needed)):
-            return _clip_redirect(base_key, dl_name)
+            return _serve_clip(base_key, es_id, dl_name)
         target_key = cap_key
         do_caps, do_music = use_caps, use_music
 
-    if s3_client.exists(target_key):                     # cache quente
-        return _clip_redirect(target_key, dl_name)
-
-    with _clip_burn_lock(clip_id):
-        if s3_client.exists(target_key):                 # outra thread renderizou enquanto esperávamos
-            return _clip_redirect(target_key, dl_name)
-        # Slot global de queima: garante 1 ffmpeg pesado por vez (protege a VPS da estampida
-        # que derrubava o /health). Se a fila estiver cheia, serve a base SEM legenda em vez
-        # de prender a thread do gunicorn; o clipe sempre toca e a próxima abertura re-tenta.
-        if not _burn_sem.acquire(timeout=_BURN_QUEUE_TIMEOUT):
-            log.warning("[burn] fila de queima cheia para %s; servindo base", clip_id)
-            return _clip_redirect(base_key, dl_name)
-        tmp = None
-        try:
-            tmp = tempfile.mkdtemp(prefix="burn_")
-            base_path = os.path.join(tmp, "base.mp4")
-            out_path = os.path.join(tmp, "out.mp4")
-            s3_client.download_file(base_key, base_path)
-            ass_path = None
-            if do_caps:
-                # A legenda fica na escala da JANELA (mesma do base.mp4). Com o output seek do
-                # trim, o filtro subtitles usa o PTS da janela e o corte/reset do ffmpeg cuida do
-                # resto: a legenda do trecho [in,out] casa frame a frame e a das sobras cai em
-                # frames descartados (validado empiricamente com o ffmpeg da VPS). Sem deslocar.
-                ass = captions.build_ass_from_segments(json.loads(segments_json), caption_y, caption_style)
-                if ass:
-                    ass_path = os.path.join(tmp, "cap.ass")
-                    with open(ass_path, "w", encoding="utf-8") as f:
-                        f.write(ass)
-            music_path = None
-            if do_music:
-                music_path = os.path.join(tmp, "music" + os.path.splitext(music["music_key"])[1])
-                s3_client.download_file(music["music_key"], music_path)
-            if not ass_path and not music_path and not trim_needed:   # nada a aplicar -> base
-                return _clip_redirect(base_key, dl_name)
-            burn_in, burn_out = (in_pt, out_pt) if trim_needed else (None, None)
-            _burn_clip(base_path, ass_path, music_path, (music or {}).get("volume"), out_path,
-                       burn_in, burn_out)
-            s3_client.upload_file(out_path, target_key)   # só após render local ok
-        except Exception as e:
-            log.warning("[burn] clip %s falhou (%s); servindo base", clip_id, e)
-            return _clip_redirect(base_key, dl_name)
-        finally:
-            if tmp:
-                shutil.rmtree(tmp, ignore_errors=True)
-            _burn_sem.release()                          # libera o slot SEMPRE (o acquire acima deu certo)
-    return _clip_redirect(target_key, dl_name)
+    # Garante o content (queima/trim sob demanda) e SÓ DEPOIS anexa a tela final (fora do semáforo
+    # de queima, que o anexo readquire). _ensure_burn devolve None em fallback de queima.
+    content_key = _ensure_burn(clip_id, base_key, target_key, do_caps, do_music, segments_json,
+                               caption_y, caption_style, music, trim_needed, in_pt, out_pt)
+    if content_key is None:                              # fallback da queima: serve a base SEM tela final
+        return _clip_redirect(base_key, dl_name)
+    return _serve_clip(content_key, es_id, dl_name)
 
 
 @app.route("/api/clips/<path:clip_id>/base")
@@ -1550,8 +1774,14 @@ def clip_captions_get(clip_id):
             "in": round(max(0.0, float(window.get("in_point") or 0.0)), 3),
             "out": round(float(window["out_point"]) if window.get("out_point") is not None else win_dur, 3),
         }
+    # Tela final: override do clipe (None/"none"/id), o efetivo após herança, o default do projeto,
+    # e a biblioteca de opções (pro editor montar o toggle/seletor sem outra request).
     return jsonify({"segments": segs, "editable": editable, "music": music_info,
-                    "caption_y": caption_y, "style": style_obj, "bounds": bounds})
+                    "caption_y": caption_y, "style": style_obj, "bounds": bounds,
+                    "end_screen": db.get_clip_end_screen(clip_id),
+                    "end_screen_effective": _resolve_end_screen_id(job, clip_id),
+                    "project_end_screen": job.get("end_screen"),
+                    "end_screens": _end_screen_options()})
 
 
 @app.route("/api/clips/<path:clip_id>/captions", methods=["PUT"])
@@ -1607,6 +1837,34 @@ def clip_captions_put(clip_id):
         db.set_clip_inout(clip_id, in_pt, out_pt)
     _invalidate_cap(base_key)   # próxima abertura re-renderiza com o texto/estilo/corte corrigido
     return jsonify({"ok": True, "segments": segs})
+
+
+@app.route("/api/end_screens")
+@login_required
+def end_screens_list():
+    """Biblioteca de telas finais disponíveis (id + rótulo), pro front montar os seletores."""
+    return jsonify({"end_screens": _end_screen_options()})
+
+
+@app.route("/api/clips/<path:clip_id>/end_screen", methods=["PUT"])
+@login_required
+def clip_end_screen_put(clip_id):
+    """Override da tela final do clipe: body {end_screen: null|"none"|"<id>"}. null = herda o projeto;
+    "none" = remove neste clipe; "<id>" = força essa tela. Invalida só os finais (_es): NÃO re-queima
+    a legenda (o content cap/trim continua válido). Exige clipe editável (tem base re-renderizável)."""
+    job, idx, base_key = _clip_lookup(clip_id)
+    if "_base.mp4" not in base_key:
+        return jsonify({"error": "Este clipe não é editável."}), 409
+    if db.get_clip_captions(clip_id) is None:
+        return jsonify({"error": "Este clipe não tem legenda editável."}), 409
+    data = request.get_json(silent=True) or {}
+    val = data.get("end_screen")
+    if val is not None and val != "none" and val not in config.END_SCREENS:
+        return jsonify({"error": "Tela final inválida."}), 400
+    db.set_clip_end_screen(clip_id, val)
+    _invalidate_endscreen(base_key)
+    return jsonify({"ok": True, "end_screen": val,
+                    "end_screen_effective": _resolve_end_screen_id(job, clip_id)})
 
 
 # ─── Música de fundo do clipe (mixada na queima sob demanda) ──────────────────

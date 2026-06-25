@@ -670,11 +670,121 @@ def test_download_all():
         cc.execute("DELETE FROM users WHERE email = ?", ("dla@test",))
 
 
+def test_end_screen():
+    """Tela final: derivação de chave, resolução por projeto+clipe (herança/override), opções, a
+    invalidação dos finais _es, e as rotas (biblioteca, default do projeto, override do clipe)."""
+    print("[end screen: resolução + invalidação + rotas]")
+    import db
+    import json as _json
+    import s3_client
+    import config
+    from werkzeug.security import generate_password_hash
+
+    config.END_SCREENS.setdefault("clubcast", {"key": "assets/end_screens/clubcast.mp4", "label": "Clubcast"})
+
+    # _endscreen_key: content -> final
+    check(app._endscreen_key("jobs/J/clips/clip_01_cap.mp4") == "jobs/J/clips/clip_01_cap_es.mp4",
+          "_endscreen_key: cap -> cap_es")
+    check(app._endscreen_key("jobs/J/clips/clip_01_base.mp4") == "jobs/J/clips/clip_01_base_es.mp4",
+          "_endscreen_key: base -> base_es")
+    check(app._endscreen_key("jobs/J/clips/clip_01_9x16.mp4") == "jobs/J/clips/clip_01_9x16_es.mp4",
+          "_endscreen_key: clipe antigo -> _es")
+    check(app._endscreen_key("jobs/J/clips/clip_01_cap_es.mp4") == "jobs/J/clips/clip_01_cap_es.mp4",
+          "_endscreen_key: idempotente")
+
+    check("clubcast" in [o["id"] for o in app._end_screen_options()], "biblioteca inclui clubcast")
+
+    # _resolve_end_screen_id: herança (projeto) + override (clipe)
+    db.set_clip_captions("JES:0", _json.dumps([{"start": 0, "end": 1, "text": "x"}]))
+    job_none, job_club = {"end_screen": None}, {"end_screen": "clubcast"}
+    check(app._resolve_end_screen_id(job_none, "JES:0") is None, "sem projeto/sem override -> None")
+    check(app._resolve_end_screen_id(job_club, "JES:0") == "clubcast", "herda o default do projeto")
+    db.set_clip_end_screen("JES:0", "none")
+    check(app._resolve_end_screen_id(job_club, "JES:0") is None, "override 'none' remove mesmo com projeto")
+    db.set_clip_end_screen("JES:0", "clubcast")
+    check(app._resolve_end_screen_id(job_none, "JES:0") == "clubcast", "override força mesmo sem projeto")
+    db.set_clip_end_screen("JES:0", "xxx")
+    check(app._resolve_end_screen_id(job_none, "JES:0") is None, "id desconhecido -> None")
+    db.set_clip_end_screen("JES:0", None)
+
+    # invalidação (monkeypatch do delete_object: sem rede, captura as chaves)
+    deleted = []
+    _orig_del = s3_client.delete_object
+    s3_client.delete_object = lambda k: deleted.append(k)
+    try:
+        app._invalidate_cap("jobs/J/clips/clip_01_base.mp4")
+        check(set(deleted) == {"jobs/J/clips/clip_01_cap.mp4", "jobs/J/clips/clip_01_trim.mp4",
+                               "jobs/J/clips/clip_01_cap_es.mp4", "jobs/J/clips/clip_01_trim_es.mp4",
+                               "jobs/J/clips/clip_01_base_es.mp4"},
+              "_invalidate_cap apaga content (_cap/_trim) + finais _es")
+        deleted.clear()
+        app._invalidate_endscreen("jobs/J/clips/clip_01_base.mp4")
+        check(set(deleted) == {"jobs/J/clips/clip_01_cap_es.mp4", "jobs/J/clips/clip_01_trim_es.mp4",
+                               "jobs/J/clips/clip_01_base_es.mp4"},
+              "_invalidate_endscreen (novo) apaga só os finais _es")
+        deleted.clear()
+        app._invalidate_endscreen("jobs/J/clips/clip_01_9x16.mp4")
+        check(deleted == ["jobs/J/clips/clip_01_9x16_es.mp4"],
+              "_invalidate_endscreen (antigo) apaga só o _9x16_es")
+
+        # rotas
+        db.upsert_user("es@test", generate_password_hash("pw12345678"), must_change=False)
+        db.create_job("JES", "v.mp4", 10, 60, "/x", "es@test")
+        db.update_job("JES", status="done",
+                      result_urls=_json.dumps([{"key": "jobs/JES/clips/clip_01_base.mp4"},
+                                               {"key": "jobs/JES/clips/clip_02_base.mp4"}]))
+        db.set_clip_captions("JES:0", _json.dumps([{"start": 0, "end": 1, "text": "a"}]))
+        c = app.app.test_client()
+        c.post("/api/login", json={"email": "es@test", "password": "pw12345678"})
+
+        r = c.get("/api/end_screens")
+        check(r.status_code == 200 and any(o["id"] == "clubcast" for o in r.get_json()["end_screens"]),
+              "GET /api/end_screens lista clubcast")
+
+        deleted.clear()
+        r = c.put("/api/projects/JES/end_screen", json={"end_screen": "clubcast"})
+        check(r.status_code == 200 and db.get_job("JES").get("end_screen") == "clubcast",
+              "PUT projeto end_screen grava o default")
+        check(any(k.endswith("_es.mp4") for k in deleted), "PUT projeto invalida os finais _es dos clipes")
+        check(c.put("/api/projects/JES/end_screen", json={"end_screen": "naoexiste"}).status_code == 400,
+              "PUT projeto id inválido -> 400")
+        check(c.put("/api/projects/JES/end_screen", json={"end_screen": "none"}).status_code == 400,
+              "PUT projeto não aceita 'none' (só null ou id)")
+        check(c.put("/api/projects/NOPE/end_screen", json={"end_screen": "clubcast"}).status_code == 404,
+              "PUT projeto inexistente -> 404")
+
+        js = c.get("/api/clips/JES:0/captions").get_json()
+        check(js.get("project_end_screen") == "clubcast", "GET /captions expõe default do projeto")
+        check(js.get("end_screen_effective") == "clubcast", "GET /captions: efetivo herda do projeto")
+        check(js.get("end_screen") is None, "GET /captions: override do clipe ainda null")
+        check(any(o["id"] == "clubcast" for o in js.get("end_screens", [])), "GET /captions traz a biblioteca")
+
+        r = c.put("/api/clips/JES:0/end_screen", json={"end_screen": "none"})
+        check(r.status_code == 200 and r.get_json().get("end_screen_effective") is None,
+              "PUT clipe 'none' remove (efetivo None)")
+        check(db.get_clip_end_screen("JES:0") == "none", "override 'none' persistido")
+        r = c.put("/api/clips/JES:0/end_screen", json={"end_screen": None})
+        check(r.status_code == 200 and r.get_json().get("end_screen_effective") == "clubcast",
+              "PUT clipe null volta a herdar (efetivo clubcast)")
+        check(c.put("/api/clips/JES:0/end_screen", json={"end_screen": "xxx"}).status_code == 400,
+              "PUT clipe id inválido -> 400")
+
+        db.update_job("JES", result_urls=_json.dumps([{"key": "jobs/JES/clips/clip_01_9x16.mp4"}]))
+        check(c.put("/api/clips/JES:0/end_screen", json={"end_screen": "clubcast"}).status_code == 409,
+              "PUT clipe antigo (não editável) -> 409")
+    finally:
+        s3_client.delete_object = _orig_del
+
+    db.delete_job("JES")
+    with db._conn() as cc:
+        cc.execute("DELETE FROM users WHERE email = ?", ("es@test",))
+
+
 def main():
     for t in (test_burn_cmd, test_burn_semaphore, test_presigned_put, test_runpod_client,
               test_validate_segments, test_parse_clips_json,
               test_captions_roundtrip, test_words_for_clip, test_caption_style, test_youtube_helpers,
-              test_snap_clip_bounds, test_thumbnail, test_clip_window, test_download_all,
+              test_snap_clip_bounds, test_thumbnail, test_clip_window, test_download_all, test_end_screen,
               test_sessions_helpers, test_sessions_ownership, test_sessions_flow,
               test_sessions_extra):
         t()

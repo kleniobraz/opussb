@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Download, RotateCcw } from "lucide-react";
 import * as api from "@/lib/api";
@@ -21,8 +21,27 @@ export default function ProjetoPage() {
   const qc = useQueryClient();
   const { user } = useAuth();
   const { data: p, isLoading, isError } = useProject(id);
+  const { data: endScreens } = useQuery({ queryKey: ["endScreens"], queryFn: api.getEndScreens });
   const [reprocessOpen, setReprocessOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
+  const [endSaving, setEndSaving] = useState(false);
+
+  // Tela final PADRAO do projeto (os clipes herdam; removivel por clipe no editor). Acao imediata:
+  // grava e recarrega o projeto + invalida as legendas (editores abertos releem a heranca).
+  async function changeProjectEndScreen(value: string) {
+    const v = value || null;
+    setEndSaving(true);
+    try {
+      await api.putProjectEndScreen(id, v);
+      toast.success(v ? "Tela final do projeto definida." : "Tela final do projeto removida.");
+      qc.invalidateQueries({ queryKey: ["project", id] });
+      qc.invalidateQueries({ queryKey: ["captions"] });
+    } catch {
+      toast.error("Falha ao definir a tela final do projeto.");
+    } finally {
+      setEndSaving(false);
+    }
+  }
 
   async function downloadAll() {
     try {
@@ -112,6 +131,26 @@ export default function ProjetoPage() {
           <p className="eyebrow">Projeto</p>
           <h2 className="results-title">{p.title || p.filename || "Projeto"}</h2>
           <p className="project-meta">{meta}</p>
+          {(endScreens?.end_screens?.length ?? 0) > 0 && (
+            <label className="project-endscreen">
+              <span>Tela final</span>
+              <select
+                value={p.end_screen ?? ""}
+                disabled={endSaving}
+                onChange={(e) => changeProjectEndScreen(e.target.value)}
+              >
+                <option value="">Nenhuma</option>
+                {endScreens!.end_screens.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+              <span className="project-endscreen-hint">
+                os clipes herdam (removível por clipe no editor)
+              </span>
+            </label>
+          )}
         </div>
         <div className="head-actions">
           <Button variant="gold" onClick={downloadAll}>

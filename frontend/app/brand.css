@@ -584,6 +584,10 @@
 .project-body { padding: 16px 17px 17px; }
 .project-title { font-size: 0.92rem; font-weight: 600; line-height: 1.35; color: var(--ink); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 2.6em; }
 .project-meta { font-size: 0.78rem; color: var(--ink-muted); margin-top: 9px; }
+.project-endscreen { display: inline-flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 0.78rem; color: var(--ink-soft); flex-wrap: wrap; }
+.project-endscreen select { background: var(--surface-2); color: var(--ink); border: 1px solid var(--border); border-radius: 8px; padding: 5px 9px; font-size: 0.8rem; cursor: pointer; }
+.project-endscreen select:disabled { opacity: 0.5; cursor: default; }
+.project-endscreen-hint { color: var(--ink-muted); font-size: 0.72rem; }
 .project-open { display: inline-block; margin-top: 12px; font-size: 0.78rem; font-weight: 600; color: var(--gold); opacity: 0; transform: translateX(-4px); transition: opacity 0.18s, transform 0.18s; }
 .project-card:hover .project-open { opacity: 1; transform: none; }
 @media (max-width: 980px) { .projects-grid { grid-template-columns: repeat(3,1fr); } }
@@ -782,6 +786,12 @@
 .editor-track--film { height: 52px; background: #0e0e10; }
 .editor-track--wave { height: 46px; background: #0e0e10; }
 .editor-track--caps { height: 46px; }
+/* 4a camada (tela final): so visual. Verde-agua igual ao trim (continuidade). pointer-events:none
+   pra nao roubar o scrub; o bloco cresce pra esquerda (translateX -100%) a partir do fim do corte. */
+.editor-track--end { height: 28px; background: #0c0c0e; }
+.editor-end-block { position: absolute; top: 4px; bottom: 4px; transform: translateX(-100%); display: flex; align-items: center; padding: 0 9px; border-radius: 7px; background: rgba(47,224,191,0.16); border: 1px solid rgba(47,224,191,0.6); color: #bff7ec; font-size: 0.66rem; font-weight: 600; white-space: nowrap; pointer-events: none; z-index: 2; }
+.editor-end-empty { display: inline-block; margin: 6px 0 0 10px; font-size: 0.64rem; color: var(--ink-muted); pointer-events: none; }
+.editor-endscreen-note { font-size: 0.78rem; color: var(--ink-muted); line-height: 1.45; margin-top: 2px; }
 .editor-film-frame { position: absolute; top: 0; height: 100%; object-fit: cover; opacity: 0.9; pointer-events: none; }
 .editor-wave-canvas { display: block; height: 100%; }
 .editor-cap-block { position: absolute; top: 6px; bottom: 6px; background: rgba(245,197,24,0.16); border: 1px solid rgba(245,197,24,0.7); border-radius: 8px; overflow: hidden; cursor: grab; display: flex; align-items: center; padding: 0 10px; user-select: none; }
