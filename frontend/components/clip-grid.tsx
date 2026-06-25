@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Input } from "./ui/input";
 import {
   Select,
@@ -23,6 +23,10 @@ const BANDS: { key: Band; label: string }[] = [
   { key: "low", label: "< 6" },
 ];
 
+// Quantos clipes mostrar por vez; o "Ver mais" revela mais. Evita renderizar e baixar o poster de
+// TODOS de uma vez em projetos grandes (economia de recursos).
+const PAGE_SIZE = 9;
+
 export function ClipGrid({
   clips,
   toolbar = true,
@@ -35,7 +39,11 @@ export function ClipGrid({
   const [q, setQ] = useState("");
   const [band, setBand] = useState<Band>("all");
   const [sort, setSort] = useState<Sort>("score_desc");
+  const [shown, setShown] = useState(PAGE_SIZE);
   const showToolbar = toolbar && clips.length > 1;
+
+  // Busca ou filtro mudou: volta a mostrar a primeira página.
+  useEffect(() => setShown(PAGE_SIZE), [q, band]);
 
   let list = clips.map((c, i) => ({ c, i }));
   if (q) {
@@ -104,11 +112,24 @@ export function ClipGrid({
           <p className="empty-text">Ajuste a busca ou o filtro de nota.</p>
         </div>
       ) : (
-        <div className="clips-grid">
-          {list.map(({ c, i }) => (
-            <ClipCard key={c.id ?? i} clip={c} index={i} />
-          ))}
-        </div>
+        <>
+          <div className="clips-grid">
+            {list.slice(0, shown).map(({ c, i }) => (
+              <ClipCard key={c.id ?? i} clip={c} index={i} />
+            ))}
+          </div>
+          {list.length > shown && (
+            <div className="clip-more">
+              <button
+                type="button"
+                className="clip-more-btn"
+                onClick={() => setShown((s) => s + PAGE_SIZE)}
+              >
+                Ver mais ({list.length - shown})
+              </button>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

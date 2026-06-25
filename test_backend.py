@@ -314,12 +314,19 @@ def test_thumbnail():
     check(app._project_from_job(no_key)["thumbnail_url"] is None,
           "projeto sem frame mantém None (fallback de onda)")
 
-    # _clip_objects: repassa a thumbnail_url do projeto pra cada clipe.
+    # _clip_objects: cada clipe tem o PROPRIO poster (rota /thumb por clipe), 1 frame do clipe.
     clips = app._clip_objects("J1", '[{"key":"k1"},{"key":"k2"}]', "/api/projects/J1/thumb")
-    check(all(c["thumbnail_url"] == "/api/projects/J1/thumb" for c in clips),
-          "cada clipe herda a thumbnail do projeto")
+    check(clips[0]["thumbnail_url"] == "/api/clips/J1:0/thumb"
+          and clips[1]["thumbnail_url"] == "/api/clips/J1:1/thumb",
+          "cada clipe tem o proprio poster (/api/clips/<id>/thumb)")
     clips2 = app._clip_objects("J1", '[{"key":"k1"}]')
-    check(clips2[0]["thumbnail_url"] is None, "sem thumbnail -> clipe com None")
+    check(clips2[0]["thumbnail_url"] == "/api/clips/J1:0/thumb",
+          "poster do clipe independe da thumb do projeto")
+    # _thumb_key_for: deriva a chave do poster da base (novo e antigo).
+    check(app._thumb_key_for("jobs/J1/clips/clip_01_base.mp4") == "jobs/J1/clips/clip_01_thumb.jpg",
+          "thumb_key derivado da base nova (_base.mp4 -> _thumb.jpg)")
+    check(app._thumb_key_for("jobs/J1/clips/clip_01_9x16.mp4") == "jobs/J1/clips/clip_01_9x16_thumb.jpg",
+          "thumb_key derivado de clipe antigo (.mp4 -> _thumb.jpg)")
 
 
 # ─── 6. Sessões server-side ───────────────────────────────────────────────────

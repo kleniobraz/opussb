@@ -63,7 +63,7 @@ export function ProjectCard({ p }: { p: Project }) {
       {p.thumbnail_url ? (
         <div className="project-thumb">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img className="project-thumb-img" src={p.thumbnail_url} alt="" />
+          <img className="project-thumb-img" src={p.thumbnail_url} alt="" loading="lazy" />
           {p.avg_score != null && (
             <span className={`score-badge ${scoreClass(p.avg_score)}`}>{fmtScore(p.avg_score)}</span>
           )}
@@ -127,7 +127,7 @@ export function FeaturedCard({ p }: { p: Project }) {
       <Link className="featured-thumb" href={href}>
         {p.thumbnail_url ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img className="project-thumb-img" src={p.thumbnail_url} alt="" />
+          <img className="project-thumb-img" src={p.thumbnail_url} alt="" loading="lazy" />
         ) : (
           <FeaturedReel p={p} />
         )}

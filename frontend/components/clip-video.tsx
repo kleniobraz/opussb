@@ -32,6 +32,7 @@ export function ClipVideo({
   children,
   onExpand,
   paused = false,
+  poster,
 }: {
   src: string;
   autoPlay?: boolean;
@@ -41,6 +42,8 @@ export function ClipVideo({
   // Pausa controlada de fora: o card passa `paused={open}` pra parar quando o dialogo abre
   // (senao rodam dois videos ao mesmo tempo). So pausa; nao retoma sozinho ao soltar.
   paused?: boolean;
+  // Poster (1 frame do clipe) mostrado enquanto idle, pra o card nao ficar preto antes do play.
+  poster?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -53,6 +56,7 @@ export function ClipVideo({
   const [cur, setCur] = useState(0);
   const [dur, setDur] = useState(0);
   const [isFs, setIsFs] = useState(false);
+  const [posterOk, setPosterOk] = useState(true);
 
   // Acompanha o estado de tela cheia pra trocar o icone (expandir / recolher).
   useEffect(() => {
@@ -136,6 +140,18 @@ export function ClipVideo({
         onWaiting={() => setReady(false)}
         onVolumeChange={(e) => setMuted(e.currentTarget.muted)}
       />
+      {/* Poster idle: 1 frame real do clipe (rota /thumb) pra nao ficar preto antes do play.
+          Some quando o usuario ativa (clica play) -> aí o video entra. onError -> cai no fundo. */}
+      {poster && !activated && posterOk && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          className="clip-poster"
+          src={poster}
+          alt=""
+          loading="lazy"
+          onError={() => setPosterOk(false)}
+        />
+      )}
       {children}
 
       {/* Play/pause central grande: o gesto principal, impossivel de errar. So aparece pausado. */}

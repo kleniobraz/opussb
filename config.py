@@ -58,6 +58,14 @@ BURN_QUEUE_TIMEOUT: float = float(os.environ.get("BURN_QUEUE_TIMEOUT", "120"))
 BURN_FFMPEG_THREADS: int = int(os.environ.get("BURN_FFMPEG_THREADS", "2"))   # de 3 vCPU, deixa 1 pro web
 BURN_NICE: int = int(os.environ.get("BURN_NICE", "15"))                       # 0-19; maior = menor prioridade
 
+# Poster (thumbnail) por clipe: 1 frame extraido sob demanda da base (seek por range, ~2s,
+# cacheado no S3) pra o card do clipe nao ficar preto antes do play. Semaforo PROPRIO, leve (1
+# frame, NAO um encode), separado do BURN; deixa o site de pe se varios cards pedirem poster de uma
+# vez. THUMB_QUEUE_TIMEOUT = quanto a requisicao espera o slot antes de desistir (404 -> o card cai
+# no fundo atual, sem prender a thread). NAO dispara a queima da legenda (essa so acontece no play).
+THUMB_CONCURRENCY: int = int(os.environ.get("THUMB_CONCURRENCY", "2"))
+THUMB_QUEUE_TIMEOUT: float = float(os.environ.get("THUMB_QUEUE_TIMEOUT", "20"))
+
 # Sobra (handles) cortada de cada lado do clipe, em segundos. O clip_NN_base.mp4 passa a ser
 # a janela [start-H, end+H] (clamped ao vídeo) reenquadrada, e o editor abre/fecha o corte
 # dentro dessa sobra (ajuste fino quando a IA erra o ponto de corte). 0 desliga (corte exato,

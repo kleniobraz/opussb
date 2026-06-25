@@ -829,7 +829,9 @@ def _clip_objects(job_id, result_urls_json, thumbnail_url=None):
             "reason": meta.get("reason"),
             "score": meta.get("score"),
             "duration": meta.get("duration"),
-            "thumbnail_url": thumbnail_url,
+            # Poster PROPRIO de cada clipe (1 frame do clipe, gerado/cacheado sob demanda na rota),
+            # pra o card nao ficar preto antes do play. 404 da rota -> o front degrada pro fundo.
+            "thumbnail_url": f"/api/clips/{job_id}:{i}/thumb",
         })
     return clips
 
@@ -1034,6 +1036,22 @@ _burn_locks_guard = threading.Lock()
 # fica de pé. Quem não pega o slot dentro de _BURN_QUEUE_TIMEOUT serve a base (ver clip_video).
 _burn_sem = threading.BoundedSemaphore(max(1, config.BURN_CONCURRENCY))
 _BURN_QUEUE_TIMEOUT = config.BURN_QUEUE_TIMEOUT
+
+# Poster (thumbnail) por clipe: semaforo PROPRIO (separado da queima). E leve (1 frame, nao um
+# encode), mas varios cards podem pedir poster de uma vez, entao limita a concorrencia pra nao
+# competir pela CPU com o web/queima. Lock por clipe evita gerar o mesmo poster em duplicata.
+_thumb_sem = threading.BoundedSemaphore(max(1, config.THUMB_CONCURRENCY))
+_thumb_locks = {}
+_thumb_locks_guard = threading.Lock()
+
+
+def _clip_thumb_lock(clip_id: str) -> threading.Lock:
+    with _thumb_locks_guard:
+        lk = _thumb_locks.get(clip_id)
+        if lk is None:
+            lk = threading.Lock()
+            _thumb_locks[clip_id] = lk
+        return lk
 
 
 def _clip_burn_lock(clip_id: str) -> threading.Lock:
@@ -1265,6 +1283,66 @@ def clip_base(clip_id):
     pra clipe novo (_base.mp4); clipe antigo (_9x16.mp4) cai na propria base mesmo."""
     _job, _idx, base_key = _clip_lookup(clip_id)
     return _clip_redirect(base_key)
+
+
+# Teto de tempo da extracao do poster (range-seek + decode de 1 frame). Curto: e barato.
+_THUMB_TIMEOUT = 30
+
+
+def _thumb_key_for(base_key: str) -> str:
+    """Chave S3 do poster derivada da base: clip_NN_base.mp4 -> clip_NN_thumb.jpg (e qualquer
+    .mp4 -> _thumb.jpg, cobrindo clipe antigo _9x16.mp4)."""
+    if base_key.endswith("_base.mp4"):
+        return base_key[:-len("_base.mp4")] + "_thumb.jpg"
+    return re.sub(r"\.mp4$", "_thumb.jpg", base_key)
+
+
+@app.route("/api/clips/<path:clip_id>/thumb")
+@login_required
+def clip_thumb(clip_id):
+    """Poster (1 frame real) do clipe pra o card nao ficar preto antes do play. NAO queima legenda
+    (isso so acontece no play, em /video). 302 pro JPG cacheado no S3; na 1a vez extrai 1 frame da
+    base (seek por range, ~2s, niced + 1 thread) sob semaforo + lock por clipe. Cobre clipe novo e
+    antigo. Best-effort: sem slot ou falha na extracao -> 404 (o card degrada pro fundo atual).
+    Biblioteca compartilhada: exige so sessao ativa."""
+    job, idx, base_key = _clip_lookup(clip_id)
+    thumb_key = _thumb_key_for(base_key)
+    if s3_client.exists(thumb_key):
+        return _clip_redirect(thumb_key)
+    with _clip_thumb_lock(clip_id):
+        if s3_client.exists(thumb_key):                      # outra thread acabou de gerar
+            return _clip_redirect(thumb_key)
+        if not _thumb_sem.acquire(timeout=config.THUMB_QUEUE_TIMEOUT):
+            abort(404)                                       # fila cheia: card sem poster, re-tenta depois
+        tmp = None
+        try:
+            # Frame de DENTRO do corte (nao da sobra-cabeca): in_point + 1s. Sem janela (legado), 1s.
+            ss = 1.0
+            win = db.get_clip_window(clip_id)
+            if win and win.get("in_point") is not None:
+                ss = float(win["in_point"]) + 1.0
+            url = s3_client.get_presigned_url(base_key)
+            tmp = tempfile.mkdtemp()
+            out = os.path.join(tmp, "thumb.jpg")
+            vf = "scale=360:-2"
+            base_cmd = ["-frames:v", "1", "-vf", vf, "-q:v", "4", "-threads", "1", out]
+            r = subprocess.run(["ffmpeg", "-y", "-ss", f"{ss:.3f}", "-i", url] + base_cmd,
+                               capture_output=True, text=True, timeout=_THUMB_TIMEOUT,
+                               preexec_fn=lambda: os.nice(config.BURN_NICE))
+            if r.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) < 256:
+                # Fallback: 1o frame (clipe curtissimo ou seek alem do fim).
+                r = subprocess.run(["ffmpeg", "-y", "-i", url] + base_cmd,
+                                   capture_output=True, text=True, timeout=_THUMB_TIMEOUT,
+                                   preexec_fn=lambda: os.nice(config.BURN_NICE))
+            if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) >= 256:
+                s3_client.upload_file(out, thumb_key)
+                return _clip_redirect(thumb_key)
+            log.warning("[thumb] clip %s: ffmpeg falhou (%s)", clip_id, r.stderr[-200:])
+            abort(404)
+        finally:
+            _thumb_sem.release()
+            if tmp:
+                shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ─── Legenda editável do clipe (correção pelo usuário; base do mini editor) ───
