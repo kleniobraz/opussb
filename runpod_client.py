@@ -82,3 +82,31 @@ def poll(job_id: str, timeout: float) -> dict:
         if time.monotonic() > deadline:
             raise RuntimeError(f"reframe job {job_id} timeout local após {timeout}s (status={status})")
         time.sleep(_POLL_INTERVAL)
+
+
+def fetch_whisper_output(runpod_job_id: str):
+    """Best-effort: busca o output cru do job de Whisper (1º endpoint, RUNPOD_ENDPOINT_ID) pelo id
+    que o N8N já PATCHou pra cá, pra pegar o tempo por PALAVRA (output.word_timestamps), que o N8N
+    descarta. Devolve o dict de output se COMPLETED, senão None (job expirou da retenção do RunPod,
+    404, rede caiu, etc). NUNCA levanta: o chamador (thread2) cai no método por frase sem palavra."""
+    endpoint = config.RUNPOD_ENDPOINT_ID
+    if not endpoint or not runpod_job_id:
+        return None
+    for _ in range(3):
+        try:
+            r = requests.get(f"{_BASE}/{endpoint}/status/{runpod_job_id}", headers=_headers(),
+                             timeout=_HTTP_TIMEOUT)
+            if r.status_code == 404:
+                return None
+            r.raise_for_status()
+            body = r.json()
+        except requests.RequestException as e:
+            log.warning("[whisper-words] erro ao buscar %s: %s", runpod_job_id, e)
+            time.sleep(_POLL_INTERVAL)
+            continue
+        if body.get("status") == "COMPLETED":
+            out = body.get("output")
+            return out if isinstance(out, dict) else None
+        log.info("[whisper-words] job %s status=%s (sem word_timestamps)", runpod_job_id, body.get("status"))
+        return None
+    return None

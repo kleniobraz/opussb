@@ -275,6 +275,24 @@ def run_thread2(job_id: str) -> None:
         # limpa); a queima acontece sob demanda a partir da base + dos segmentos.
         transcript = job.get("transcript")
 
+        # Tempo por PALAVRA (output.word_timestamps do Whisper): o N8N descarta, então buscamos o
+        # output cru do RunPod pelo runpod_job_id (já PATCHado pra cá) AQUI, no início da thread2
+        # (segundos após a transcrição ficar pronta, dentro da janela curta de retenção do RunPod).
+        # Serve pra ancorar a legenda na PALAVRA real (anti "adiantada") e guardar as palavras por
+        # clipe pro editor. Best-effort: words=None cai no método por frase (segments_for_clip).
+        words = None
+        if transcript and job.get("runpod_job_id"):
+            try:
+                out = runpod_client.fetch_whisper_output(job["runpod_job_id"])
+                wt = out.get("word_timestamps") if isinstance(out, dict) else None
+                if isinstance(wt, list) and wt:
+                    words = wt
+                    log.info("[caption] %d palavras com timestamp obtidas do RunPod", len(wt))
+                else:
+                    log.info("[caption] sem word_timestamps no output do RunPod; legenda por frase")
+            except Exception as e:
+                log.warning("[caption] falha ao obter word_timestamps (%s); legenda por frase", e)
+
         # Auto-ajuste do corte pra não terminar/começar no meio da fala: usa o SRT pra
         # estender o fim até o fim do trecho falado (e puxar o início pro começo dele),
         # com teto. Roda ANTES do corte, então o ffmpeg, a legenda (que herda o `meta`)
@@ -339,9 +357,18 @@ def run_thread2(job_id: str) -> None:
             # favoritos/_clip_objects). Falha aqui não derruba o job: dá pra re-derivar depois.
             if transcript:
                 try:
-                    segs = captions.segments_for_clip(transcript, seg_start, seg_end)
+                    # Legenda ancorada na PALAVRA real quando há word_timestamps (anti "adiantada");
+                    # senão, método por frase (char-proporcional). Modo dual, sem regressão.
+                    segs = captions.words_for_clip(words, transcript, seg_start, seg_end) if words else None
+                    if not segs:
+                        segs = captions.segments_for_clip(transcript, seg_start, seg_end)
                     if segs:
                         db.set_clip_captions(clip_id, json.dumps(segs, ensure_ascii=False))
+                        # Guarda as palavras CRUAS do clipe (relativas à janela) pro editor word-level.
+                        if words:
+                            cw = captions.clip_words_window(words, seg_start, seg_end)
+                            if cw:
+                                db.set_clip_words(clip_id, json.dumps(cw, ensure_ascii=False))
                 except Exception as e:
                     log.warning("[caption] clip %d: falha ao gravar segmentos (%s)", i + 1, e)
             # Persiste a janela/corte só quando há handles e o ffprobe deu a duração real. O

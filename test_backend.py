@@ -148,6 +148,60 @@ def test_captions_roundtrip():
     check(captions.build_ass_from_segments([]) is None, "lista vazia -> None")
 
 
+# ─── 4b. Legenda ancorada na PALAVRA (word_timestamps) anti-"adiantada" ───────
+def test_words_for_clip():
+    print("[captions: legenda ancorada na palavra (anti-adiantada)]")
+    # Uma frase SRT longa [0,8] com uma PAUSA real no meio (depois 2.0 -> a 5.0).
+    srt = "1\n00:00:00,000 --> 00:00:08,000\nPrimeira parte e depois a segunda parte da frase\n"
+    words = [
+        {"start": 0.0, "end": 0.8, "word": "Primeira"},
+        {"start": 0.8, "end": 1.2, "word": "parte"},
+        {"start": 1.2, "end": 1.4, "word": "e"},
+        {"start": 1.4, "end": 2.0, "word": "depois"},
+        {"start": 5.0, "end": 5.2, "word": "a"},        # 3s de pausa antes
+        {"start": 5.2, "end": 5.8, "word": "segunda"},
+        {"start": 5.8, "end": 6.2, "word": "parte"},
+        {"start": 6.2, "end": 6.4, "word": "da"},
+        {"start": 6.4, "end": 8.0, "word": "frase"},
+    ]
+    new = captions.words_for_clip(words, srt, 0.0, 8.0)
+    old = captions.segments_for_clip(srt, 0.0, 8.0)
+    check(len(new) > 0, "gera eventos a partir das palavras")
+    check(abs(new[0]["start"] - 0.0) < 0.001, "1o evento comeca na 1a palavra real")
+    check(all(len(e["text"]) <= captions.MAX_LINE_CHARS for e in new), "linhas respeitam MAX_LINE_CHARS")
+    covers = lambda evs, t: any(e["start"] <= t < e["end"] for e in evs)
+    check(not covers(new, 3.5), "NOVO: sem legenda durante a pausa (t=3.5s)")
+    check(covers(old, 3.5), "ANTIGO: mostrava texto durante a pausa (o bug 'adiantada')")
+    check(any(abs(e["start"] - 5.0) < 0.2 for e in new), "NOVO: legenda volta junto com a fala (~5s)")
+
+    # Quebra por fronteira de frase + pausa entre frases (tempos relativos a janela).
+    srt2 = ("1\n00:00:10,000 --> 00:00:12,000\nBom dia pessoal\n\n"
+            "2\n00:00:14,000 --> 00:00:16,000\nTudo certo\n")
+    words2 = [
+        {"start": 10.0, "end": 10.4, "word": "Bom"},
+        {"start": 10.4, "end": 10.8, "word": "dia"},
+        {"start": 10.8, "end": 12.0, "word": "pessoal"},
+        {"start": 14.0, "end": 14.5, "word": "Tudo"},
+        {"start": 14.5, "end": 16.0, "word": "certo"},
+    ]
+    ev = captions.words_for_clip(words2, srt2, 10.0, 16.0)
+    check(len(ev) == 2, "duas frases viram dois eventos")
+    check(ev[0]["text"] == "Bom dia pessoal" and abs(ev[0]["start"]) < 0.001, "frase 1 ancorada, relativa a janela")
+    check(ev[1]["text"] == "Tudo certo" and abs(ev[1]["start"] - 4.0) < 0.001, "frase 2 comeca em 4.0 (14.0 - 10.0)")
+
+    # clip_words_window: palavras CRUAS relativas a janela, filtradas (pro editor word-level).
+    cw = captions.clip_words_window(words2, 10.0, 16.0)
+    check(len(cw) == 5, "clip_words_window traz todas as palavras da janela")
+    check(cw[0]["word"] == "Bom" and abs(cw[0]["start"]) < 0.001, "palavra crua relativa a janela")
+    check(all(("word" in w and "start" in w and "end" in w) for w in cw), "shape {start,end,word}")
+    cw2 = captions.clip_words_window(words2, 14.0, 16.0)
+    check(all(w["word"] in ("Tudo", "certo") for w in cw2), "filtra palavras fora da janela")
+
+    # Modo dual: sem palavras -> [] (chamador cai no segments_for_clip, sem regressao).
+    check(captions.words_for_clip([], srt, 0.0, 8.0) == [], "sem palavras -> [] (modo dual)")
+    check(captions.words_for_clip(None, srt, 0.0, 8.0) == [], "words None -> [] (modo dual)")
+
+
 # ─── 4a. Estilo customizado da fonte (size/tracking/color/shadow) ─────────────
 def test_caption_style():
     print("[captions: estilo customizado da fonte]")
@@ -612,7 +666,7 @@ def test_download_all():
 def main():
     for t in (test_burn_cmd, test_burn_semaphore, test_presigned_put, test_runpod_client,
               test_validate_segments, test_parse_clips_json,
-              test_captions_roundtrip, test_caption_style, test_youtube_helpers,
+              test_captions_roundtrip, test_words_for_clip, test_caption_style, test_youtube_helpers,
               test_snap_clip_bounds, test_thumbnail, test_clip_window, test_download_all,
               test_sessions_helpers, test_sessions_ownership, test_sessions_flow,
               test_sessions_extra):

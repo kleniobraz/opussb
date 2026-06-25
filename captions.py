@@ -186,6 +186,96 @@ def segments_for_clip(srt_text: str, clip_start: float, clip_end: float) -> list
     return out
 
 
+def _phrase_bounds(srt_text):
+    """Fronteiras de frase (segmentos do SRT) como [(start, end)] em segundos absolutos.
+    Usadas so pra NAO juntar palavras de frases diferentes na mesma linha de legenda."""
+    return [(s["start"], s["end"]) for s in parse_srt(srt_text)]
+
+
+def _phrase_index_at(bounds, t):
+    """Indice da frase cujo intervalo contem t (senao -1)."""
+    for i, (s, e) in enumerate(bounds):
+        if s <= t < e:
+            return i
+    return -1
+
+
+def words_for_clip(words, srt_text, clip_start, clip_end, max_gap=0.6):
+    """Igual ao segments_for_clip (mesma forma: [{start,end,text}] relativo a clip_start, uma
+    linha curta por evento), mas o TIMING vem do tempo por PALAVRA do Whisper
+    (output.word_timestamps), nao da reparticao char-proporcional do _layout_segment.
+
+    Conserta a legenda 'adiantada': cada evento comeca/termina na PALAVRA real falada, em vez
+    de no inicio folgado da frase do Whisper. Quebra a linha quando passaria de MAX_LINE_CHARS,
+    ou cruzaria uma fronteira de frase (segmento SRT), ou ha uma pausa maior que max_gap.
+    words = [{start,end,word}] em segundos absolutos do video.
+
+    Retorna [] se nao houver palavra util na janela; o chamador cai no segments_for_clip
+    (modo dual: clipe sem word_timestamps continua funcionando como antes)."""
+    if not words:
+        return []
+    bounds = _phrase_bounds(srt_text)
+    win = []
+    for w in words:
+        try:
+            ws = float(w["start"])
+            we = float(w["end"])
+            tok = _sanitize(str(w.get("word", ""))).strip()
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not tok or not (math.isfinite(ws) and math.isfinite(we)) or we <= ws:
+            continue
+        if we <= clip_start or ws >= clip_end:
+            continue
+        win.append((max(ws, clip_start), min(we, clip_end), tok))
+    win.sort()
+    if not win:
+        return []
+    out = []
+    cur, cur_start, cur_end, cur_phrase, prev_end = [], 0.0, 0.0, None, None
+    for ws, we, tok in win:
+        phrase = _phrase_index_at(bounds, ws) if bounds else 0
+        cand_len = len((" ".join(cur + [tok])).strip())
+        gap = (ws - prev_end) if prev_end is not None else 0.0
+        if cur and (cand_len > MAX_LINE_CHARS or phrase != cur_phrase or gap > max_gap):
+            out.append({"start": round(cur_start - clip_start, 3),
+                        "end": round(cur_end - clip_start, 3),
+                        "text": " ".join(cur)})
+            cur = []
+        if not cur:
+            cur_start, cur_phrase = ws, phrase
+        cur.append(tok)
+        cur_end = we
+        prev_end = we
+    if cur:
+        out.append({"start": round(cur_start - clip_start, 3),
+                    "end": round(cur_end - clip_start, 3),
+                    "text": " ".join(cur)})
+    return out
+
+
+def clip_words_window(words, clip_start, clip_end):
+    """Palavras CRUAS da janela [clip_start, clip_end] (s absolutos) como [{start,end,word}] com
+    tempos relativos a clip_start. Pro editor word-level (karaoke por palavra + pilulas de pausa).
+    Difere de words_for_clip (que AGRUPA em linhas de legenda); aqui e palavra a palavra."""
+    out = []
+    for w in words or []:
+        try:
+            ws = float(w["start"])
+            we = float(w["end"])
+            tok = str(w.get("word", "")).strip()
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not tok or not (math.isfinite(ws) and math.isfinite(we)) or we <= ws:
+            continue
+        if we <= clip_start or ws >= clip_end:
+            continue
+        out.append({"start": round(max(ws, clip_start) - clip_start, 3),
+                    "end": round(min(we, clip_end) - clip_start, 3),
+                    "word": tok})
+    return out
+
+
 def _hex_to_ass(color):
     """'#RRGGBB' (ou 'RRGGBB') -> cor de preenchimento ASS '&H00BBGGRR'. None se inválido.
     O ASS guarda a cor como AABBGGRR (ordem invertida do RGB), alpha 00 = opaco."""

@@ -121,6 +121,10 @@ def init_clip_captions() -> None:
         _ensure_column(conn, "clip_captions", "window_dur", "REAL")
         _ensure_column(conn, "clip_captions", "in_point", "REAL")
         _ensure_column(conn, "clip_captions", "out_point", "REAL")
+        # Palavras com timestamp (output.word_timestamps do Whisper) recortadas por clipe, relativas
+        # a janela: JSON [{start,end,word}]. NULL = clipe sem word-level (legado ou fetch falhou): a
+        # legenda usa o metodo por frase e o editor cai no karaoke por frase. Pro editor OpusClip.
+        _ensure_column(conn, "clip_captions", "words", "TEXT")
 
 
 def init_clip_music() -> None:
@@ -386,6 +390,25 @@ def set_clip_caption_style(clip_id: str, style_json) -> None:
         conn.execute(
             "UPDATE clip_captions SET caption_style = ?, updated_at = ? WHERE clip_id = ?",
             (style_json, _now(), clip_id),
+        )
+
+
+def get_clip_words(clip_id: str):
+    """Palavras com timestamp do clipe (JSON string [{start,end,word}] relativo à janela) ou None."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT words FROM clip_captions WHERE clip_id = ?", (clip_id,)
+        ).fetchone()
+        return row["words"] if row else None
+
+
+def set_clip_words(clip_id: str, words_json) -> None:
+    """Grava as palavras com timestamp do clipe (JSON serializado). Só atualiza a coluna (a linha já
+    existe: set_clip_captions roda antes no run_thread2)."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE clip_captions SET words = ?, updated_at = ? WHERE clip_id = ?",
+            (words_json, _now(), clip_id),
         )
 
 
