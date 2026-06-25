@@ -22,6 +22,10 @@ RUNPOD_ENDPOINT_ID: str = os.environ["RUNPOD_ENDPOINT_ID"]
 # Claude / Anthropic
 ANTHROPIC_API_KEY: str = os.environ["ANTHROPIC_API_KEY"]
 CLAUDE_MODEL: str = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+# Admin API key (sk-ant-admin...), OPCIONAL e diferente da ANTHROPIC_API_KEY: so pra o painel de
+# admin puxar o relatorio de custo da org. Vazio = o painel mostra so a RunPod (e o saldo da Claude
+# fica no Console). Quando o dono gerar a key, e so por aqui no .env.
+ANTHROPIC_ADMIN_KEY: str = os.environ.get("ANTHROPIC_ADMIN_KEY", "")
 
 # N8N
 N8N_WEBHOOK_URL: str = os.environ["N8N_WEBHOOK_URL"]

@@ -35,13 +35,12 @@ de API) e a memória do projeto (`frontend-stack-decision`).
   real por clipe** + **"Ver mais"** + **loading lazy**; e a **waveform REAL** na camada de áudio do editor.
   Mais a **legenda sincronizada** (tempo por palavra, BACKEND §26). **Editor estilo OpusClip:** decisão
   fechada (§22).
-- **Tela final CLUBCAST (§23 / BACKEND §29): FEITA no código (front + back), testada + e2e, escopo POR
-  PROJETO** (default nenhuma; liga por projeto; removível por clipe; entra em todo entregável). **Falta só
-  o DEPLOY** (`next build` + restart `opussb-web` + restart `opussb`, juntos), bloqueado até o dono autorizar.
-- **Falta (pendente):** **deployar a tela final** (acima); o **editor estilo OpusClip** (§22, decidido, em
-  STAGING); **filmstrip de vídeo real** no editor (mesma ideia sob demanda do poster/waveform, adiado pelo
-  dono); remover a SPA `static/`; popstate (botão Voltar do navegador) no editor (§7/§9). A **waveform deixou
-  de ser pendência** (§21). Estado completo + git em **BACKEND §30**.
+- **Tela final CLUBCAST (§23) + camada de vídeo + biblioteca de telas finais + encurtar (§24): EM PRODUÇÃO
+  e pushado** (`origin/master` em `09c5d6e`). Tela final por projeto (removível/encurtável por clipe);
+  filmstrip real no editor; subir/trocar/excluir telas finais na página do projeto.
+- **Falta (pendente):** validar a tela final num **clipe real da Carbone**; o **editor estilo OpusClip**
+  (§22, decidido, em STAGING); remover a SPA `static/`; popstate (botão Voltar do navegador) no editor
+  (§7/§9). A **waveform e o filmstrip deixaram de ser pendência** (§21/§24). Estado + git em **BACKEND §30**.
 
 ---
 
@@ -668,9 +667,7 @@ nenhuma), os clipes **herdam**, e é **removível/forçável por clipe** no edit
 - **`app/brand.css`**: `.editor-track--end`/`.editor-end-block`/`.editor-end-empty`/`.editor-endscreen-note`
   e `.project-endscreen*`.
 
-**FALTA:** só o **DEPLOY** (`next build` + restart `opussb-web`, junto com o restart do `opussb` do backend),
-bloqueado até o dono autorizar. Nada commitado/pushado (regra 9). Depois: ligar a tela final nos projetos da
-Carbone pelo seletor.
+**STATUS: EM PRODUÇÃO + pushado** (`02821f9`). Depois: ligar a tela final nos projetos da Carbone pelo seletor.
 
 ## 24. Camada de vídeo (filmstrip) + biblioteca de telas finais + encurtar (2026-06-25)
 
@@ -682,7 +679,7 @@ passou a buscar a rota server-side `/api/clips/<id>/filmstrip` (sprite) e retorn
 `editor-timeline.tsx` desenha a trilha `editor-track--film` esticando o sprite (`.editor-film-strip`,
 `background-size:100% 100%`). `clip-editor` chama `useFilmstrip(editable ? clipId : null)`. **No ar.**
 
-### Biblioteca de telas finais + encurtar — código pronto, AGUARDA deploy
+### Biblioteca de telas finais + encurtar — EM PRODUÇÃO (commit `09c5d6e`, pushado)
 - **`lib/types.ts`**: `EndScreenOption.duration`; `Captions.end_screen_dur`.
 - **`lib/api.ts`**: `uploadEndScreen(file,label)`, `deleteEndScreen(id)`; `putClipEndScreen(id, {end_screen?, dur?})`
   (assinatura virou patch).
@@ -692,4 +689,12 @@ passou a buscar a rota server-side `/api/clips/<id>/filmstrip` (sprite) e retorn
   (`.editor-end-handle`) encurta a tela final (bloco com largura = duração; persiste no soltar via
   `putClipEndScreen({dur})`, sem re-queimar). `clip-editor` mantém `endDur` + passa
   `endScreenDur`/`endScreenAssetDur`/`onChangeEndDur`/`onCommitEndDur` pra timeline.
-- `tsc --noEmit` limpo. **FALTA:** `next build` + restart `opussb-web` (junto com o `opussb`).
+- `tsc --noEmit` limpo. **EM PRODUÇÃO** (`next build` + restart feitos; commit `09c5d6e` pushado).
+
+## 25. Painel de saldos (creditos) no admin (2026-06-25)
+
+Aba "Saldos" no /painel (so admin; backend BACKEND §32). `lib/types.ts` ganhou `AdminCredits`;
+`lib/api.ts` ganhou `adminCredits(refresh?)`. `app/(app)/painel/page.tsx`: componente `CreditsPanel`
++ nova `TabsTrigger`/`TabsContent` "credits". Card da RunPod (saldo USD + gasto/h, fica vermelho se
+< US$5) e card da Claude (link pro Console enquanto nao houver Admin key) + botao "Atualizar"
+(`refresh=1`). CSS `.credits-*` em `brand.css`. `tsc` limpo. **EM PRODUCAO** (deploy + commit nesta leva).

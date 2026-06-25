@@ -720,6 +720,58 @@ def admin_set_admin():
     return jsonify({"ok": True})
 
 
+# ─── Painel de saldos (créditos) — só admin ──────────────────────────────────
+_RUNPOD_GQL = "https://api.runpod.io/graphql"
+_CREDITS_TTL = 300  # cache de 5 min: não bater nas APIs externas a cada abertura do painel
+_credits_cache = {"data": None, "ts": 0.0}
+_credits_lock = threading.Lock()
+
+
+def _runpod_credits():
+    """Saldo (USD) + gasto/hora da conta RunPod via GraphQL (validado: clientBalance/currentSpendPerHr).
+    None em falha (best-effort: o card degrada, não quebra o painel)."""
+    try:
+        r = requests.post(
+            _RUNPOD_GQL,
+            json={"query": "query { myself { clientBalance currentSpendPerHr } }"},
+            headers={"Authorization": f"Bearer {config.RUNPOD_API_KEY}", "Content-Type": "application/json"},
+            timeout=15,
+        )
+        me = ((r.json() or {}).get("data") or {}).get("myself") or {}
+        bal = me.get("clientBalance")
+        if bal is None:
+            return None
+        return {"balance": round(float(bal), 2),
+                "spend_per_hr": round(float(me.get("currentSpendPerHr") or 0), 4)}
+    except Exception as e:
+        log.warning("[credits] runpod: %s", e)
+        return None
+
+
+def _anthropic_credits():
+    """Custo da org Anthropic. Exige a Admin API key (ANTHROPIC_ADMIN_KEY, diferente da normal). Sem
+    ela, só sinaliza não-configurado (o saldo segue visível no Console). A integração do cost report
+    entra quando o dono gerar a key (pra validar com dado real, não às cegas)."""
+    return {"configured": bool(config.ANTHROPIC_ADMIN_KEY)}
+
+
+@app.route("/api/admin/credits")
+@admin_required
+def admin_credits():
+    """Saldos/custos pro painel admin. RunPod = saldo real; Anthropic = quando houver Admin key.
+    Cacheado por _CREDITS_TTL; `?refresh=1` força atualizar."""
+    refresh = request.args.get("refresh") in ("1", "true", "yes")
+    with _credits_lock:
+        now = time.monotonic()
+        cached = _credits_cache["data"]
+        if cached is not None and not refresh and (now - _credits_cache["ts"]) < _CREDITS_TTL:
+            return jsonify({**cached, "cached": True})
+        data = {"runpod": _runpod_credits(), "anthropic": _anthropic_credits()}
+        _credits_cache["data"] = data
+        _credits_cache["ts"] = now
+        return jsonify({**data, "cached": False})
+
+
 # ─── Sessões ativas (página de Segurança) ────────────────────────────────────
 
 @app.route("/api/sessions")

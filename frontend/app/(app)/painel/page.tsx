@@ -201,6 +201,78 @@ function UsersPanel() {
   );
 }
 
+function CreditsPanel() {
+  const qc = useQueryClient();
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["admin-credits"],
+    queryFn: () => api.adminCredits(),
+  });
+  const fmt = (n?: number | null) => (n == null ? "—" : "US$ " + n.toFixed(2));
+
+  if (isLoading) return <p className="text-ink-muted">Carregando saldos…</p>;
+  if (isError) return <p className="text-ink-muted">Não consegui buscar os saldos agora.</p>;
+
+  const rp = data?.runpod;
+  const lowRunpod = rp && rp.balance < 5;
+
+  return (
+    <>
+      <div className="credits-grid">
+        <div className="credits-card">
+          <div className="credits-card-head">
+            <span className="credits-name">RunPod</span>
+            <span className="credits-sub">Whisper + reframe (GPU)</span>
+          </div>
+          {rp ? (
+            <>
+              <div className={"credits-balance" + (lowRunpod ? " is-low" : "")}>{fmt(rp.balance)}</div>
+              <div className="credits-meta">gastando {fmt(rp.spend_per_hr)}/h agora</div>
+            </>
+          ) : (
+            <div className="credits-meta">indisponível no momento</div>
+          )}
+        </div>
+
+        <div className="credits-card">
+          <div className="credits-card-head">
+            <span className="credits-name">Claude (API)</span>
+            <span className="credits-sub">pontuação dos clipes</span>
+          </div>
+          {data?.anthropic?.configured ? (
+            <div className="credits-meta">Admin key configurada</div>
+          ) : (
+            <div className="credits-meta">
+              saldo no{" "}
+              <a className="link-gold" href="https://platform.claude.com" target="_blank" rel="noreferrer">
+                Console
+              </a>
+              <br />
+              (integração da API entra quando houver a Admin key)
+            </div>
+          )}
+        </div>
+      </div>
+
+      <button
+        type="button"
+        className="chip mt-4"
+        onClick={async () => {
+          try {
+            await api.adminCredits(true);
+            qc.invalidateQueries({ queryKey: ["admin-credits"] });
+            toast.success("Saldos atualizados");
+          } catch {
+            toast.error("Falha ao atualizar.");
+          }
+        }}
+      >
+        Atualizar
+      </button>
+      <p className="credits-note">Atualiza no máximo a cada 5 min (cache); use "Atualizar" pra forçar.</p>
+    </>
+  );
+}
+
 export default function PainelPage() {
   const router = useRouter();
   const { user } = useAuth();
@@ -231,6 +303,7 @@ export default function PainelPage() {
           <TabsList className="mb-6">
             <TabsTrigger value="pending">Pendentes</TabsTrigger>
             <TabsTrigger value="users">Usuários</TabsTrigger>
+            <TabsTrigger value="credits">Saldos</TabsTrigger>
           </TabsList>
           <TabsContent value="pending">
             <section className="card-block">
@@ -244,6 +317,13 @@ export default function PainelPage() {
               <p className="eyebrow">Gerenciamento</p>
               <h2 className="results-title">Todos os usuários</h2>
               <UsersPanel />
+            </section>
+          </TabsContent>
+          <TabsContent value="credits">
+            <section className="card-block">
+              <p className="eyebrow">Custos</p>
+              <h2 className="results-title">Saldos de crédito</h2>
+              <CreditsPanel />
             </section>
           </TabsContent>
         </Tabs>

@@ -711,6 +711,16 @@
 /* ─── Config (abas: padroes / seguranca+sessoes / conta) ───────────────── */
 .config-cards { display: flex; flex-direction: column; gap: 24px; }
 .card-block { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 30px; }
+/* Painel admin: cards de saldo (créditos) */
+.credits-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+.credits-card { background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; }
+.credits-card-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 12px; }
+.credits-name { font-size: 0.95rem; font-weight: 600; color: var(--ink); }
+.credits-sub { font-size: 0.72rem; color: var(--ink-muted); }
+.credits-balance { font-size: 1.7rem; font-weight: 700; color: var(--gold); font-variant-numeric: tabular-nums; }
+.credits-balance.is-low { color: #f0a098; }
+.credits-meta { font-size: 0.8rem; color: var(--ink-soft); margin-top: 4px; line-height: 1.5; }
+.credits-note { font-size: 0.72rem; color: var(--ink-muted); margin-top: 10px; }
 .card-block .eyebrow { font-size: 0.68rem; letter-spacing: 0.16em; color: var(--ink-muted); margin-bottom: 6px; }
 .card-block .results-title { margin-bottom: 20px; }
 .sessions { margin: 4px 0 18px; }

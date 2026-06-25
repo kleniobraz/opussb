@@ -1014,40 +1014,33 @@ auto-corrige; o final decodifica limpo (validado).
 - E2e real (job TEST, S3+ffmpeg, cleanup total): /video=cap_es dur=base+outro decode limpo + frame
   Clubcast no fim; /video?nocap=1=base_es; matched cacheado; toggle 'none' serve sem tela; herda de volta.
 
-**FALTA:** so o **DEPLOY** (restart `opussb`), bloqueado ate o dono autorizar (backup ja feito em
-`/opt/opussb_backups/*-20260625-183122.*`, active_jobs=0). Front correspondente FEITO (ver FRONTEND §23),
-falta `next build` + restart `opussb-web` (junto). Nada commitado/pushado ainda (regra 9).
+**DEPLOYADO + PUSHADO (2026-06-25):** restart `opussb` + `next build` + restart `opussb-web` feitos
+(active_jobs=0, backup). Front correspondente FEITO (ver FRONTEND §23). Commit `02821f9`, pushado.
+Clubcast semeada no DB de producao. **Pendente so a validacao do dono num clipe real da Carbone.**
 
 ## 30. Estado atual e proximos passos (fim da sessao 2026-06-25) [SUPERSEDE §25]
 
 Producao saudavel (`active_jobs=0`, opussb + opussb-web ativos, https://sbclips.space).
 
-**DEPLOYADO nesta sessao** (tudo em `master` LOCAL): §26 legenda por palavra (`8f4378c`), §27 poster /thumb
-+ projetos "Ver mais" + loading lazy (`cda4dcc`), §28 waveform (`b1e7f07`), e 2 fixes de front: painel para
-de seguir o video ao editar (`9bae09e`), dialogo do clipe maior + pausa o card ao abrir (`891b7b3`).
-Ver FRONTEND §21.
+**DEPLOYADO + PUSHADO nesta sessao** (`origin/master` em `09c5d6e`): §26 legenda por palavra (`8f4378c`),
+§27 poster /thumb + "Ver mais" + lazy (`cda4dcc`), §28 waveform (`b1e7f07`), 2 fixes de front (`9bae09e`,
+`891b7b3`), §29 tela final por projeto (`02821f9`), §31.1 camada de video/filmstrip (`0e72eb8`), §31.2/31.3
+biblioteca de telas finais + encurtar (`09c5d6e`). Ver FRONTEND §21/§23/§24.
 
-**GIT (IMPORTANTE):** `origin/master` em `9a9b01e` (3 commits de DOC, pushados no inicio da sessao).
-`master` LOCAL esta **5 commits A FRENTE, SEM PUSH** (regra 9): `9bae09e`, `8f4378c`, `891b7b3`, `cda4dcc`,
-`b1e7f07`. **Pushar quando o dono autorizar.** Ha tambem WIP NAO commitado no working tree: a **tela final
-CLUBCAST inteira** (§29: `db.py`, `config.py`, `app.py`, `test_backend.py` + os 4 arquivos do front) + estes
-docs. Tudo testado (`test_backend.py` verde) e validado por e2e real, **mas NAO deployado** (restart
-bloqueado ate o dono autorizar).
+**GIT:** `origin/master` == `master` local == `09c5d6e` (TUDO pushado). Working tree limpo, EXCETO `.gitignore`
+(o dono adicionou `.env.example`; deixado pra ele commitar). Sem WIP pendente.
 
-**STAGING:** git worktree em `/opt/opussb-staging` (branch `staging`, em `8f4378c`, atras do master) pro
-futuro editor OpusClip. Tem um `.env` copiado (gitignored). Rebaseline com `git -C /opt/opussb-staging merge master`
-antes de comecar o editor.
+**STAGING:** git worktree em `/opt/opussb-staging` (branch `staging`, atras do master) pro futuro editor
+OpusClip. Tem um `.env` copiado (gitignored). Rebaseline com `git -C /opt/opussb-staging merge master` antes
+de comecar o editor.
 
 **PROXIMOS PASSOS:**
-1. **Tela final CLUBCAST (§29): FEITA no codigo + testes + e2e; falta so o DEPLOY** (autorizar o restart do
-   `opussb` + `next build` + restart do `opussb-web`, juntos, com active_jobs=0; backup ja feito). Depois:
-   ligar a tela final NOS PROJETOS DA CARBONE (seletor na pagina do projeto) e validar um clipe real
-   (verificar a junção do audio num clipe vindo do reframe, nao so no base sintetico do e2e).
+1. **Validar a tela final num clipe REAL da Carbone** (unica pendencia das §29/§31): ligar a tela no projeto
+   pelo seletor, abrir um clipe vindo do reframe e conferir a emenda (audio/video) no fim. O e2e usou base
+   sintetico; falta a prova num clipe de producao.
 2. **Editor estilo OpusClip** (FRONTEND §22): texto corrido + karaoke por palavra + pilulas de pausa, como
-   RE-SKIN (nao rewrite), em STAGING, com o `clip_words` que ja guardamos. Decisao fechada nesta sessao
-   (painel multi-lente + probe). "Remover pausa/jump-cut" = v2.
-3. **Push dos 5 commits + o commit da tela final** quando autorizado.
-4. Pendencias antigas: `reprocess`, ~~filmstrip real~~ FEITO (§31), ultralytics RCE, static/ legado.
+   RE-SKIN (nao rewrite), em STAGING, com o `clip_words` que ja guardamos. "Remover pausa/jump-cut" = v2.
+3. Pendencias antigas: `reprocess`, ultralytics RCE, static/ legado.
 
 ## 31. Camada de video (filmstrip) + biblioteca DINAMICA de telas finais + encurtar (2026-06-25)
 
@@ -1081,4 +1074,22 @@ expoe `end_screen_dur` + a `duration` de cada opcao. Front: alca arrastavel na 4
 
 **Validacao:** `test_end_screen` ampliado (biblioteca via DB, dur/clamp, DELETE) + 3 e2e reais (render
 sem-trim, trim=2s -> final=base+2, upload 720x1280 -> render final 1080x1920 decode limpo). `tsc` limpo.
-**STATUS: codigo pronto + testado; 31.2/31.3 e o front AGUARDAM deploy (restart) + commit/push.**
+**STATUS: TUDO DEPLOYADO + PUSHADO** (31.1 em `0e72eb8`; 31.2/31.3 + front em `09c5d6e`). So falta a
+validacao do dono num clipe real da Carbone.
+
+## 32. Painel de saldos (creditos) no admin (2026-06-25)
+
+Pedido do dono: admins acompanharem os saldos de credito (RunPod e Claude) pelo painel.
+- **`GET /api/admin/credits`** (`app.py`, `@admin_required` = sessao admin, NAO e a chave): saldo da
+  RunPod via GraphQL (`https://api.runpod.io/graphql`, query `myself { clientBalance currentSpendPerHr }`,
+  Bearer RUNPOD_API_KEY, VALIDADO por probe real). Cache em memoria de 5 min (`_credits_cache`/lock),
+  `?refresh=1` forca. Best-effort: falha -> campo null, nao quebra. Resposta:
+  `{runpod:{balance,spend_per_hr}|null, anthropic:{configured:bool}, cached:bool}`.
+- **Claude/Anthropic:** so o saldo APARECE no Console; nao ha endpoint publico garantido pro saldo
+  prepago. O relatorio de CUSTO precisa da Admin API key (`sk-ant-admin...`, != ANTHROPIC_API_KEY).
+  `config.ANTHROPIC_ADMIN_KEY` (opcional, vazio hoje) ja existe; quando o dono gerar a key, integrar o
+  cost report (`/v1/organizations/cost_report`) e VALIDAR com dado real (nao deixei codigo nao testado).
+- Front: aba "Saldos" no /painel (FRONTEND §25). Decisao de custo (sessao): cache de prompt NAO ajuda o
+  scoring (transcricao muda sempre + vidoes espacados); o custo pesado e a RunPod, nao a Claude (Haiku,
+  ~US$0,03/video). Saldos no momento: RunPod ~US$8,58, Claude ~US$2,35 (baixo, recarregar).
+- e2e: gate 401/403/200 + saldo real + cache. **DEPLOYADO; commit ainda nesta leva (ver git).**

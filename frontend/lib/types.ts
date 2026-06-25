@@ -28,6 +28,14 @@ export interface AdminUser {
   updated_at?: string | null;
 }
 
+// Saldos/custos pro painel admin. runpod = saldo real (USD) + gasto/hora; anthropic = se a Admin
+// key está configurada (saldo da Claude fica no Console por enquanto). null = falha ao buscar.
+export interface AdminCredits {
+  runpod?: { balance: number; spend_per_hr: number } | null;
+  anthropic?: { configured: boolean } | null;
+  cached?: boolean;
+}
+
 export interface UploadResponse {
   job_id: string;
 }

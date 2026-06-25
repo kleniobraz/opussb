@@ -2,6 +2,7 @@
 // cookie de sessao flui sem CORS/token. Em 401, dispara um evento global pra casca derrubar
 // pro login, e lanca AuthError.
 import type {
+  AdminCredits,
   AdminUser,
   Captions,
   CaptionStyle,
@@ -286,6 +287,8 @@ export const signup = (email: string, password: string) =>
 
 // ── Admin (gated por is_admin no servidor) ────────────────────────────────────
 export const adminUsers = () => getJson<{ users: AdminUser[] }>("/api/admin/users");
+export const adminCredits = (refresh = false) =>
+  getJson<AdminCredits>("/api/admin/credits" + (refresh ? "?refresh=1" : ""));
 export const adminApprove = (email: string) =>
   postJson<{ ok?: boolean }>("/api/admin/approve", { email });
 export const adminReject = (email: string) =>
