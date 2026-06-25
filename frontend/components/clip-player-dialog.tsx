@@ -39,7 +39,7 @@ export function ClipPlayerDialog({
   }
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[880px] border-[var(--border)] bg-[var(--surface)]">
+      <DialogContent className="max-w-[560px] border-[var(--border)] bg-[var(--surface)]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-3">
             {title}
@@ -51,27 +51,29 @@ export function ClipPlayerDialog({
             <DialogDescription className="text-ink-soft">{clip.reason}</DialogDescription>
           )}
         </DialogHeader>
-        <div className="flex flex-col gap-5 sm:flex-row">
-          <ClipVideo src={url} autoPlay className="mx-auto w-full max-w-[260px] rounded-[var(--radius-md)]" />
-          <div className="flex flex-1 flex-col justify-end gap-2.5">
-            <div className="flex flex-wrap gap-2.5">
-              <Button asChild variant="gold" size="brand">
-                <a href={url} download>
-                  <Download /> Baixar
-                </a>
-              </Button>
-              <Button variant="brandGhost" size="brand" onClick={copyLink}>
-                <Copy /> Copiar link
-              </Button>
-              <Button
-                variant="brandGhost"
-                size="brand"
-                onClick={onToggleFav}
-                className={fav ? "text-gold" : undefined}
-              >
-                <Heart /> {fav ? "Favorito" : "Favoritar"}
-              </Button>
-            </div>
+        <div className="flex flex-col items-center gap-4">
+          <ClipVideo
+            src={url}
+            autoPlay
+            className="h-[68vh] max-h-[620px] w-auto rounded-[var(--radius-md)]"
+          />
+          <div className="flex flex-wrap justify-center gap-2.5">
+            <Button asChild variant="gold" size="brand">
+              <a href={url} download>
+                <Download /> Baixar
+              </a>
+            </Button>
+            <Button variant="brandGhost" size="brand" onClick={copyLink}>
+              <Copy /> Copiar link
+            </Button>
+            <Button
+              variant="brandGhost"
+              size="brand"
+              onClick={onToggleFav}
+              className={fav ? "text-gold" : undefined}
+            >
+              <Heart /> {fav ? "Favorito" : "Favoritar"}
+            </Button>
           </div>
         </div>
       </DialogContent>

@@ -31,12 +31,16 @@ export function ClipVideo({
   className,
   children,
   onExpand,
+  paused = false,
 }: {
   src: string;
   autoPlay?: boolean;
   className?: string;
   children?: React.ReactNode;
   onExpand?: () => void;
+  // Pausa controlada de fora: o card passa `paused={open}` pra parar quando o dialogo abre
+  // (senao rodam dois videos ao mesmo tempo). So pausa; nao retoma sozinho ao soltar.
+  paused?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -56,6 +60,11 @@ export function ClipVideo({
     document.addEventListener("fullscreenchange", onFs);
     return () => document.removeEventListener("fullscreenchange", onFs);
   }, []);
+
+  // Pausa quando pedido de fora (ex.: ao abrir o dialogo, o card para de tocar).
+  useEffect(() => {
+    if (paused) videoRef.current?.pause();
+  }, [paused]);
 
   // Quando o src e anexado por intencao do usuario (idle -> activated), toca assim que o elemento
   // remontar com o src. Em autoPlay o proprio atributo do <video> cuida (wantPlayRef fica false).

@@ -45,7 +45,7 @@ export function ClipCard({ clip, index = 0 }: { clip: Clip; index?: number }) {
   return (
     <article className="clip-card" data-clip-id={clip.id}>
       {url ? (
-        <ClipVideo src={playUrl} onExpand={() => setOpen(true)}>
+        <ClipVideo src={playUrl} onExpand={() => setOpen(true)} paused={open}>
           {clip.score != null && (
             <span className={`score-badge ${scoreClass(clip.score)}`}>{fmtScore(clip.score)}</span>
           )}
