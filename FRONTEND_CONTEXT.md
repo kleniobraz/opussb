@@ -35,12 +35,17 @@ de API) e a memória do projeto (`frontend-stack-decision`).
   real por clipe** + **"Ver mais"** + **loading lazy**; e a **waveform REAL** na camada de áudio do editor.
   Mais a **legenda sincronizada** (tempo por palavra, BACKEND §26). **Editor estilo OpusClip:** decisão
   fechada (§22).
-- **Tela final CLUBCAST (§23) + camada de vídeo + biblioteca de telas finais + encurtar (§24): EM PRODUÇÃO
-  e pushado** (`origin/master` em `09c5d6e`). Tela final por projeto (removível/encurtável por clipe);
-  filmstrip real no editor; subir/trocar/excluir telas finais na página do projeto.
-- **Falta (pendente):** validar a tela final num **clipe real da Carbone**; o **editor estilo OpusClip**
-  (§22, decidido, em STAGING); remover a SPA `static/`; popstate (botão Voltar do navegador) no editor
-  (§7/§9). A **waveform e o filmstrip deixaram de ser pendência** (§21/§24). Estado + git em **BACKEND §30**.
+- **Tela final CLUBCAST (§23) + camada de vídeo + biblioteca de telas finais + encurtar (§24): EM PRODUÇÃO.**
+  Tela final por projeto (removível/encurtável por clipe); filmstrip real no editor; subir/trocar/excluir
+  telas finais na página do projeto.
+- **Painel de saldos no admin (§25, em produção):** aba "Saldos" no /painel com o saldo da RunPod (real,
+  via API); o custo da Claude fica parado (a org é "Individual", sem Admin API; ver BACKEND §32/§34).
+- **PRÓXIMA GRANDE FRENTE (decidida 2026-06-26, NÃO começada): editor de crop por KEYFRAME estilo OpusClip
+  + multi-apresentador**, em STAGING. Decisões e arquitetura em **BACKEND §33** (front: §26 abaixo).
+- **Git:** `origin/master` em `62b7be4` (tudo pushado). Working tree tem só docs + `.gitignore` (do dono).
+- **Falta (pendente):** validar a tela final num **clipe real da Carbone**; o **editor de crop por keyframe**
+  (§26 / BACKEND §33, staging); o **editor estilo OpusClip texto-corrido** (§22, staging); remover a SPA
+  `static/`; popstate no editor (§7/§9). Estado completo + git em **BACKEND §34**.
 
 ---
 
@@ -698,3 +703,17 @@ Aba "Saldos" no /painel (so admin; backend BACKEND §32). `lib/types.ts` ganhou 
 + nova `TabsTrigger`/`TabsContent` "credits". Card da RunPod (saldo USD + gasto/h, fica vermelho se
 < US$5) e card da Claude (link pro Console enquanto nao houver Admin key) + botao "Atualizar"
 (`refresh=1`). CSS `.credits-*` em `brand.css`. `tsc` limpo. **EM PRODUCAO** (deploy + commit nesta leva).
+
+## 26. Editor de crop por KEYFRAME + multi-apresentador: DECISOES (2026-06-26)
+
+Proxima grande frente do editor (estilo OpusClip). **So decisoes; nada implementado; em STAGING.**
+Backend + arquitetura completa: **BACKEND §33** (e estado/git em BACKEND §34). Resumo do lado front:
+- O editor passa a mostrar a **fonte 16:9** do clipe (rota nova tipo `/src169`) com uma **caixa 9:16
+  arrastavel** por cima (so HORIZONTAL/pan, sem zoom) -> igual o print do OpusClip que o dono mandou.
+- **Preview instantaneo via CSS** (a caixa e so um recorte visual; nao re-renderiza ao arrastar). O
+  render final (9:16) sai do servidor por re-render do reframe_core no "Aplicar".
+- **Trilha de keyframes** na timeline (4a/5a camada): o auto vira a trajetoria base e SEMEIA keyframes;
+  o usuario move/adiciona/remove pra corrigir so onde errou. **Toggle Auto/Manual por clipe**.
+- **Multi-apresentador** (split / 3 / 4, o "Ativar layout" do print): no escopo, mas FASE POSTERIOR.
+- Reusa a timeline/preview/drag que ja existem (handles §15/§18, blocos de legenda). Decidir data model
+  e rotas no design pass (BACKEND §33 "A FAZER").

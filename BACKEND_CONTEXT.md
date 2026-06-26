@@ -1093,3 +1093,75 @@ Pedido do dono: admins acompanharem os saldos de credito (RunPod e Claude) pelo 
   scoring (transcricao muda sempre + vidoes espacados); o custo pesado e a RunPod, nao a Claude (Haiku,
   ~US$0,03/video). Saldos no momento: RunPod ~US$8,58, Claude ~US$2,35 (baixo, recarregar).
 - e2e: gate 401/403/200 + saldo real + cache. **DEPLOYADO; commit ainda nesta leva (ver git).**
+
+## 33. Crop por KEYFRAME + multi-apresentador: DECISOES + arquitetura (2026-06-26)
+
+Editor de enquadramento manual estilo OpusClip. REFINA o roadmap "Fase 1" do §24 e a "Fase 3" do
+FRONTEND §20. **Status: SO DECISOES + arquitetura acordada. NADA implementado. Tudo em STAGING
+(worktree /opt/opussb-staging), decisao do dono.** O dono mostrou prints do OpusClip (caixa 9:16
+arrastavel sobre o 16:9, "Rastreador: DESATIVADO", "Ativar layout" multi-apresentador).
+
+**DECISOES DO DONO (2026-06-26):**
+1. Reter o corte **16:9 por clipe** no S3 por **30 dias** (custo de storage OK; ~100GB em regime, §24).
+2. Crop **SO horizontal** (pan). Sem zoom/scale.
+3. **Multi-apresentador INCLUIDO** (split / 3 / 4) no escopo (mas e mais pesado -> fase posterior).
+4. **Tudo em STAGING** primeiro.
+5. Modelo: **keyframe = primitivo unico**; toggle Auto/Manual por clipe; manual SEMEADO do auto.
+
+**ARQUITETURA ACORDADA:**
+- O corte **16:9 vira a fonte de verdade**; o `clip_NN_base.mp4` (9:16) passa a ser um RENDER DERIVADO
+  dela. O 16:9 JA e produzido hoje; no caminho GPU JA sobe pro S3 (e deletado no fim) -> reter = parar
+  de deletar + TTL 30d. (No caminho CPU e local; precisaria subir.)
+- O **auto-reframe (reframe_core) vira a TRAJETORIA BASE**, persistida (cx por frame / por segmento).
+- **Keyframe = primitivo unico.** Auto = keyframes gerados pela maquina (semeados nos cortes de camera
+  §24, com keyframe em "DEGRAU" no corte pra PULAR em vez de varrer a cena). Manual = keyframes do
+  usuario, **semeados a partir do resultado do auto** (ai "corrige so onde erra"). **Toggle Auto/Manual
+  por clipe** (igual "Rastreador: DESATIVADO" do OpusClip); NAO rodar os dois juntos.
+- **Aplicar = RE-RENDER via reframe_core** (CPU + GPU), substitui o base 9:16. **NAO** crop variavel na
+  queima (seria caro/estampida, §19.1). Legenda queima por cima como hoje. **Compoe com handles/trim
+  §18** (mesma janela) e a tela final §29.
+- **Preview no editor = caixa 9:16 arrastavel sobre o video 16:9, recorte via CSS** (instantaneo, sem
+  re-render). Render so no "Aplicar".
+
+**A FAZER (fazer um design pass + implementar em fases pequenas/reversiveis, STAGING):**
+- Data model: persistir trajetoria/keyframes (provavel coluna nova em `clip_captions`, JSON tipo
+  `{mode:"auto|manual", keyframes:[{t,cx,hold?}], layout}`) + key S3 do 16:9 retido + reter no pipeline.
+- reframe_core: aceitar uma **trajetoria custom** (cx-por-frame interpolado dos keyframes) em vez de so a
+  auto; passar isso pro **GPU submit** (gpu_reframe/handler.py + runpod_client) e pro CPU.
+- Rota pra servir o **16:9** ao editor (302 pro S3, tipo `/src169`) + rotas pra ler/gravar keyframes +
+  disparar o re-render daquele clipe.
+- Multi-apresentador: compor 2+ recortes em split/3/4 (fase POSTERIOR; mais pesado).
+- Front: editor com preview 16:9 + caixa arrastavel (so horizontal) + trilha de keyframes + toggle layout.
+
+**RISCOS A VALIDAR no design (empiricamente, nao assumir):** frame-accuracy da trajetoria vs a janela e
+os handles §18; passagem da trajetoria pra GPU; custo/estampida do multi-apresentador (varios recortes);
+mecanica do TTL 30d no S3; isolamento do staging (DB/S3/unit proprios). Memoria: `reframe-void-fix-and-crop-editor`.
+
+## 34. Estado atual e proximos passos (fim da sessao 2026-06-26) [SUPERSEDE §30]
+
+Producao saudavel (`active_jobs=0`, opussb + opussb-web ativos, https://sbclips.space).
+
+**DEPLOYADO + PUSHADO nesta sessao** (`origin/master` em `62b7be4`):
+- §29 tela final CLUBCAST por projeto (`02821f9`); §31.1 camada de video/filmstrip (`0e72eb8`);
+  §31.2/31.3 biblioteca de telas finais (upload/trocar/excluir) + encurtar arrastando (`09c5d6e`);
+  §32 painel de saldos (RunPod) no admin (`62b7be4`). Front correspondente: FRONTEND §23/§24/§25.
+
+**GIT:** `origin/master` == local == `62b7be4` (tudo pushado). Working tree: so docs (estes) +
+`.gitignore` (o dono adicionou `.env.example`, deixar pra ele). Sem WIP de codigo.
+
+**SALDOS (do painel novo):** RunPod ~US$8,58 (custo pesado, ok). Claude ~US$2,27 (BAIXO, recarregar pra o
+scoring nao parar). Decisao: cache de prompt NAO ajuda o scoring; custo pesado e a RunPod, nao a Claude.
+
+**ANTHROPIC ADMIN KEY (custo da Claude no painel): PARADO.** A conta e "Klenio Braz's Individual Org" =
+org INDIVIDUAL, e a Admin API **nao existe** pra org individual (a pagina /settings/admin-keys da 404).
+Pra liberar, teria que "Converter para organizacao Team" (Settings > Organization) -> decisao de
+negocio/billing do dono, nao vale so pelo numero de custo (que e minusculo). `config.ANTHROPIC_ADMIN_KEY`
+ja existe vazio; quando virar Team, e so setar no .env que eu ligo o cost report (validando com dado real).
+
+**PROXIMOS PASSOS:**
+1. **Validar a tela final num clipe REAL da Carbone** (§29/§31): ligar a tela no projeto, abrir um clipe
+   vindo do reframe, conferir a emenda (audio/video). O e2e usou base sintetico.
+2. **Editor de crop por KEYFRAME + multi-apresentador (§33): proxima grande frente.** So decisoes hoje;
+   proximo passo = design pass (mapear o stack de reframe/render + projetar fases) e implementar em STAGING.
+3. **Editor estilo OpusClip texto-corrido** (FRONTEND §22, staging).
+4. Pendencias antigas: `reprocess`, ultralytics RCE, static/ legado.
