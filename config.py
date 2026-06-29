@@ -125,6 +125,15 @@ REFRAME_GPU_ENABLED: bool = (
 REFRAME_GPU_TIMEOUT: int = int(os.environ.get("REFRAME_GPU_TIMEOUT", "1800"))  # teto por clipe (s); > 600s default do RunPod
 REFRAME_PUT_CONTENT_TYPE: str = os.environ.get("REFRAME_PUT_CONTENT_TYPE", "video/mp4")
 
+# Retencao do corte 16:9 por clipe (fonte de verdade do crop por keyframe, BACKEND §33). O corte
+# 16:9 que hoje vira o base 9:16 passa a ser RETIDO no S3 sob um prefixo DEDICADO (pra a regra de
+# lifecycle por Filter.Prefix isolar so o 16:9, sem misturar com clip_NN_base/cap em jobs/.../clips/)
+# e expira em SOURCE16X9_TTL_DAYS. SOURCE16X9_LIFECYCLE_ENSURE (default false) liga o ensure da regra
+# no boot; fica off em prod ate o dono decidir (nao muta a config do bucket sem querer).
+SOURCE16X9_PREFIX: str = "source16x9/"
+SOURCE16X9_TTL_DAYS: int = int(os.environ.get("SOURCE16X9_TTL_DAYS", "30"))
+SOURCE16X9_LIFECYCLE_ENSURE: bool = os.environ.get("SOURCE16X9_LIFECYCLE_ENSURE", "false").lower() in ("1", "true", "yes")
+
 # YouTube (yt-dlp): teto de duração do vídeo de entrada, em segundos. Controla custo de
 # transcrição (RunPod escala com a duração) e quanto tempo um job segura o único slot da
 # fila (MAX_CONCURRENT_JOBS=1). Default 2h. Ajustável por env sem mexer no código.

@@ -119,3 +119,30 @@ def delete_prefix(prefix: str) -> int:
         deleted += len(batch)
     log.info("delete prefix %s: %d objeto(s)", prefix, deleted)
     return deleted
+
+
+def ensure_lifecycle_rule(prefix: str, days: int, rule_id: str) -> bool:
+    """Garante (idempotente) uma regra de lifecycle de EXPIRACAO no bucket: objetos sob `prefix`
+    expiram apos `days` dias (TTL do 16:9 retido, BACKEND §33). O prefixo entra namespaced via _k
+    (staging/ no staging). Faz MERGE por rule_id com as regras existentes (NAO apaga regras de outros
+    prefixos). So PUTa quando a regra falta ou difere (steady-state e so um GET read-only). Retorna
+    True se aplicou/atualizou, False se ja estava igual. Validado: Hetzner RGW honra lifecycle."""
+    client = _client()
+    want_prefix = _k(prefix)
+    desired = {"ID": rule_id, "Filter": {"Prefix": want_prefix},
+               "Status": "Enabled", "Expiration": {"Days": int(days)}}
+    try:
+        existing = client.get_bucket_lifecycle_configuration(
+            Bucket=config.S3_BUCKET).get("Rules", [])
+    except ClientError:
+        existing = []   # NoSuchLifecycleConfiguration (bucket sem regra) ou erro transitorio
+    current = next((r for r in existing if r.get("ID") == rule_id), None)
+    if (current and current.get("Status") == "Enabled"
+            and current.get("Expiration", {}).get("Days") == int(days)
+            and current.get("Filter", {}).get("Prefix") == want_prefix):
+        return False
+    others = [r for r in existing if r.get("ID") != rule_id]
+    client.put_bucket_lifecycle_configuration(
+        Bucket=config.S3_BUCKET, LifecycleConfiguration={"Rules": others + [desired]})
+    log.info("lifecycle rule %s -> prefix=%s days=%d", rule_id, want_prefix, days)
+    return True

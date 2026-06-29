@@ -806,11 +806,88 @@ def test_end_screen():
         cc.execute("DELETE FROM end_screens WHERE id = ?", ("testes_es_x",))
 
 
+def test_crop_keyframe():
+    print("[crop por keyframe: key 16:9 + keyframes db + rota src169 + lifecycle (Fase 1a)]")
+    import db, json as _json, s3_client, config
+    from werkzeug.security import generate_password_hash
+
+    # 1) key do 16:9 retido: prefixo dedicado, 1-based (idx0 -> clip_01)
+    check(app._src169_key_for("J9", 0) == "source16x9/J9/clip_01.mp4", "_src169_key_for idx0 -> clip_01")
+    check(app._src169_key_for("J9", 4) == "source16x9/J9/clip_05.mp4", "_src169_key_for idx4 -> clip_05")
+
+    # 2) keyframes round-trip no banco (UPSERT cobre clipe sem linha previa)
+    kf = {"mode": "manual", "kf": [{"t": 0.0, "cx": 0.3}, {"t": 2.5, "cx": 0.7}]}
+    db.set_clip_keyframes("JK:3", _json.dumps(kf))
+    check(_json.loads(db.get_clip_keyframes("JK:3")) == kf, "set/get_clip_keyframes round-trip (upsert)")
+    check(db.get_clip_keyframes("NOPE:0") is None, "clipe sem keyframes -> None")
+
+    # 3) rota /src169: 404 sem o 16:9, 302 com ele; crop_editable/keyframes no GET /captions
+    db.upsert_user("crop@test", generate_password_hash("pw12345678"), must_change=False)
+    db.create_job("JC", "v.mp4", 10, 60, "/x", "crop@test")
+    db.update_job("JC", status="done",
+                  result_urls=_json.dumps([{"key": "jobs/JC/clips/clip_01_base.mp4"}]))
+    db.set_clip_captions("JC:0", _json.dumps([{"start": 0, "end": 1, "text": "a"}]))
+    c = app.app.test_client()
+    c.post("/api/login", json={"email": "crop@test", "password": "pw12345678"})
+    _orig_exists = s3_client.exists
+    try:
+        s3_client.exists = lambda k: False
+        check(c.get("/api/clips/JC:0/src169").status_code == 404, "src169 sem o 16:9 retido -> 404")
+        r = c.get("/api/clips/JC:0/captions")
+        check(r.status_code == 200 and r.get_json().get("crop_editable") is False,
+              "captions GET: crop_editable=False sem o 16:9")
+        check("keyframes" in r.get_json(), "captions GET expoe keyframes")
+        s3_client.exists = lambda k: True
+        check(c.get("/api/clips/JC:0/src169").status_code == 302, "src169 com o 16:9 retido -> 302")
+        check(c.get("/api/clips/JC:0/captions").get_json().get("crop_editable") is True,
+              "captions GET: crop_editable=True com o 16:9")
+    finally:
+        s3_client.exists = _orig_exists
+
+    # 4) ensure_lifecycle_rule: idempotente, merge por id, prefixo namespaced (cliente fake, sem rede)
+    from botocore.exceptions import ClientError
+
+    class _FakeS3:
+        def __init__(self):
+            self.rules = None
+            self.puts = 0
+        def get_bucket_lifecycle_configuration(self, Bucket):
+            if self.rules is None:
+                raise ClientError({"Error": {"Code": "NoSuchLifecycleConfiguration"}}, "Get")
+            return {"Rules": self.rules}
+        def put_bucket_lifecycle_configuration(self, Bucket, LifecycleConfiguration):
+            self.rules = LifecycleConfiguration["Rules"]
+            self.puts += 1
+
+    fake = _FakeS3()
+    _orig_client = s3_client._client
+    try:
+        s3_client._client = lambda: fake
+        want_pfx = config.S3_KEY_PREFIX + "source16x9/"
+        ch1 = s3_client.ensure_lifecycle_rule("source16x9/", 30, "rid")
+        check(ch1 and fake.puts == 1, "lifecycle: 1o ensure aplica (PUT)")
+        check(fake.rules[0]["Filter"]["Prefix"] == want_pfx and fake.rules[0]["Expiration"]["Days"] == 30,
+              "lifecycle: prefixo namespaced + Days=30")
+        ch2 = s3_client.ensure_lifecycle_rule("source16x9/", 30, "rid")
+        check(ch2 is False and fake.puts == 1, "lifecycle: 2o ensure idempotente (sem PUT)")
+        fake.rules = [{"ID": "other", "Filter": {"Prefix": "x/"}, "Status": "Enabled",
+                       "Expiration": {"Days": 7}}]
+        s3_client.ensure_lifecycle_rule("source16x9/", 30, "rid")
+        check({r["ID"] for r in fake.rules} == {"other", "rid"}, "lifecycle: merge preserva outra regra")
+    finally:
+        s3_client._client = _orig_client
+
+    db.delete_job("JC")
+    with db._conn() as cc:
+        cc.execute("DELETE FROM users WHERE email = ?", ("crop@test",))
+
+
 def main():
     for t in (test_burn_cmd, test_burn_semaphore, test_presigned_put, test_runpod_client,
               test_validate_segments, test_parse_clips_json,
               test_captions_roundtrip, test_words_for_clip, test_caption_style, test_youtube_helpers,
               test_snap_clip_bounds, test_thumbnail, test_clip_window, test_download_all, test_end_screen,
+              test_crop_keyframe,
               test_sessions_helpers, test_sessions_ownership, test_sessions_flow,
               test_sessions_extra):
         t()

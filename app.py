@@ -83,6 +83,16 @@ for _es_id, _es in config.END_SCREENS.items():
     except Exception as e:
         log.warning("falha ao semear tela final %s (%s)", _es_id, e)
 
+# Lifecycle do 16:9 retido (crop por keyframe, BACKEND §33): expira o prefixo dedicado em
+# SOURCE16X9_TTL_DAYS. Gated por SOURCE16X9_LIFECYCLE_ENSURE (default off) pra NAO mutar a config do
+# bucket sem decisao; idempotente (so PUTa quando a regra falta/difere). Best-effort: nao trava o boot.
+if config.SOURCE16X9_LIFECYCLE_ENSURE:
+    try:
+        s3_client.ensure_lifecycle_rule(config.SOURCE16X9_PREFIX, config.SOURCE16X9_TTL_DAYS,
+                                        "opussb-source16x9-ttl")
+    except Exception as e:
+        log.warning("[lifecycle] falha ao garantir a regra do 16:9 retido: %s", e)
+
 # Semeia admins iniciais (config ADMIN_EMAILS) como is_admin + active. Idempotente:
 # cria a linha se não existir (sem senha utilizável; ele entra via Zoho) ou só promove.
 for _admin_email in config.ADMIN_EMAILS:
@@ -1580,6 +1590,26 @@ def clip_base(clip_id):
     return _clip_redirect(base_key)
 
 
+def _src169_key_for(job_id: str, idx: int) -> str:
+    """Chave S3 do corte 16:9 RETIDO (fonte do crop por keyframe, BACKEND §33): prefixo DEDICADO
+    (lifecycle/TTL), 1-based como as outras keys de clipe. Deriva de job_id + idx (NAO do base_key,
+    que vive sob jobs/.../clips/)."""
+    return f"{config.SOURCE16X9_PREFIX}{job_id}/clip_{idx+1:02d}.mp4"
+
+
+@app.route("/api/clips/<path:clip_id>/src169")
+@login_required
+def clip_src169(clip_id):
+    """Entrega o corte 16:9 RETIDO (fonte do crop por keyframe): 302 pra URL presignada. So existe
+    pra clipe processado DEPOIS da retencao (BACKEND §33); senao 404 (o editor de crop degrada pra
+    indisponivel). Pan-only: o front arrasta a caixa 9:16 sobre este 16:9."""
+    job, idx, _base_key = _clip_lookup(clip_id)
+    src_key = _src169_key_for(job["job_id"], idx)
+    if not s3_client.exists(src_key):
+        abort(404)
+    return _clip_redirect(src_key)
+
+
 # Teto de tempo da extracao do poster (range-seek + decode de 1 frame). Curto: e barato.
 _THUMB_TIMEOUT = 30
 
@@ -1910,6 +1940,15 @@ def clip_captions_get(clip_id):
             "in": round(max(0.0, float(window.get("in_point") or 0.0)), 3),
             "out": round(float(window["out_point"]) if window.get("out_point") is not None else win_dur, 3),
         }
+    # Crop por keyframe: keyframes salvos (mode/kf) ou None (= auto, o base ja tem o enquadramento).
+    # crop_editable = clipe novo COM o 16:9 fonte retido (so processado depois da retencao); o front
+    # so habilita o editor de crop quando True. O exists() e 1 head_object (captions GET nao e hot).
+    raw_kf = db.get_clip_keyframes(clip_id)
+    try:
+        keyframes = json.loads(raw_kf) if raw_kf else None
+    except (TypeError, ValueError):
+        keyframes = None
+    crop_editable = bool(editable) and s3_client.exists(_src169_key_for(job["job_id"], idx))
     # Tela final: override do clipe (None/"none"/id), o efetivo após herança, o default do projeto,
     # e a biblioteca de opções (pro editor montar o toggle/seletor sem outra request).
     return jsonify({"segments": segs, "editable": editable, "music": music_info,
@@ -1918,7 +1957,8 @@ def clip_captions_get(clip_id):
                     "end_screen_effective": _resolve_end_screen_id(job, clip_id),
                     "end_screen_dur": db.get_clip_end_screen_dur(clip_id),
                     "project_end_screen": job.get("end_screen"),
-                    "end_screens": _end_screen_options()})
+                    "end_screens": _end_screen_options(),
+                    "keyframes": keyframes, "crop_editable": crop_editable})
 
 
 @app.route("/api/clips/<path:clip_id>/captions", methods=["PUT"])
@@ -2220,6 +2260,7 @@ def delete_project(job_id):
     # sobrar no bucket é órfão e pode ser varrido depois).
     try:
         s3_client.delete_prefix(f"jobs/{job_id}/")
+        s3_client.delete_prefix(f"{config.SOURCE16X9_PREFIX}{job_id}/")   # 16:9 retido (crop por keyframe)
     except Exception as e:
         log.warning("[delete] falha ao limpar S3 do job %s: %s", job_id, e)
     db.delete_job(job_id)

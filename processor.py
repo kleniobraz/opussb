@@ -334,6 +334,15 @@ def run_thread2(job_id: str) -> None:
                 pass
             else:
                 _s3_upload_with_retry(item["final"], key)
+            # Retem o corte 16:9 (fonte do crop por keyframe, BACKEND §33) se ainda nao foi retido pela
+            # GPU. item["path"] (o corte local) existe ate o rmtree no fim; sobe pra key dedicada (TTL
+            # via lifecycle). Best-effort: falha aqui nao derruba o job (o crop fica indisponivel).
+            if not item.get("src169_retained"):
+                try:
+                    _s3_upload_with_retry(item["path"],
+                                          f"{config.SOURCE16X9_PREFIX}{job_id}/clip_{i+1:02d}.mp4")
+                except Exception as e:
+                    log.warning("[src169] clip %d: falha ao reter o 16:9 (%s)", i + 1, e)
             clip_id = f"{job_id}:{i}"
             meta = item["meta"]
             win_start = float(item.get("win_start") or 0.0)
@@ -516,15 +525,17 @@ def _reframe_clips_gpu(job_id: str, produced: list) -> list:
     url_expiry = config.REFRAME_GPU_TIMEOUT + 600       # URLs vivem mais que fila + cold start + job
     t0 = time.monotonic()
     submitted = []     # (i, rp_job_id, base_key)
-    tmp_keys = []
-    # 1) sobe os cortes e submete todos (fan-out)
+    # 1) sobe os cortes e submete todos (fan-out). O corte 16:9 e RETIDO (fonte do crop por keyframe,
+    # BACKEND §33): em vez de subir pra uma key temporaria e deletar, sobe direto pra key de retencao
+    # (lifecycle/TTL) e o worker le DELA. Zero upload extra; src169_retained evita o re-upload no loop
+    # do run_thread2.
     for i, item in enumerate(produced):
         base_key = f"jobs/{job_id}/clips/clip_{i+1:02d}_base.mp4"
-        cut_key = f"jobs/{job_id}/tmp/cut_{i+1:02d}.mp4"
+        src_key = f"{config.SOURCE16X9_PREFIX}{job_id}/clip_{i+1:02d}.mp4"
         try:
-            s3_client.upload_file(item["path"], cut_key)
-            tmp_keys.append(cut_key)
-            get_url = s3_client.get_presigned_url(cut_key, expiry_seconds=url_expiry)
+            s3_client.upload_file(item["path"], src_key)
+            item["src169_retained"] = True
+            get_url = s3_client.get_presigned_url(src_key, expiry_seconds=url_expiry)
             put_url = s3_client.get_presigned_put_url(base_key, ct, expiry_seconds=url_expiry)
             rp_id = runpod_client.submit_reframe(get_url, put_url, ct, params, config.REFRAME_GPU_TIMEOUT)
             submitted.append((i, rp_id, base_key))
@@ -540,12 +551,8 @@ def _reframe_clips_gpu(job_id: str, produced: list) -> list:
             ok[i] = True
         except Exception as e:
             log.warning("[reframe-gpu] clip %d: %s; fallback CPU", i + 1, e)
-    # 3) limpa os cortes temporários do S3 (best-effort; o resto do job some no rmtree/cleanup)
-    for k in tmp_keys:
-        try:
-            s3_client.delete_object(k)
-        except Exception:
-            pass
+    # 3) o corte 16:9 NAO e mais deletado: fica retido como fonte do crop por keyframe (TTL via
+    # lifecycle do bucket; limpo no delete do projeto). Nao ha mais temporario pra apagar aqui.
     log.info("[timing] reframe GPU: %d/%d clipe(s) na GPU em %.1fs", sum(ok), n, time.monotonic() - t0)
     return ok
 
