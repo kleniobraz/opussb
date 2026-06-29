@@ -14,6 +14,11 @@ S3_ENDPOINT: str = os.environ["S3_ENDPOINT"]
 S3_BUCKET: str = os.environ["S3_BUCKET"]
 S3_ACCESS_KEY: str = os.environ["S3_ACCESS_KEY"]
 S3_SECRET_KEY: str = os.environ["S3_SECRET_KEY"]
+# Prefixo de namespace pras keys do S3. Default "" = producao (keys em jobs/..., assets/...).
+# O staging seta S3_KEY_PREFIX=staging/ pra ler/escrever TUDO sob staging/ no MESMO bucket, sem
+# nunca tocar os objetos de producao (isolamento leve). Aplicado so na borda do s3_client, entao
+# app.py/processor.py seguem construindo keys SEM prefixo. Se setado, deve terminar em "/".
+S3_KEY_PREFIX: str = os.environ.get("S3_KEY_PREFIX", "")
 
 # RunPod
 RUNPOD_API_KEY: str = os.environ["RUNPOD_API_KEY"]
