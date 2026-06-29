@@ -419,6 +419,7 @@ def run_thread2(job_id: str) -> None:
     except _Cancelled:
         log.info("[cancel] job %s cancelado; encerrando thread2 e limpando disco", job_id)
         shutil.rmtree(os.path.join(config.JOB_DIR, job_id), ignore_errors=True)
+        _cleanup_job_s3(job_id)   # 16:9 retido pode ja ter subido (caminho GPU) antes do cancel
     except Exception as e:
         _fail_job(job_id, str(e))
 
@@ -745,6 +746,17 @@ def _center_crop_fallback(input_path: str, output_path: str, subtitles: str | No
     )
 
 
+def _cleanup_job_s3(job_id: str) -> None:
+    """Best-effort: apaga o 16:9 RETIDO do job no S3 num caminho TERMINAL nao-feliz (cancel/erro), pra
+    nao deixar orfao (o caminho GPU sobe o 16:9 cedo, antes do checkpoint de cancel). O lifecycle TTL e
+    a rede de seguranca; isto limpa na hora. delete_project ja cobre a exclusao do projeto."""
+    try:
+        s3_client.delete_prefix(f"{config.SOURCE16X9_PREFIX}{job_id}/")
+    except Exception as e:
+        log.warning("[cleanup] falha ao limpar o 16:9 retido do job %s: %s", job_id, e)
+
+
 def _fail_job(job_id: str, error_msg: str) -> None:
     db.update_job(job_id, status="error", error=error_msg)
     shutil.rmtree(os.path.join(config.JOB_DIR, job_id), ignore_errors=True)
+    _cleanup_job_s3(job_id)

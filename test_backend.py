@@ -902,12 +902,96 @@ def test_keyframes_seed():
     check(reframe_core.keyframes_from_trajectory([], 30, 1920, 608) is None, "trajetoria vazia -> None")
 
 
+def test_rerender_keyframes():
+    print("[crop re-render: interpolacao + validacao + rota PUT/GET (Fase 2a)]")
+    import db, json as _json, s3_client, reframe_core
+    from werkzeug.security import generate_password_hash
+
+    # 1) trajectory_from_keyframes: round-trip aproximado com keyframes_from_trajectory
+    width, crop_w, fps, n = 1920, 608, 30.0, 90
+    per = [round(i * (width - crop_w) / (n - 1)) for i in range(n)]   # pan linear esq->dir
+    kf = reframe_core.keyframes_from_trajectory(per, fps, width, crop_w, cuts=[], interval_s=0.5)
+    dense = reframe_core.trajectory_from_keyframes(kf["kf"], fps, n, width, crop_w)
+    check(len(dense) == n, "trajectory_from_keyframes devolve 1 valor por frame")
+    err = max(abs(dense[i] - per[i]) for i in range(n))
+    check(err <= 3, f"round-trip keyframes<->trajetoria fiel (err max {err}px <= 3 num pan linear)")
+    check(all(0 <= v <= width - crop_w for v in dense), "trajetoria clampada a [0, width-crop_w]")
+    # lista vazia -> corte central fixo
+    cen = reframe_core.trajectory_from_keyframes([], fps, 5, width, crop_w)
+    check(cen == [(width - crop_w) // 2] * 5, "sem keyframes -> centro fixo")
+
+    # 2) _validate_keyframes: clamp de cx, ordena por t, rejeita vazio
+    v = app._validate_keyframes({"kf": [{"t": 2.0, "cx": 1.5}, {"t": 0.0, "cx": -0.2}]})
+    check([k["t"] for k in v] == [0.0, 2.0], "valida ordena por t")
+    check(v[0]["cx"] == 0.0 and v[1]["cx"] == 1.0, "valida clampa cx a [0,1]")
+    try:
+        app._validate_keyframes({"kf": []})
+        check(False, "kf vazio deveria levantar")
+    except ValueError:
+        check(True, "kf vazio -> ValueError")
+
+    # 3) rota PUT/GET (com _do_rerender STUBADO: nao roda cv2/S3 de verdade)
+    db.upsert_user("rr@test", generate_password_hash("pw12345678"), must_change=False)
+    db.create_job("JR", "v.mp4", 10, 60, "/x", "rr@test")
+    db.update_job("JR", status="done",
+                  result_urls=_json.dumps([{"key": "jobs/JR/clips/clip_01_base.mp4"}]))
+    db.set_clip_captions("JR:0", _json.dumps([{"start": 0, "end": 1, "text": "a"}]))
+    db.set_clip_keyframes("JR:0", _json.dumps({"mode": "auto", "kf": [{"t": 0.0, "cx": 0.5}]}))
+    c = app.app.test_client()
+    c.post("/api/login", json={"email": "rr@test", "password": "pw12345678"})
+    _orig_exists, _orig_do = s3_client.exists, app._do_rerender
+    captured = {}
+    try:
+        s3_client.exists = lambda k: False
+        check(c.put("/api/clips/JR:0/keyframes", json={"kf": [{"t": 0, "cx": 0.4}]}).status_code == 409,
+              "PUT sem 16:9 retido -> 409")
+        s3_client.exists = lambda k: True
+        # _do_rerender LE os keyframes do DB; o stub so captura args + marca done (sem cv2/S3)
+        app._do_rerender = lambda clip_id, bk, sk: captured.update(
+            clip_id=clip_id, base_key=bk, src_key=sk) or app._set_rerender(clip_id, "done")
+        r = c.put("/api/clips/JR:0/keyframes", json={"kf": [{"t": 0, "cx": 0.4}, {"t": 1, "cx": 0.6}]})
+        check(r.status_code == 202 and r.get_json()["mode"] == "manual", "PUT manual -> 202 mode=manual")
+        check(captured.get("src_key") == "source16x9/JR/clip_01.mp4", "re-render recebe a key do 16:9")
+        rec = _json.loads(db.get_clip_keyframes("JR:0"))
+        check(rec["mode"] == "manual" and rec.get("auto") == [{"t": 0.0, "cx": 0.5}],
+              "PUT manual preserva o seed auto")
+        # reset volta ao auto: o DB passa a guardar a trajetoria auto (que _do_rerender vai reler)
+        r = c.put("/api/clips/JR:0/keyframes", json={"reset": True})
+        check(r.status_code == 202 and r.get_json()["mode"] == "auto", "PUT reset -> 202 mode=auto")
+        check(_json.loads(db.get_clip_keyframes("JR:0"))["kf"] == [{"t": 0.0, "cx": 0.5}],
+              "reset grava a trajetoria auto pro re-render")
+        g = c.get("/api/clips/JR:0/keyframes").get_json()
+        check(g["keyframes"]["mode"] == "auto" and g["rerender"]["state"] in ("done", "rendering"),
+              "GET keyframes devolve mode + estado do re-render")
+        # [7] regressao: clipe SO com keyframes (sem fala) NAO vira legenda-editavel (segments='[]')
+        db.create_job("JP", "v.mp4", 10, 60, "/x", "rr@test")
+        db.update_job("JP", status="done",
+                      result_urls=_json.dumps([{"key": "jobs/JP/clips/clip_01_base.mp4"}]))
+        db.set_clip_keyframes("JP:0", _json.dumps({"mode": "auto", "kf": [{"t": 0.0, "cx": 0.5}]}))
+        gp = c.get("/api/clips/JP:0/captions").get_json()
+        check(gp["editable"] is False, "[7] linha so-de-keyframes (sem fala) nao vira legenda-editavel")
+        check(gp["crop_editable"] is True,
+              "crop_editable independe de legenda (sem fala + 16:9 retido continua cropavel)")
+        db.delete_job("JP")
+        # callback idempotente: job 'done' recebendo callback duplicado e PULADO (nao re-spawna a
+        # thread2, que poderia falhar e disparar _fail_job -> apagar o 16:9 retido vivo)
+        r = c.post("/api/callback", json={"job_id": "JR", "transcript": "x", "clips_json": "[]"})
+        check(r.status_code == 200 and r.get_json().get("skipped"), "callback em job 'done' -> skipped")
+        check(db.get_job("JR")["status"] == "done", "callback duplicado nao re-processa o job done")
+    finally:
+        s3_client.exists, app._do_rerender = _orig_exists, _orig_do
+
+    db.delete_job("JR")
+    with db._conn() as cc:
+        cc.execute("DELETE FROM users WHERE email = ?", ("rr@test",))
+
+
 def main():
     for t in (test_burn_cmd, test_burn_semaphore, test_presigned_put, test_runpod_client,
               test_validate_segments, test_parse_clips_json,
               test_captions_roundtrip, test_words_for_clip, test_caption_style, test_youtube_helpers,
               test_snap_clip_bounds, test_thumbnail, test_clip_window, test_download_all, test_end_screen,
-              test_crop_keyframe, test_keyframes_seed,
+              test_crop_keyframe, test_keyframes_seed, test_rerender_keyframes,
               test_sessions_helpers, test_sessions_ownership, test_sessions_flow,
               test_sessions_extra):
         t()

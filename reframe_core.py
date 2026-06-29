@@ -286,6 +286,65 @@ def keyframes_from_trajectory(per_frame_cx: list, fps: float, width: int, crop_w
     return {"mode": "auto", "kf": kf}
 
 
+def trajectory_from_keyframes(kf_list: list, fps: float, total_frames: int,
+                              width: int, crop_w: int) -> list:
+    """Inverso de keyframes_from_trajectory: expande os keyframes esparsos {t (s), cx (CENTRO, fração
+    0..1)} numa lista DENSA per_frame_cx (BORDA ESQUERDA do recorte em px), 1 valor por frame,
+    interpolando LINEARMENTE entre keyframes e segurando as pontas. cx fora de [0, width-crop_w] é
+    clampado (pan-only, sem zoom). Pura/testável. Lista vazia/invalida -> corte central fixo."""
+    fps = fps or 30.0
+    n = max(0, int(total_frames))
+    half = crop_w / 2.0
+    lo, hi = 0, max(0, width - crop_w)
+    pts = []   # (frame, borda_esquerda_px), ja clampado
+    for k in (kf_list or []):
+        try:
+            f = int(round(float(k["t"]) * fps))
+            left = int(round(float(k["cx"]) * width - half))
+        except (KeyError, TypeError, ValueError):
+            continue
+        pts.append((f, max(lo, min(left, hi))))
+    if not pts:
+        return [(width - crop_w) // 2] * n
+    pts.sort(key=lambda p: p[0])
+    out = []
+    j = 0
+    for f in range(n):
+        if f <= pts[0][0]:
+            out.append(pts[0][1]); continue
+        if f >= pts[-1][0]:
+            out.append(pts[-1][1]); continue
+        while j < len(pts) - 1 and pts[j + 1][0] < f:
+            j += 1
+        fa, va = pts[j]
+        fb, vb = pts[j + 1]
+        frac = 0.0 if fb == fa else (f - fa) / (fb - fa)
+        out.append(int(round(va + (vb - va) * frac)))
+    return out
+
+
+def reframe_with_keyframes(input_path: str, output_path: str, kf_list: list,
+                           video_codec_args: list, subtitles: str | None = None) -> None:
+    """Re-render 9:16 (1080x1920) a partir dos keyframes do usuario (crop por keyframe, BACKEND §33),
+    SEM YOLO: abre o 16:9 fonte so pra medir dims/fps/total_frames, interpola a trajetoria densa e
+    recorta horizontalmente (mesmo _pipe_encode do auto). Levanta em falha (o chamador decide)."""
+    cap = cv2.VideoCapture(input_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot open video: {input_path}")
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    crop_w = int(height * 9 / 16)
+    if crop_w > width:
+        crop_w = width
+    center_x = (width - crop_w) // 2
+    per_frame_cx = trajectory_from_keyframes(kf_list, fps, total_frames, width, crop_w)
+    _pipe_encode(input_path, output_path, per_frame_cx, fps, width, crop_w, center_x,
+                 video_codec_args, subtitles)
+
+
 def _pipe_encode(input_path: str, output_path: str, per_frame_cx: list, fps: float,
                  width: int, crop_w: int, center_x: int,
                  video_codec_args: list, subtitles: str | None = None) -> None:
