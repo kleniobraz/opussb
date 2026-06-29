@@ -200,10 +200,12 @@ def build_locked_trajectory(samples: list, total_frames: int, fps: float,
 def reframe_to_file(input_path: str, output_path: str, model, *,
                     deadzone_frac: float, max_pan_frac: float, min_conf: float,
                     video_codec_args: list, subtitles: str | None = None,
-                    detect_cuts: bool = False) -> None:
+                    detect_cuts: bool = False) -> dict | None:
     """Reenquadra pra 9:16 (1080x1920) com câmera travada. `model` é um YOLO já carregado;
     `video_codec_args` é a lista de args de vídeo do ffmpeg (ex.: libx264 veryfast na VPS, h264_nvenc
-    na GPU). Se já-9:16, padroniza/copia. Levanta em falha (o chamador decide o fallback)."""
+    na GPU). Se já-9:16, padroniza/copia. Levanta em falha (o chamador decide o fallback). Devolve a
+    trajetória calculada {per_frame_cx, fps, width, crop_w, cuts} (ou None se já-9:16/copiado), pro
+    auto-semeio de keyframes do crop (BACKEND §33)."""
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open video: {input_path}")
@@ -217,7 +219,7 @@ def reframe_to_file(input_path: str, output_path: str, model, *,
             _encode_vertical_with_subs(input_path, output_path, subtitles, video_codec_args)
         else:
             shutil.copy2(input_path, output_path)
-        return
+        return None   # já vertical: sem pan horizontal possível, crop por keyframe não se aplica
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -254,6 +256,34 @@ def reframe_to_file(input_path: str, output_path: str, model, *,
                                            deadzone_frac, max_pan_frac, cuts=cuts)
     _pipe_encode(input_path, output_path, per_frame_cx, fps, width, crop_w, center_x,
                  video_codec_args, subtitles)
+    return {"per_frame_cx": per_frame_cx, "fps": fps, "width": width, "crop_w": crop_w, "cuts": cuts}
+
+
+def keyframes_from_trajectory(per_frame_cx: list, fps: float, width: int, crop_w: int,
+                              cuts: list | None = None, interval_s: float = 0.75) -> dict | None:
+    """Reduz a trajetória auto (per_frame_cx = BORDA ESQUERDA do recorte em px) a uma lista ESPARSA de
+    keyframes {t (s), cx (CENTRO horizontal, fração 0..1 da largura)}, pra semear o modo manual do
+    editor de crop (BACKEND §33). Amostra a cada interval_s + ancora nos cortes de câmera (degrau
+    quase instantâneo: frame anterior + frame do corte). cx em fração = resolução-independente. Devolve
+    {"mode":"auto","kf":[...]} ou None se a trajetória for vazia/inválida."""
+    n = len(per_frame_cx or [])
+    if n == 0 or width <= 0 or crop_w <= 0:
+        return None
+    fps = fps or 30.0
+    half = crop_w / 2.0
+
+    def cx_frac(f):
+        f = max(0, min(f, n - 1))
+        return round((per_frame_cx[f] + half) / width, 4)
+
+    idxs = set(range(0, n, max(1, int(round(interval_s * fps)))))
+    idxs.add(n - 1)
+    for c in (cuts or []):
+        if 0 < c < n:
+            idxs.add(c - 1)   # último frame do plano anterior
+            idxs.add(c)        # primeiro frame do novo plano (preserva o "degrau" do corte)
+    kf = [{"t": round(f / fps, 3), "cx": cx_frac(f)} for f in sorted(idxs)]
+    return {"mode": "auto", "kf": kf}
 
 
 def _pipe_encode(input_path: str, output_path: str, per_frame_cx: list, fps: float,

@@ -133,6 +133,9 @@ REFRAME_PUT_CONTENT_TYPE: str = os.environ.get("REFRAME_PUT_CONTENT_TYPE", "vide
 SOURCE16X9_PREFIX: str = "source16x9/"
 SOURCE16X9_TTL_DAYS: int = int(os.environ.get("SOURCE16X9_TTL_DAYS", "30"))
 SOURCE16X9_LIFECYCLE_ENSURE: bool = os.environ.get("SOURCE16X9_LIFECYCLE_ENSURE", "false").lower() in ("1", "true", "yes")
+# Intervalo (s) de amostragem ao SEMEAR keyframes do auto a partir da trajetoria do reframe (alem de
+# ancorar nos cortes de camera). Menor = seed mais denso/fiel; maior = mais esparso. So afeta o seed.
+KEYFRAME_SEED_INTERVAL_S: float = float(os.environ.get("KEYFRAME_SEED_INTERVAL_S", "0.75"))
 
 # YouTube (yt-dlp): teto de duração do vídeo de entrada, em segundos. Controla custo de
 # transcrição (RunPod escala com a duração) e quanto tempo um job segura o único slot da

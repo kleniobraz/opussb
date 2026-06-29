@@ -392,6 +392,13 @@ def run_thread2(job_id: str) -> None:
                                            round(window_dur, 3), in_pt, out_pt)
                 except Exception as e:
                     log.warning("[window] clip %d: falha ao gravar a janela (%s)", i + 1, e)
+            # Keyframes auto semeados no reframe (caminho CPU): grava pro editor abrir ja no enquadramento
+            # auto (manual semeado do auto). NULL pra clipe ja-vertical/center-crop (sem trajetoria).
+            if item.get("keyframes_json"):
+                try:
+                    db.set_clip_keyframes(clip_id, item["keyframes_json"])
+                except Exception as e:
+                    log.warning("[keyframe-seed] clip %d: falha ao gravar keyframes (%s)", i + 1, e)
             results.append(_clip_result(key, meta))
 
         # Thumbnail do card: frame do melhor clipe, ANTES do rmtree (arquivos ainda em
@@ -487,6 +494,7 @@ def _reframe_clips(job_id: str, produced: list) -> None:
     o reframe na GPU (RunPod serverless, em paralelo) e cai pra CPU por clipe que falhar; senão roda
     tudo na CPU (comportamento antigo)."""
     from reframer import reframe_clip
+    import reframe_core   # lazy: cv2/YOLO ficam fora do import do web (so a thread2 carrega)
     for item in produced:
         item["final"] = None
         item["gpu_base_key"] = None
@@ -499,13 +507,25 @@ def _reframe_clips(job_id: str, produced: list) -> None:
             continue                                    # base já no S3 (GPU); nada a fazer na CPU
         out_path = item["path"].replace(".mp4", "_base.mp4")
         _t = time.monotonic()
+        traj = None
         try:
-            reframe_clip(item["path"], out_path)        # base 9x16 SEM legenda
+            traj = reframe_clip(item["path"], out_path)        # base 9x16 SEM legenda
         except Exception as e:
             log.warning("[reframe] clip %d falhou (%s), usando center crop", i + 1, e)
             _center_crop_fallback(item["path"], out_path)
         log.info("[timing] reframe clip %d (cpu): %.1fs", i + 1, time.monotonic() - _t)
         item["final"] = out_path
+        # Semeia keyframes do AUTO (modo manual semeado do auto, BACKEND §33): reduz a trajetoria que o
+        # reframe ja calculou a uma lista esparsa {t, cx}. So no caminho CPU (a GPU computa remoto; o
+        # seed do GPU fica pra Fase 2). Best-effort: falha aqui nao derruba o reframe.
+        if traj:
+            try:
+                kf = reframe_core.keyframes_from_trajectory(
+                    traj["per_frame_cx"], traj["fps"], traj["width"], traj["crop_w"],
+                    traj.get("cuts"), config.KEYFRAME_SEED_INTERVAL_S)
+                item["keyframes_json"] = json.dumps(kf, ensure_ascii=False) if (kf and kf["kf"]) else None
+            except Exception as e:
+                log.warning("[keyframe-seed] clip %d: falha ao semear keyframes (%s)", i + 1, e)
 
 
 def _reframe_clips_gpu(job_id: str, produced: list) -> list:

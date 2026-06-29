@@ -882,12 +882,32 @@ def test_crop_keyframe():
         cc.execute("DELETE FROM users WHERE email = ?", ("crop@test",))
 
 
+def test_keyframes_seed():
+    print("[keyframe seed: keyframes_from_trajectory (Fase 1b)]")
+    import reframe_core
+    # trajetoria sintetica: pan linear da borda esquerda 0 -> (width-crop_w), 60 frames @30fps, corte em 30
+    width, crop_w, fps, n = 1920, 608, 30.0, 60
+    per = [round(i * (width - crop_w) / (n - 1)) for i in range(n)]
+    out = reframe_core.keyframes_from_trajectory(per, fps, width, crop_w, cuts=[30], interval_s=0.5)
+    check(out and out["mode"] == "auto" and len(out["kf"]) >= 2, "seed devolve mode=auto + keyframes")
+    ks = out["kf"]
+    check(all(0.0 <= k["cx"] <= 1.0 for k in ks), "cx em fracao [0,1]")
+    check(abs(ks[0]["t"]) < 1e-9 and abs(ks[0]["cx"] - (per[0] + crop_w / 2) / width) < 1e-3,
+          "1o keyframe = frame 0 (centro = borda + crop_w/2)")
+    check(abs(ks[-1]["t"] - (n - 1) / fps) < 1e-3, "ultimo keyframe = ultimo frame")
+    check(all(ks[i]["cx"] <= ks[i + 1]["cx"] + 1e-9 for i in range(len(ks) - 1)), "cx monotonico no pan")
+    ts = {round(k["t"], 3) for k in ks}
+    check(round(29 / fps, 3) in ts and round(30 / fps, 3) in ts,
+          "corte ancorado (frame anterior + frame do corte)")
+    check(reframe_core.keyframes_from_trajectory([], 30, 1920, 608) is None, "trajetoria vazia -> None")
+
+
 def main():
     for t in (test_burn_cmd, test_burn_semaphore, test_presigned_put, test_runpod_client,
               test_validate_segments, test_parse_clips_json,
               test_captions_roundtrip, test_words_for_clip, test_caption_style, test_youtube_helpers,
               test_snap_clip_bounds, test_thumbnail, test_clip_window, test_download_all, test_end_screen,
-              test_crop_keyframe,
+              test_crop_keyframe, test_keyframes_seed,
               test_sessions_helpers, test_sessions_ownership, test_sessions_flow,
               test_sessions_extra):
         t()
