@@ -28,6 +28,10 @@ Backend Flask (porta 5002), a partir do worktree pra carregar o `.env` certo:
 ```
 cd /opt/opussb-staging && /opt/opussb/venv/bin/python app.py        # ou gunicorn na 5002
 ```
+**node_modules do front:** o worktree nao tinha (gitignored). Foi copiado do prod (`cp -a
+/opt/opussb/frontend/node_modules /opt/opussb-staging/frontend/node_modules`; lock identico). Symlink
+NAO serve (o Turbopack rejeita node_modules apontando pra fora da raiz). Necessario pra build/dev.
+
 Front (dev), apontando o rewrite de `/api` pro 5002 (ver next.config do front) e bind em 3001:
 ```
 cd /opt/opussb-staging/frontend && source ~/.nvm/nvm.sh && nvm use 20 && npm run dev -- -H 127.0.0.1 -p 3001
