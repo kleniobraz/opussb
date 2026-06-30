@@ -1766,7 +1766,10 @@ def clip_waveform(clip_id):
 
 
 _STRIP_TIMEOUT = 60
-_STRIP_COLS = 12   # nº de frames no sprite; o front estica o sprite na largura da trilha (N exato não importa)
+# nº de frames no sprite. O front repete o sprite na PROPORCAO certa (background-size:auto 100% +
+# repeat-x), entao mais frames = mais variacao ao longo da trilha antes de repetir (no zoom normal
+# nao se ve repeticao obvia; no zoom extremo repete um pouco, e caso de borda aceitavel).
+_STRIP_COLS = 36
 
 
 def _strip_key_for(base_key: str) -> str:
