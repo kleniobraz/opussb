@@ -1000,6 +1000,7 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
                 onSetTime={setSegTime}
                 onSplit={splitSeg}
                 onMerge={mergeSeg}
+                onEditStart={() => videoRef.current?.pause()}
               />
               <MusicControl
                 music={music}
