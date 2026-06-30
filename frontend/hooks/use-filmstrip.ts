@@ -15,7 +15,9 @@ export function useFilmstrip(clipId: string | null): string | null {
       return;
     }
     let cancelled = false;
-    fetch(`/api/clips/${encodeURIComponent(clipId)}/filmstrip`, { credentials: "same-origin" })
+    // no-store: cada carga pega uma URL presignada NOVA. Sem isso, o navegador podia reusar a JSON
+    // cacheada (URL antiga) e servir a imagem velha do proprio cache mesmo apos o sprite mudar no S3.
+    fetch(`/api/clips/${encodeURIComponent(clipId)}/filmstrip`, { credentials: "same-origin", cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error("filmstrip"))))
       .then((d) => {
         if (!cancelled) setUrl(typeof d?.url === "string" && d.url ? d.url : null);
