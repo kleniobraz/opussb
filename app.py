@@ -1981,6 +1981,14 @@ def clip_captions_get(clip_id):
         keyframes = json.loads(raw_kf) if raw_kf else None
     except (TypeError, ValueError):
         keyframes = None
+    # Tempo por PALAVRA (clip_words, §26): JSON [{start,end,word}] relativo a janela, gravado no
+    # pipeline. SOMENTE LEITURA pro editor (karaoke por palavra no roteiro/overlay); nao entra no
+    # save (PUT so aceita start/end/text). null = clipe legado/sem fala -> destaque cai pra segmento.
+    raw_words = db.get_clip_words(clip_id)
+    try:
+        words = json.loads(raw_words) if raw_words else None
+    except (TypeError, ValueError):
+        words = None
     # crop_editable INDEPENDE de legenda (crop e so pan do 16:9 retido, §33): basta a base ser
     # re-renderizavel (_base.mp4) + o 16:9 existir. Nao acoplar a `editable` (que exige fala), senao
     # um clipe sem legenda mas com 16:9 retido + keyframes auto perderia o editor de crop.
@@ -1994,7 +2002,8 @@ def clip_captions_get(clip_id):
                     "end_screen_dur": db.get_clip_end_screen_dur(clip_id),
                     "project_end_screen": job.get("end_screen"),
                     "end_screens": _end_screen_options(),
-                    "keyframes": keyframes, "crop_editable": crop_editable})
+                    "keyframes": keyframes, "crop_editable": crop_editable,
+                    "words": words})
 
 
 @app.route("/api/clips/<path:clip_id>/captions", methods=["PUT"])

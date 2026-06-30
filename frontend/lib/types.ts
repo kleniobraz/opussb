@@ -118,6 +118,15 @@ export interface Segment {
   text: string;
 }
 
+// Tempo por PALAVRA (clip_words, §26): start/end em segundos relativos à janela do clipe.
+// SOMENTE LEITURA, vem do GET /captions. Usado pro karaokê por palavra (roteiro + overlay);
+// nunca é editado nem entra no save (o contrato de save segue só {start,end,text}).
+export interface Word {
+  start: number;
+  end: number;
+  word: string;
+}
+
 export interface Music {
   filename?: string;
   volume?: number;
@@ -162,6 +171,7 @@ export interface RerenderStatus {
 export interface Captions {
   editable: boolean;
   segments?: Segment[];
+  words?: Word[] | null; // tempo por palavra (só leitura); null = clipe legado/sem fala
   music?: Music | null;
   caption_y?: number | null; // posição vertical (fração 0..1); null = padrão SB
   style?: CaptionStyle | null; // estilo da fonte; null = padrão SB
