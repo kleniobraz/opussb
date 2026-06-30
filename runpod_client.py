@@ -50,6 +50,30 @@ def submit_reframe(input_url: str, output_put_url: str, output_content_type: str
     return job_id
 
 
+def submit_rerender(input_url: str, output_put_url: str, output_content_type: str,
+                    keyframes: list, exec_timeout: int) -> str:
+    """Dispara um RE-RENDER na GPU (crop por keyframe, BACKEND §33, Fase 2b): o worker recebe a
+    trajetoria `keyframes` ([{t,cx}]) e re-renderiza o 16:9 SEM YOLO. `input_url` aponta pro 16:9 retido;
+    `output_put_url` e um key TEMPORARIO (o app promove pra base sob lock). Devolve o job_id do RunPod."""
+    endpoint = config.RUNPOD_REFRAME_ENDPOINT_ID
+    if not endpoint:
+        raise RuntimeError("RUNPOD_REFRAME_ENDPOINT_ID não configurado")
+    payload = {
+        "input": {
+            "input_url": input_url,
+            "output_put_url": output_put_url,
+            "output_content_type": output_content_type,
+            "keyframes": keyframes,
+        },
+        "policy": {"executionTimeout": int(exec_timeout) * 1000},
+    }
+    r = requests.post(f"{_BASE}/{endpoint}/run", json=payload, headers=_headers(), timeout=_HTTP_TIMEOUT)
+    r.raise_for_status()
+    job_id = r.json()["id"]
+    log.info("[rerender-gpu] submetido job %s", job_id)
+    return job_id
+
+
 def poll(job_id: str, timeout: float) -> dict:
     """Faz poll do /status até COMPLETED (devolve o `output`, ex.: {"duration": <s>}) ou levanta em
     FAILED/CANCELLED/TIMED_OUT, output com "error", ou estouro do `timeout` LOCAL. Tolera alguns

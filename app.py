@@ -83,6 +83,20 @@ for _es_id, _es in config.END_SCREENS.items():
     except Exception as e:
         log.warning("falha ao semear tela final %s (%s)", _es_id, e)
 
+# Lifecycle do 16:9 retido (crop por keyframe, BACKEND §33): expira o prefixo dedicado em
+# SOURCE16X9_TTL_DAYS. Gated por SOURCE16X9_LIFECYCLE_ENSURE (default off) pra NAO mutar a config do
+# bucket sem decisao; idempotente (so PUTa quando a regra falta/difere). Best-effort: nao trava o boot.
+if config.SOURCE16X9_LIFECYCLE_ENSURE:
+    try:
+        # rule_id namespaceado por ambiente: staging e prod dividem o MESMO bucket; um id comum faria
+        # cada boot sobrescrever a regra do outro (o merge por id derruba a regra alheia). Sufixo do
+        # S3_KEY_PREFIX (prod = "prod") mantem as duas regras coexistindo no bucket.
+        _lc_env = config.S3_KEY_PREFIX.strip("/").replace("/", "-") or "prod"
+        s3_client.ensure_lifecycle_rule(config.SOURCE16X9_PREFIX, config.SOURCE16X9_TTL_DAYS,
+                                        f"opussb-source16x9-ttl-{_lc_env}")
+    except Exception as e:
+        log.warning("[lifecycle] falha ao garantir a regra do 16:9 retido: %s", e)
+
 # Semeia admins iniciais (config ADMIN_EMAILS) como is_admin + active. Idempotente:
 # cria a linha se não existir (sem senha utilizável; ele entra via Zoho) ou só promove.
 for _admin_email in config.ADMIN_EMAILS:
@@ -1558,7 +1572,14 @@ def clip_video(clip_id):
         out_pt = float(window["out_point"]) if window.get("out_point") is not None else win_dur
         trim_needed = (in_pt > 0.05) or (out_pt < win_dur - 0.05)
 
-    use_caps = bool(job.get("captions", 1)) and bool(segments_json)
+    # Testa os segmentos DECODIFICADOS (nao a string): o auto-seed de keyframes (Fase 1b) pode criar
+    # uma linha clip_captions com segments='[]' pra clipe SEM fala; '[]' e truthy como string e
+    # dispararia uma queima vazia. So queima legenda quando ha segmento de verdade.
+    try:
+        _has_segments = bool(json.loads(segments_json)) if segments_json else False
+    except (TypeError, ValueError):
+        _has_segments = False
+    use_caps = bool(job.get("captions", 1)) and _has_segments
     use_music = bool(music and music.get("music_key"))
 
     es_id = _resolve_end_screen_id(job, clip_id)         # tela final efetiva (id) ou None
@@ -1598,6 +1619,26 @@ def clip_base(clip_id):
     pra clipe novo (_base.mp4); clipe antigo (_9x16.mp4) cai na propria base mesmo."""
     _job, _idx, base_key = _clip_lookup(clip_id)
     return _clip_redirect(base_key)
+
+
+def _src169_key_for(job_id: str, idx: int) -> str:
+    """Chave S3 do corte 16:9 RETIDO (fonte do crop por keyframe, BACKEND §33): prefixo DEDICADO
+    (lifecycle/TTL), 1-based como as outras keys de clipe. Deriva de job_id + idx (NAO do base_key,
+    que vive sob jobs/.../clips/)."""
+    return f"{config.SOURCE16X9_PREFIX}{job_id}/clip_{idx+1:02d}.mp4"
+
+
+@app.route("/api/clips/<path:clip_id>/src169")
+@login_required
+def clip_src169(clip_id):
+    """Entrega o corte 16:9 RETIDO (fonte do crop por keyframe): 302 pra URL presignada. So existe
+    pra clipe processado DEPOIS da retencao (BACKEND §33); senao 404 (o editor de crop degrada pra
+    indisponivel). Pan-only: o front arrasta a caixa 9:16 sobre este 16:9."""
+    job, idx, _base_key = _clip_lookup(clip_id)
+    src_key = _src169_key_for(job["job_id"], idx)
+    if not s3_client.exists(src_key):
+        abort(404)
+    return _clip_redirect(src_key)
 
 
 # Teto de tempo da extracao do poster (range-seek + decode de 1 frame). Curto: e barato.
@@ -1908,7 +1949,9 @@ def clip_captions_get(clip_id):
         segs = json.loads(raw) if raw else []
     except (TypeError, ValueError):
         segs = []
-    editable = bool(raw) and "_base.mp4" in base_key
+    # Testa a lista DECODIFICADA (nao a string crua): o auto-seed de keyframes pode criar a linha com
+    # segments='[]' pra clipe sem fala; '[]' e truthy como string e marcaria editavel por engano.
+    editable = bool(segs) and "_base.mp4" in base_key
     music = db.get_clip_music(clip_id)
     music_info = None
     if music and music.get("music_key"):
@@ -1930,6 +1973,18 @@ def clip_captions_get(clip_id):
             "in": round(max(0.0, float(window.get("in_point") or 0.0)), 3),
             "out": round(float(window["out_point"]) if window.get("out_point") is not None else win_dur, 3),
         }
+    # Crop por keyframe: keyframes salvos (mode/kf) ou None (= auto, o base ja tem o enquadramento).
+    # crop_editable = clipe novo COM o 16:9 fonte retido (so processado depois da retencao); o front
+    # so habilita o editor de crop quando True. O exists() e 1 head_object (captions GET nao e hot).
+    raw_kf = db.get_clip_keyframes(clip_id)
+    try:
+        keyframes = json.loads(raw_kf) if raw_kf else None
+    except (TypeError, ValueError):
+        keyframes = None
+    # crop_editable INDEPENDE de legenda (crop e so pan do 16:9 retido, §33): basta a base ser
+    # re-renderizavel (_base.mp4) + o 16:9 existir. Nao acoplar a `editable` (que exige fala), senao
+    # um clipe sem legenda mas com 16:9 retido + keyframes auto perderia o editor de crop.
+    crop_editable = ("_base.mp4" in base_key) and s3_client.exists(_src169_key_for(job["job_id"], idx))
     # Tela final: override do clipe (None/"none"/id), o efetivo após herança, o default do projeto,
     # e a biblioteca de opções (pro editor montar o toggle/seletor sem outra request).
     return jsonify({"segments": segs, "editable": editable, "music": music_info,
@@ -1938,7 +1993,8 @@ def clip_captions_get(clip_id):
                     "end_screen_effective": _resolve_end_screen_id(job, clip_id),
                     "end_screen_dur": db.get_clip_end_screen_dur(clip_id),
                     "project_end_screen": job.get("end_screen"),
-                    "end_screens": _end_screen_options()})
+                    "end_screens": _end_screen_options(),
+                    "keyframes": keyframes, "crop_editable": crop_editable})
 
 
 @app.route("/api/clips/<path:clip_id>/captions", methods=["PUT"])
@@ -1994,6 +2050,177 @@ def clip_captions_put(clip_id):
         db.set_clip_inout(clip_id, in_pt, out_pt)
     _invalidate_cap(base_key)   # próxima abertura re-renderiza com o texto/estilo/corte corrigido
     return jsonify({"ok": True, "segments": segs})
+
+
+# ─── Re-render do crop por keyframe (BACKEND §33) ─────────────────────────────
+# Regenera o clip_NN_base.mp4 a partir do 16:9 RETIDO (/src169) com a trajetoria dos keyframes do
+# usuario. E um ENCODE completo (pesado): roda em thread DAEMON (nao prende a request) serializado por
+# semaforo (1 por vez, protege a CPU como a queima). Status em memoria (gunicorn --workers 1 = 1
+# processo; dict compartilhado entre as threads; restart no meio = o front re-dispara). Roda na GPU
+# quando RERENDER_GPU_ENABLED (Fase 2b), com fallback CPU sempre ativo. So clipe NOVO com 16:9 retido.
+_MAX_KEYFRAMES = 2000
+_rerender_sem = threading.BoundedSemaphore(1)
+_rerender_lock = threading.Lock()
+_rerender_status = {}          # clip_id -> {"state": "rendering|done|error", "error": str|None}
+
+
+def _validate_keyframes(data):
+    """Valida/normaliza os keyframes do crop: {kf:[{t,cx}]}. t>=0 finito; cx em [0,1] (CENTRO
+    horizontal, fracao). Ordena por t. Levanta ValueError com msg amigavel."""
+    if not isinstance(data, dict):
+        raise ValueError("keyframes deve ser um objeto.")
+    kf = data.get("kf")
+    if not isinstance(kf, list) or not kf:
+        raise ValueError("keyframes.kf deve ser uma lista nao vazia.")
+    if len(kf) > _MAX_KEYFRAMES:
+        raise ValueError("Keyframes demais.")
+    out = []
+    for k in kf:
+        try:
+            t = float(k["t"])
+            cx = float(k["cx"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("Cada keyframe precisa de t e cx numericos.")
+        if not (math.isfinite(t) and math.isfinite(cx)):
+            raise ValueError("t/cx invalidos.")
+        out.append({"t": max(0.0, round(t, 3)), "cx": max(0.0, min(1.0, round(cx, 4)))})
+    out.sort(key=lambda p: p["t"])
+    return out
+
+
+def _set_rerender(clip_id, state, error=None):
+    with _rerender_lock:
+        _rerender_status[clip_id] = {"state": state, "error": error}
+
+
+def _rerender_gpu(src_key, base_key, kf_list, out_local):
+    """Produz o re-render NA GPU (BACKEND §33, Fase 2b): o worker baixa o 16:9 retido (presigned GET),
+    re-renderiza com a trajetoria do usuario (sem YOLO) e sobe num key TEMPORARIO (presigned PUT). Baixa
+    o temporario pro `out_local` e o apaga. Levanta em qualquer falha (o chamador cai pro CPU). Escreve
+    num temporario, NAO na base: a promocao pra base acontece sob _clip_burn_lock no chamador (atomico
+    contra a queima)."""
+    import runpod_client   # lazy: requests/config fora do hot path do web
+    ct = config.REFRAME_PUT_CONTENT_TYPE
+    url_expiry = config.REFRAME_GPU_TIMEOUT + 600
+    tmp_key = base_key.replace("_base.mp4", "_base.rerender.mp4")   # transitorio; limpo no fim/no delete do job
+    get_url = s3_client.get_presigned_url(src_key, expiry_seconds=url_expiry)
+    put_url = s3_client.get_presigned_put_url(tmp_key, ct, expiry_seconds=url_expiry)
+    rp_id = runpod_client.submit_rerender(get_url, put_url, ct, kf_list, config.REFRAME_GPU_TIMEOUT)
+    try:
+        runpod_client.poll(rp_id, config.REFRAME_GPU_TIMEOUT)
+        s3_client.download_file(tmp_key, out_local)
+    finally:
+        try:
+            s3_client.delete_object(tmp_key)
+        except Exception:
+            pass
+
+
+def _do_rerender(clip_id, base_key, src_key):
+    """Worker do re-render (thread daemon). Sob _rerender_sem (1 por vez): LE os keyframes ATUAIS do DB
+    (PUTs concorrentes do mesmo clipe convergem pro ULTIMO salvo, em vez de "vence quem termina") e
+    produz a base 9:16 reenquadrada na GPU (se RERENDER_GPU_ENABLED) ou na CPU (fallback sempre ativo).
+    Depois, sob _clip_burn_lock(clip_id) (serializa contra a queima do MESMO clipe, senao um _cap.mp4
+    feito da base ANTIGA viraria cache quente): sobrescreve a base 9:16 e invalida os derivados
+    (cap/trim/*_es + thumb/strip, que derivam da base). NAO mexe na janela/segmentos: mesma duracao/fps,
+    so muda o pan, entao a legenda segue valida."""
+    tmp = None
+    try:
+        with _rerender_sem:
+            raw = db.get_clip_keyframes(clip_id)
+            try:
+                rec = json.loads(raw) if raw else None
+            except (TypeError, ValueError):
+                rec = None
+            kf_list = (rec or {}).get("kf") or []
+            if not kf_list:
+                raise RuntimeError("sem keyframes pra renderizar")
+            tmp = tempfile.mkdtemp(prefix="rerender_")
+            out_local = os.path.join(tmp, "base.mp4")
+            produced_gpu = False
+            if config.RERENDER_GPU_ENABLED:
+                try:
+                    _rerender_gpu(src_key, base_key, kf_list, out_local)
+                    produced_gpu = True
+                except Exception as e:
+                    log.warning("[rerender] clip %s: GPU falhou (%s); fallback CPU", clip_id, e)
+            if not produced_gpu:
+                from reframer import reframe_clip_with_keyframes   # lazy: cv2 fora do import do web
+                src_local = os.path.join(tmp, "src169.mp4")
+                s3_client.download_file(src_key, src_local)
+                reframe_clip_with_keyframes(src_local, out_local, kf_list)
+            if not os.path.exists(out_local) or os.path.getsize(out_local) < 1024:
+                raise RuntimeError("re-render produziu arquivo vazio")
+            with _clip_burn_lock(clip_id):              # serializa contra a queima do MESMO clipe
+                s3_client.upload_file(out_local, base_key)      # sobrescreve a base 9:16
+                _invalidate_cap(base_key)                        # cap/trim/*_es
+                for k in (_thumb_key_for(base_key), _strip_key_for(base_key)):
+                    try:
+                        s3_client.delete_object(k)               # thumb/strip derivam da base: refazer
+                    except Exception:
+                        pass
+        _set_rerender(clip_id, "done")
+        log.info("[rerender] clip %s ok (%s)", clip_id, "gpu" if produced_gpu else "cpu")
+    except Exception as e:
+        _set_rerender(clip_id, "error", str(e))
+        log.warning("[rerender] clip %s falhou: %s", clip_id, e)
+    finally:
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+@app.route("/api/clips/<path:clip_id>/keyframes", methods=["GET"])
+@login_required
+def clip_keyframes_get(clip_id):
+    """Keyframes do crop (mode/kf/auto) + estado do ultimo re-render (rendering/done/error/idle)."""
+    _job, _idx, _base_key = _clip_lookup(clip_id)
+    raw = db.get_clip_keyframes(clip_id)
+    try:
+        kf = json.loads(raw) if raw else None
+    except (TypeError, ValueError):
+        kf = None
+    with _rerender_lock:
+        st = _rerender_status.get(clip_id)
+    return jsonify({"keyframes": kf, "rerender": st or {"state": "idle"}})
+
+
+@app.route("/api/clips/<path:clip_id>/keyframes", methods=["PUT"])
+@login_required
+def clip_keyframes_put(clip_id):
+    """Salva os keyframes do crop e dispara o RE-RENDER do base 9:16 a partir do 16:9 retido (async).
+    body: {kf:[{t,cx}]} (modo manual) OU {reset:true} (volta ao enquadramento AUTO semeado). Preserva
+    o seed AUTO pro toggle reverter sem perder a trajetoria da maquina. Exige clipe editavel COM 16:9
+    retido. Responde 202 'rendering'; o front faz poll no GET /keyframes ate done/error."""
+    job, idx, base_key = _clip_lookup(clip_id)
+    if "_base.mp4" not in base_key:
+        return jsonify({"error": "Este clipe nao e editavel (sem base re-renderizavel)."}), 409
+    src_key = _src169_key_for(job["job_id"], idx)
+    if not s3_client.exists(src_key):
+        return jsonify({"error": "Crop indisponivel: este clipe nao tem o 16:9 retido (clipe antigo)."}), 409
+    data = request.get_json(silent=True) or {}
+    # auto seed preservado (pro toggle Auto/Manual reverter sem perder a trajetoria da maquina)
+    try:
+        existing = json.loads(db.get_clip_keyframes(clip_id) or "null")
+    except (TypeError, ValueError):
+        existing = None
+    auto_kf = None
+    if isinstance(existing, dict):
+        auto_kf = existing.get("auto") or (existing.get("kf") if existing.get("mode") == "auto" else None)
+    if data.get("reset"):
+        if not auto_kf:
+            return jsonify({"error": "Sem trajetoria automatica pra restaurar."}), 409
+        record = {"mode": "auto", "kf": auto_kf, "auto": auto_kf}
+    else:
+        try:
+            manual_kf = _validate_keyframes(data)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        record = {"mode": "manual", "kf": manual_kf, "auto": auto_kf}
+    db.set_clip_keyframes(clip_id, json.dumps(record, ensure_ascii=False))
+    _set_rerender(clip_id, "rendering")
+    # _do_rerender LE os keyframes do DB (gravados acima), entao PUTs concorrentes convergem pro ultimo.
+    threading.Thread(target=_do_rerender, args=(clip_id, base_key, src_key), daemon=True).start()
+    return jsonify({"ok": True, "mode": record["mode"], "rerender": {"state": "rendering"}}), 202
 
 
 @app.route("/api/end_screens")
@@ -2240,6 +2467,7 @@ def delete_project(job_id):
     # sobrar no bucket é órfão e pode ser varrido depois).
     try:
         s3_client.delete_prefix(f"jobs/{job_id}/")
+        s3_client.delete_prefix(f"{config.SOURCE16X9_PREFIX}{job_id}/")   # 16:9 retido (crop por keyframe)
     except Exception as e:
         log.warning("[delete] falha ao limpar S3 do job %s: %s", job_id, e)
     db.delete_job(job_id)
@@ -2504,9 +2732,11 @@ def callback():
     job = db.get_job(job_id)
     if not job_id or not job:
         return jsonify({"error": "job_id inválido"}), 400
-    # Se o job foi cancelado durante a transcrição, não retoma o corte.
-    if job["status"] == "error":
-        return jsonify({"ok": True, "skipped": "job cancelado ou em erro"})
+    # Se o job foi cancelado durante a transcrição, não retoma o corte. E IDEMPOTENTE: um callback
+    # duplicado (N8N e at-least-once) num job ja 'done' NAO re-spawna a thread2 (que re-cortaria e,
+    # se falhasse, dispararia _fail_job -> apagaria o 16:9 retido VIVO daquele projeto).
+    if job["status"] in ("error", "done"):
+        return jsonify({"ok": True, "skipped": f"job ja {job['status']}"})
     db.update_job(
         job_id,
         transcript=data.get("transcript"),

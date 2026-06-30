@@ -27,11 +27,19 @@ def _get_model() -> YOLO:
     return _model
 
 
-def reframe_clip(input_path: str, output_path: str, subtitles: str | None = None) -> None:
+def reframe_clip(input_path: str, output_path: str, subtitles: str | None = None) -> dict | None:
     """Reenquadra pra 9:16 (1080x1920) com câmera travada, encode libx264 na CPU. Delega o trabalho
-    pro reframe_core (mesma matemática do worker GPU)."""
-    reframe_core.reframe_to_file(
+    pro reframe_core (mesma matemática do worker GPU). Devolve a trajetória calculada (ou None se
+    já-9:16) pro auto-semeio de keyframes do crop."""
+    return reframe_core.reframe_to_file(
         input_path, output_path, _get_model(),
         deadzone_frac=_DEADZONE_FRAC, max_pan_frac=_MAX_PAN_FRAC, min_conf=_MIN_CONF,
         video_codec_args=_VPS_CODEC, subtitles=subtitles, detect_cuts=_CUT_DETECT,
     )
+
+
+def reframe_clip_with_keyframes(input_path: str, output_path: str, kf_list: list,
+                                subtitles: str | None = None) -> None:
+    """Re-render do crop por keyframe na CPU (libx264), SEM YOLO: delega ao reframe_core, que
+    interpola a trajetoria dos keyframes e recorta. NAO carrega o modelo (web segue YOLO-free)."""
+    reframe_core.reframe_with_keyframes(input_path, output_path, kf_list, _VPS_CODEC, subtitles)

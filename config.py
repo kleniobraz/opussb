@@ -14,6 +14,11 @@ S3_ENDPOINT: str = os.environ["S3_ENDPOINT"]
 S3_BUCKET: str = os.environ["S3_BUCKET"]
 S3_ACCESS_KEY: str = os.environ["S3_ACCESS_KEY"]
 S3_SECRET_KEY: str = os.environ["S3_SECRET_KEY"]
+# Prefixo de namespace pras keys do S3. Default "" = producao (keys em jobs/..., assets/...).
+# O staging seta S3_KEY_PREFIX=staging/ pra ler/escrever TUDO sob staging/ no MESMO bucket, sem
+# nunca tocar os objetos de producao (isolamento leve). Aplicado so na borda do s3_client, entao
+# app.py/processor.py seguem construindo keys SEM prefixo. Se setado, deve terminar em "/".
+S3_KEY_PREFIX: str = os.environ.get("S3_KEY_PREFIX", "")
 
 # RunPod
 RUNPOD_API_KEY: str = os.environ["RUNPOD_API_KEY"]
@@ -119,6 +124,26 @@ REFRAME_GPU_ENABLED: bool = (
 )
 REFRAME_GPU_TIMEOUT: int = int(os.environ.get("REFRAME_GPU_TIMEOUT", "1800"))  # teto por clipe (s); > 600s default do RunPod
 REFRAME_PUT_CONTENT_TYPE: str = os.environ.get("REFRAME_PUT_CONTENT_TYPE", "video/mp4")
+# Re-render do crop por keyframe NA GPU (BACKEND §33, Fase 2b). INDEPENDENTE do REFRAME_GPU_ENABLED e
+# default FALSE de proposito: se o app NOVO mandar re-render pro worker VELHO, o worker velho ignora os
+# keyframes e devolve um auto-reframe ERRADO. Entao o re-render fica na CPU (ja validado) ate o dono
+# confirmar workers novos no ar e LIGAR este flag. So tem efeito com REFRAME_GPU_ENABLED + endpoint id.
+RERENDER_GPU_ENABLED: bool = (
+    os.environ.get("RERENDER_GPU_ENABLED", "false").lower() in ("1", "true", "yes")
+    and REFRAME_GPU_ENABLED
+)
+
+# Retencao do corte 16:9 por clipe (fonte de verdade do crop por keyframe, BACKEND §33). O corte
+# 16:9 que hoje vira o base 9:16 passa a ser RETIDO no S3 sob um prefixo DEDICADO (pra a regra de
+# lifecycle por Filter.Prefix isolar so o 16:9, sem misturar com clip_NN_base/cap em jobs/.../clips/)
+# e expira em SOURCE16X9_TTL_DAYS. SOURCE16X9_LIFECYCLE_ENSURE (default false) liga o ensure da regra
+# no boot; fica off em prod ate o dono decidir (nao muta a config do bucket sem querer).
+SOURCE16X9_PREFIX: str = "source16x9/"
+SOURCE16X9_TTL_DAYS: int = int(os.environ.get("SOURCE16X9_TTL_DAYS", "30"))
+SOURCE16X9_LIFECYCLE_ENSURE: bool = os.environ.get("SOURCE16X9_LIFECYCLE_ENSURE", "false").lower() in ("1", "true", "yes")
+# Intervalo (s) de amostragem ao SEMEAR keyframes do auto a partir da trajetoria do reframe (alem de
+# ancorar nos cortes de camera). Menor = seed mais denso/fiel; maior = mais esparso. So afeta o seed.
+KEYFRAME_SEED_INTERVAL_S: float = float(os.environ.get("KEYFRAME_SEED_INTERVAL_S", "0.75"))
 
 # YouTube (yt-dlp): teto de duração do vídeo de entrada, em segundos. Controla custo de
 # transcrição (RunPod escala com a duração) e quanto tempo um job segura o único slot da

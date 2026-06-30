@@ -7,7 +7,10 @@ import type {
   Captions,
   CaptionStyle,
   Clip,
+  CropKeyframe,
+  CropKeyframes,
   EndScreenOption,
+  RerenderStatus,
   JobStatus,
   LoginResponse,
   Me,
@@ -211,6 +214,23 @@ export const putCaptions = (
       ...(cut ? { in: cut.in, out: cut.out } : {}),
     }),
   }).then((r) => asJson<{ ok?: boolean }>(r));
+
+// Crop por keyframe: lê os keyframes salvos (mode/kf/auto) + o estado do último re-render.
+export const getKeyframes = (id: string) =>
+  getJson<{ keyframes: CropKeyframes | null; rerender: RerenderStatus }>(
+    "/api/clips/" + encodeURIComponent(id) + "/keyframes",
+  );
+// Salva os keyframes do crop e dispara o re-render do base 9:16 (async). Manual: {kf}. Voltar ao
+// automático: {reset:true}. Responde 202 com o estado inicial; faça poll no getKeyframes até done/error.
+export const putKeyframes = (
+  id: string,
+  body: { kf: CropKeyframe[] } | { reset: true },
+) =>
+  request("/api/clips/" + encodeURIComponent(id) + "/keyframes", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => asJson<{ ok?: boolean; mode?: "auto" | "manual"; rerender?: RerenderStatus }>(r));
 
 // Biblioteca de telas finais disponíveis (id + rótulo + duração).
 export const getEndScreens = () =>

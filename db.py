@@ -141,6 +141,11 @@ def init_clip_captions() -> None:
         # Duracao (s) da tela final A USAR neste clipe (encurtar arrastando na timeline). NULL =
         # usa a tela inteira; senao corta nos primeiros N segundos (clampado a duracao do asset).
         _ensure_column(conn, "clip_captions", "end_screen_dur", "REAL")
+        # Keyframes do crop horizontal (editor de enquadramento, BACKEND §33). JSON
+        # {"mode": "auto"|"manual", "kf": [{"t": <s rel. a janela>, "cx": <0..1 centro horizontal>}]}.
+        # NULL = clipe sem crop manual (usa o enquadramento auto que ja esta no base.mp4). cx em
+        # FRACAO da largura (resolucao-independente); o re-render converte pra px/borda no reframe_core.
+        _ensure_column(conn, "clip_captions", "keyframes", "TEXT")
 
 
 def init_clip_music() -> None:
@@ -541,6 +546,29 @@ def set_clip_end_screen_dur(clip_id: str, dur) -> None:
         conn.execute(
             "UPDATE clip_captions SET end_screen_dur = ?, updated_at = ? WHERE clip_id = ?",
             (dur, _now(), clip_id),
+        )
+
+
+def get_clip_keyframes(clip_id: str):
+    """Keyframes do crop horizontal (JSON string {mode, kf:[{t,cx}]}) ou None (= sem crop manual;
+    o base.mp4 ja tem o enquadramento auto)."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT keyframes FROM clip_captions WHERE clip_id = ?", (clip_id,)
+        ).fetchone()
+        return row["keyframes"] if row else None
+
+
+def set_clip_keyframes(clip_id: str, keyframes_json) -> None:
+    """Grava os keyframes do crop (JSON serializado, ou None pra voltar ao auto). UPSERT pra cobrir
+    o clipe sem fala (sem linha de segmentos): o auto-semeio pode rodar pra ele tambem."""
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO clip_captions (clip_id, segments, keyframes, updated_at)
+                   VALUES (?, '[]', ?, ?)
+               ON CONFLICT(clip_id) DO UPDATE SET
+                   keyframes = excluded.keyframes, updated_at = excluded.updated_at""",
+            (clip_id, keyframes_json, _now()),
         )
 
 

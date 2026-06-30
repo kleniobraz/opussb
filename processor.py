@@ -334,6 +334,15 @@ def run_thread2(job_id: str) -> None:
                 pass
             else:
                 _s3_upload_with_retry(item["final"], key)
+            # Retem o corte 16:9 (fonte do crop por keyframe, BACKEND §33) se ainda nao foi retido pela
+            # GPU. item["path"] (o corte local) existe ate o rmtree no fim; sobe pra key dedicada (TTL
+            # via lifecycle). Best-effort: falha aqui nao derruba o job (o crop fica indisponivel).
+            if not item.get("src169_retained"):
+                try:
+                    _s3_upload_with_retry(item["path"],
+                                          f"{config.SOURCE16X9_PREFIX}{job_id}/clip_{i+1:02d}.mp4")
+                except Exception as e:
+                    log.warning("[src169] clip %d: falha ao reter o 16:9 (%s)", i + 1, e)
             clip_id = f"{job_id}:{i}"
             meta = item["meta"]
             win_start = float(item.get("win_start") or 0.0)
@@ -383,6 +392,13 @@ def run_thread2(job_id: str) -> None:
                                            round(window_dur, 3), in_pt, out_pt)
                 except Exception as e:
                     log.warning("[window] clip %d: falha ao gravar a janela (%s)", i + 1, e)
+            # Keyframes auto semeados no reframe (caminho CPU): grava pro editor abrir ja no enquadramento
+            # auto (manual semeado do auto). NULL pra clipe ja-vertical/center-crop (sem trajetoria).
+            if item.get("keyframes_json"):
+                try:
+                    db.set_clip_keyframes(clip_id, item["keyframes_json"])
+                except Exception as e:
+                    log.warning("[keyframe-seed] clip %d: falha ao gravar keyframes (%s)", i + 1, e)
             results.append(_clip_result(key, meta))
 
         # Thumbnail do card: frame do melhor clipe, ANTES do rmtree (arquivos ainda em
@@ -403,6 +419,7 @@ def run_thread2(job_id: str) -> None:
     except _Cancelled:
         log.info("[cancel] job %s cancelado; encerrando thread2 e limpando disco", job_id)
         shutil.rmtree(os.path.join(config.JOB_DIR, job_id), ignore_errors=True)
+        _cleanup_job_s3(job_id)   # 16:9 retido pode ja ter subido (caminho GPU) antes do cancel
     except Exception as e:
         _fail_job(job_id, str(e))
 
@@ -478,6 +495,7 @@ def _reframe_clips(job_id: str, produced: list) -> None:
     o reframe na GPU (RunPod serverless, em paralelo) e cai pra CPU por clipe que falhar; senão roda
     tudo na CPU (comportamento antigo)."""
     from reframer import reframe_clip
+    import reframe_core   # lazy: cv2/YOLO ficam fora do import do web (so a thread2 carrega)
     for item in produced:
         item["final"] = None
         item["gpu_base_key"] = None
@@ -490,13 +508,25 @@ def _reframe_clips(job_id: str, produced: list) -> None:
             continue                                    # base já no S3 (GPU); nada a fazer na CPU
         out_path = item["path"].replace(".mp4", "_base.mp4")
         _t = time.monotonic()
+        traj = None
         try:
-            reframe_clip(item["path"], out_path)        # base 9x16 SEM legenda
+            traj = reframe_clip(item["path"], out_path)        # base 9x16 SEM legenda
         except Exception as e:
             log.warning("[reframe] clip %d falhou (%s), usando center crop", i + 1, e)
             _center_crop_fallback(item["path"], out_path)
         log.info("[timing] reframe clip %d (cpu): %.1fs", i + 1, time.monotonic() - _t)
         item["final"] = out_path
+        # Semeia keyframes do AUTO (modo manual semeado do auto, BACKEND §33): reduz a trajetoria que o
+        # reframe ja calculou a uma lista esparsa {t, cx}. So no caminho CPU (a GPU computa remoto; o
+        # seed do GPU fica pra Fase 2). Best-effort: falha aqui nao derruba o reframe.
+        if traj:
+            try:
+                kf = reframe_core.keyframes_from_trajectory(
+                    traj["per_frame_cx"], traj["fps"], traj["width"], traj["crop_w"],
+                    traj.get("cuts"), config.KEYFRAME_SEED_INTERVAL_S)
+                item["keyframes_json"] = json.dumps(kf, ensure_ascii=False) if (kf and kf["kf"]) else None
+            except Exception as e:
+                log.warning("[keyframe-seed] clip %d: falha ao semear keyframes (%s)", i + 1, e)
 
 
 def _reframe_clips_gpu(job_id: str, produced: list) -> list:
@@ -511,20 +541,24 @@ def _reframe_clips_gpu(job_id: str, produced: list) -> list:
         "max_pan_frac": config.REFRAME_MAX_PAN_FRAC,
         "min_conf": config.REFRAME_MIN_CONF,
         "detect_cuts": config.REFRAME_CUT_DETECT,
+        # auto-seed do crop por keyframe (BACKEND §33): o worker devolve os keyframes esparsos no output.
+        "keyframe_interval_s": config.KEYFRAME_SEED_INTERVAL_S,
     }
     ct = config.REFRAME_PUT_CONTENT_TYPE
     url_expiry = config.REFRAME_GPU_TIMEOUT + 600       # URLs vivem mais que fila + cold start + job
     t0 = time.monotonic()
     submitted = []     # (i, rp_job_id, base_key)
-    tmp_keys = []
-    # 1) sobe os cortes e submete todos (fan-out)
+    # 1) sobe os cortes e submete todos (fan-out). O corte 16:9 e RETIDO (fonte do crop por keyframe,
+    # BACKEND §33): em vez de subir pra uma key temporaria e deletar, sobe direto pra key de retencao
+    # (lifecycle/TTL) e o worker le DELA. Zero upload extra; src169_retained evita o re-upload no loop
+    # do run_thread2.
     for i, item in enumerate(produced):
         base_key = f"jobs/{job_id}/clips/clip_{i+1:02d}_base.mp4"
-        cut_key = f"jobs/{job_id}/tmp/cut_{i+1:02d}.mp4"
+        src_key = f"{config.SOURCE16X9_PREFIX}{job_id}/clip_{i+1:02d}.mp4"
         try:
-            s3_client.upload_file(item["path"], cut_key)
-            tmp_keys.append(cut_key)
-            get_url = s3_client.get_presigned_url(cut_key, expiry_seconds=url_expiry)
+            s3_client.upload_file(item["path"], src_key)
+            item["src169_retained"] = True
+            get_url = s3_client.get_presigned_url(src_key, expiry_seconds=url_expiry)
             put_url = s3_client.get_presigned_put_url(base_key, ct, expiry_seconds=url_expiry)
             rp_id = runpod_client.submit_reframe(get_url, put_url, ct, params, config.REFRAME_GPU_TIMEOUT)
             submitted.append((i, rp_id, base_key))
@@ -537,15 +571,16 @@ def _reframe_clips_gpu(job_id: str, produced: list) -> list:
             dur = out.get("duration")
             produced[i]["window_dur"] = float(dur) if dur else None
             produced[i]["gpu_base_key"] = base_key      # base já está no S3 nessa key
+            # Auto-seed do crop (BACKEND §33): o worker NOVO devolve {"keyframes": {mode,kf}}; o run_thread2
+            # grava no DB (mesmo caminho do CPU). Worker VELHO nao manda o campo -> sem seed (gracioso).
+            kf = out.get("keyframes")
+            if isinstance(kf, dict) and kf.get("kf"):
+                produced[i]["keyframes_json"] = json.dumps(kf, ensure_ascii=False)
             ok[i] = True
         except Exception as e:
             log.warning("[reframe-gpu] clip %d: %s; fallback CPU", i + 1, e)
-    # 3) limpa os cortes temporários do S3 (best-effort; o resto do job some no rmtree/cleanup)
-    for k in tmp_keys:
-        try:
-            s3_client.delete_object(k)
-        except Exception:
-            pass
+    # 3) o corte 16:9 NAO e mais deletado: fica retido como fonte do crop por keyframe (TTL via
+    # lifecycle do bucket; limpo no delete do projeto). Nao ha mais temporario pra apagar aqui.
     log.info("[timing] reframe GPU: %d/%d clipe(s) na GPU em %.1fs", sum(ok), n, time.monotonic() - t0)
     return ok
 
@@ -718,6 +753,17 @@ def _center_crop_fallback(input_path: str, output_path: str, subtitles: str | No
     )
 
 
+def _cleanup_job_s3(job_id: str) -> None:
+    """Best-effort: apaga o 16:9 RETIDO do job no S3 num caminho TERMINAL nao-feliz (cancel/erro), pra
+    nao deixar orfao (o caminho GPU sobe o 16:9 cedo, antes do checkpoint de cancel). O lifecycle TTL e
+    a rede de seguranca; isto limpa na hora. delete_project ja cobre a exclusao do projeto."""
+    try:
+        s3_client.delete_prefix(f"{config.SOURCE16X9_PREFIX}{job_id}/")
+    except Exception as e:
+        log.warning("[cleanup] falha ao limpar o 16:9 retido do job %s: %s", job_id, e)
+
+
 def _fail_job(job_id: str, error_msg: str) -> None:
     db.update_job(job_id, status="error", error=error_msg)
     shutil.rmtree(os.path.join(config.JOB_DIR, job_id), ignore_errors=True)
+    _cleanup_job_s3(job_id)

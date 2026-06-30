@@ -17,6 +17,13 @@ _client_singleton = None
 _client_lock = threading.Lock()
 
 
+def _k(s3_key: str) -> str:
+    """Prefixa a key com config.S3_KEY_PREFIX (namespace do ambiente; "" em producao). Toda key
+    construida pelo app (app.py/processor.py) e SEM prefixo; o prefixo entra SO aqui, na borda do
+    I/O, pra o staging (S3_KEY_PREFIX=staging/) nunca tocar objetos de producao."""
+    return config.S3_KEY_PREFIX + s3_key
+
+
 def _client():
     global _client_singleton
     if _client_singleton is None:
@@ -39,21 +46,21 @@ def _client():
 def upload_file(local_path: str, s3_key: str) -> None:
     if not os.path.exists(local_path):
         raise FileNotFoundError(f"Arquivo não encontrado para upload: {local_path}")
-    _client().upload_file(local_path, config.S3_BUCKET, s3_key)
-    log.info("upload ok: %s", s3_key)
+    _client().upload_file(local_path, config.S3_BUCKET, _k(s3_key))
+    log.info("upload ok: %s", _k(s3_key))
 
 
 def download_file(s3_key: str, local_path: str) -> None:
     """Baixa um objeto do bucket para um caminho local (usado pela queima sob
     demanda, que parte da base sem legenda guardada no S3)."""
-    _client().download_file(config.S3_BUCKET, s3_key, local_path)
+    _client().download_file(config.S3_BUCKET, _k(s3_key), local_path)
 
 
 def exists(s3_key: str) -> bool:
     """True se o objeto existe no bucket. Usado pra checar o cache da queima
     (clip_NN_cap.mp4) antes de decidir entre redirecionar ou queimar."""
     try:
-        _client().head_object(Bucket=config.S3_BUCKET, Key=s3_key)
+        _client().head_object(Bucket=config.S3_BUCKET, Key=_k(s3_key))
         return True
     except ClientError:
         return False
@@ -64,7 +71,7 @@ def get_presigned_url(s3_key: str, expiry_seconds: int = 86400,
     """URL presignada de GET. Com download_name, embute response-content-disposition pra o S3
     devolver Content-Disposition: attachment (força o download com nome amigável em vez de tocar
     inline) sem alterar o objeto nem afetar o player, que pede a mesma key sem o nome."""
-    params = {"Bucket": config.S3_BUCKET, "Key": s3_key}
+    params = {"Bucket": config.S3_BUCKET, "Key": _k(s3_key)}
     if download_name:
         params["ResponseContentDisposition"] = f'attachment; filename="{download_name}"'
     return _client().generate_presigned_url(
@@ -81,14 +88,14 @@ def get_presigned_put_url(s3_key: str, content_type: str = "video/mp4",
     que ser EXATAMENTE este, senão o S3 responde 403 (é o gotcha nº 1 do presigned PUT)."""
     return _client().generate_presigned_url(
         "put_object",
-        Params={"Bucket": config.S3_BUCKET, "Key": s3_key, "ContentType": content_type},
+        Params={"Bucket": config.S3_BUCKET, "Key": _k(s3_key), "ContentType": content_type},
         ExpiresIn=expiry_seconds,
     )
 
 
 def delete_object(s3_key: str) -> None:
     """Apaga um objeto único (usado pra invalidar o cache da queima ao editar)."""
-    _client().delete_object(Bucket=config.S3_BUCKET, Key=s3_key)
+    _client().delete_object(Bucket=config.S3_BUCKET, Key=_k(s3_key))
 
 
 def delete_prefix(prefix: str) -> int:
@@ -98,7 +105,9 @@ def delete_prefix(prefix: str) -> int:
     deleted = 0
     batch = []
     paginator = client.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=config.S3_BUCKET, Prefix=prefix):
+    # Prefixa SO a listagem; as keys retornadas pelo S3 ja vem com o prefixo e sao deletadas
+    # como estao (nao re-prefixar, senao viraria duplo prefixo).
+    for page in paginator.paginate(Bucket=config.S3_BUCKET, Prefix=_k(prefix)):
         for obj in page.get("Contents", []):
             batch.append({"Key": obj["Key"]})
             if len(batch) == 1000:
@@ -110,3 +119,30 @@ def delete_prefix(prefix: str) -> int:
         deleted += len(batch)
     log.info("delete prefix %s: %d objeto(s)", prefix, deleted)
     return deleted
+
+
+def ensure_lifecycle_rule(prefix: str, days: int, rule_id: str) -> bool:
+    """Garante (idempotente) uma regra de lifecycle de EXPIRACAO no bucket: objetos sob `prefix`
+    expiram apos `days` dias (TTL do 16:9 retido, BACKEND §33). O prefixo entra namespaced via _k
+    (staging/ no staging). Faz MERGE por rule_id com as regras existentes (NAO apaga regras de outros
+    prefixos). So PUTa quando a regra falta ou difere (steady-state e so um GET read-only). Retorna
+    True se aplicou/atualizou, False se ja estava igual. Validado: Hetzner RGW honra lifecycle."""
+    client = _client()
+    want_prefix = _k(prefix)
+    desired = {"ID": rule_id, "Filter": {"Prefix": want_prefix},
+               "Status": "Enabled", "Expiration": {"Days": int(days)}}
+    try:
+        existing = client.get_bucket_lifecycle_configuration(
+            Bucket=config.S3_BUCKET).get("Rules", [])
+    except ClientError:
+        existing = []   # NoSuchLifecycleConfiguration (bucket sem regra) ou erro transitorio
+    current = next((r for r in existing if r.get("ID") == rule_id), None)
+    if (current and current.get("Status") == "Enabled"
+            and current.get("Expiration", {}).get("Days") == int(days)
+            and current.get("Filter", {}).get("Prefix") == want_prefix):
+        return False
+    others = [r for r in existing if r.get("ID") != rule_id]
+    client.put_bucket_lifecycle_configuration(
+        Bucket=config.S3_BUCKET, LifecycleConfiguration={"Rules": others + [desired]})
+    log.info("lifecycle rule %s -> prefix=%s days=%d", rule_id, want_prefix, days)
+    return True

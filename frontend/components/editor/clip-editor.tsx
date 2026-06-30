@@ -14,9 +14,10 @@ import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { PreviewStage } from "./preview-stage";
+import { CropStage } from "./crop-stage";
 import { TranscriptPanel } from "./transcript-panel";
 import { EditorTimeline } from "./editor-timeline";
-import type { EndScreenOption, Music, Segment } from "@/lib/types";
+import type { CropKeyframe, EndScreenOption, Music, Segment } from "@/lib/types";
 
 // Segmento como vive no estado do editor: o {start,end,text} do contrato + um id de
 // cliente NAO persistido. O id deixa a selecao, o karaoke e o split/merge estaveis mesmo
@@ -117,6 +118,35 @@ function MusicControl({
 // Posição vertical padrão da legenda (fração do centro, do topo). Aproxima o padrão
 // do estilo SB no backend (alignment 2 + MARGIN_V 580 de 1920 => legenda na parte baixa).
 const SB_DEFAULT_Y = 0.67;
+
+// ── Crop por keyframe (enquadramento) ──────────────────────────────────────
+// Interpola o centro do recorte (cx, fração 0..1) num instante t a partir dos keyframes esparsos
+// (linear entre eles; segura as pontas). Espelha o trajectory_from_keyframes do backend, em fração.
+function cxAt(kf: CropKeyframe[], t: number): number {
+  if (!kf.length) return 0.5;
+  const s = [...kf].sort((a, b) => a.t - b.t);
+  if (t <= s[0].t) return s[0].cx;
+  if (t >= s[s.length - 1].t) return s[s.length - 1].cx;
+  for (let i = 0; i < s.length - 1; i++) {
+    const a = s[i];
+    const b = s[i + 1];
+    if (t >= a.t && t <= b.t) {
+      const f = b.t === a.t ? 0 : (t - a.t) / (b.t - a.t);
+      return a.cx + (b.cx - a.cx) * f;
+    }
+  }
+  return s[s.length - 1].cx;
+}
+// Insere/atualiza um keyframe no tempo t (substitui o que estiver a < EPS s). Lista nova ordenada.
+const KF_MERGE_EPS = 0.08;
+function upsertKf(kf: CropKeyframe[], t: number, cx: number): CropKeyframe[] {
+  const out = kf.filter((k) => Math.abs(k.t - t) > KF_MERGE_EPS);
+  out.push({
+    t: Math.max(0, Math.round(t * 1000) / 1000),
+    cx: Math.max(0, Math.min(1, Math.round(cx * 1e4) / 1e4)),
+  });
+  return out.sort((a, b) => a.t - b.t);
+}
 
 // Estilo padrão SB da fonte (espelha as constantes do captions.py). No backend, null = isto.
 const SB_STYLE = { size: 70, tracking: -3, color: "#FFFFFF", shadow: 0.86 };
@@ -308,8 +338,27 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
   const [endBusy, setEndBusy] = useState(false);
   const didSeekInitial = useRef(false);
 
+  // Crop por keyframe (enquadramento). mode = qual superficie de edicao (legenda x enquadramento).
+  const [mode, setMode] = useState<"caption" | "crop">("caption");
+  const [cropEditable, setCropEditable] = useState(false);
+  const [cropKf, setCropKf] = useState<CropKeyframe[]>([]);
+  const [cropAuto, setCropAuto] = useState<CropKeyframe[] | null>(null);
+  const [cropKfMode, setCropKfMode] = useState<"auto" | "manual">("auto");
+  const [cropDragCx, setCropDragCx] = useState<number | null>(null); // cx durante o arraste (visual)
+  const [cropDirty, setCropDirty] = useState(false);
+  const [cropBusy, setCropBusy] = useState(false); // re-render do enquadramento em andamento
+  const [cropVersion, setCropVersion] = useState(0); // cache-bust do preview 9:16 apos re-render
+  const [selectedKf, setSelectedKf] = useState<number | null>(null); // tempo do keyframe selecionado
+  const restoreTimeRef = useRef<number | null>(null); // preserva o playhead ao trocar de modo/fonte
+
   const editable = data?.editable ?? false;
-  const previewSrc = usingBurned ? burnedSrc : baseSrc;
+  const bust = cropVersion ? `?v=${cropVersion}` : "";
+  const previewSrc = (usingBurned ? burnedSrc : baseSrc) + bust;
+  const src169 = `/api/clips/${enc}/src169`;
+  const stageSrc = mode === "crop" ? src169 : previewSrc;
+  // cx exibido na caixa: durante o arraste, o cx arrastado; senao, interpolado pelo tempo atual
+  // (a caixa "segue" a trajetoria enquanto o video toca).
+  const displayCx = cropDragCx != null ? cropDragCx : cxAt(cropKf, currentTime);
   const filmstrip = useFilmstrip(editable ? clipId : null); // sprite gerado no servidor (CORS do S3)
   const peaks = useWaveform(editable ? clipId : null);
 
@@ -359,20 +408,30 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
     setEndDur(data.end_screen_dur ?? null);
     setProjectEnd(data.project_end_screen ?? null);
     setEndScreens(data.end_screens ?? []);
+    // Crop por keyframe: carrega a trajetoria salva (mode/kf/auto) e se o clipe e cropavel (16:9 retido).
+    setCropEditable(!!data.crop_editable);
+    const kfRec = data.keyframes;
+    setCropKf(kfRec?.kf ?? []);
+    setCropAuto(kfRec?.auto ?? (kfRec?.mode === "auto" ? kfRec?.kf ?? null : null));
+    setCropKfMode(kfRec?.mode ?? "auto");
+    setCropDirty(false);
+    setCropDragCx(null);
+    setSelectedKf(null);
+    if (!data.crop_editable) setMode("caption");
   }, [data]);
 
   // Aviso nativo do navegador ao recarregar / fechar a aba / sair pra fora do app
   // com alteracoes nao salvas. (Navegacao SPA pelo botao Voltar do editor e tratada
   // pelo onNavigate do Link + ConfirmDialog abaixo.)
   useEffect(() => {
-    if (!dirty) return;
+    if (!dirty && !cropDirty) return;
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       e.preventDefault();
       e.returnValue = "";
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [dirty]);
+  }, [dirty, cropDirty]);
 
   // Atalhos: espaco = play/pause, setas = seek (Shift = 5s). Ignora quando digitando
   // num campo de texto ou com um dialogo aberto. Usa videoRef direto (sem stale closure).
@@ -406,7 +465,16 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
-    const onMeta = () => setDuration(v.duration || 0);
+    const onMeta = () => {
+      setDuration(v.duration || 0);
+      // Ao trocar de modo (9:16 <-> 16:9, mesma janela/duracao) o video remonta e volta pro 0;
+      // restaura o playhead onde estava pra a edicao nao perder o contexto.
+      if (restoreTimeRef.current != null) {
+        v.currentTime = restoreTimeRef.current;
+        setCurrentTime(restoreTimeRef.current);
+        restoreTimeRef.current = null;
+      }
+    };
     const onPlay = () => setPlaying(true);
     const onPause = () => setPlaying(false);
     const onTime = () => setCurrentTime(v.currentTime);
@@ -427,7 +495,7 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
       v.removeEventListener("ended", onPause);
       v.removeEventListener("timeupdate", onTime);
     };
-  }, [previewSrc, editable]);
+  }, [stageSrc, editable]);
 
   useEffect(() => {
     if (!playing) return;
@@ -715,6 +783,91 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
     }
   }
 
+  // ── Crop por keyframe (enquadramento) ──────────────────────────────────────
+  function toggleMode(next: "caption" | "crop") {
+    if (next === mode) return;
+    restoreTimeRef.current = videoRef.current?.currentTime ?? currentTime; // preserva o playhead
+    videoRef.current?.pause();
+    setMode(next);
+  }
+  function onCropDrag(c: number) {
+    setCropDragCx(c);
+  }
+  function onCropCommit(c: number) {
+    const t = videoRef.current?.currentTime ?? currentTime; // tempo VIVO (pode estar tocando)
+    setCropKf((kf) => upsertKf(kf, t, c));
+    setCropKfMode("manual");
+    setCropDirty(true);
+    setCropDragCx(null);
+    setSelectedKf(Math.round(t * 1000) / 1000);
+  }
+  function addKfHere() {
+    const t = videoRef.current?.currentTime ?? currentTime;
+    setCropKf((kf) => upsertKf(kf, t, cxAt(kf, t))); // keyframe no tempo atual com o cx interpolado
+    setCropKfMode("manual");
+    setCropDirty(true);
+  }
+  function deleteKf(t: number) {
+    setCropKf((kf) => kf.filter((k) => Math.abs(k.t - t) > 1e-6));
+    setSelectedKf(null);
+    setCropKfMode("manual");
+    setCropDirty(true);
+  }
+  // Poll do estado do re-render assincrono ate done/error (teto ~3min).
+  async function pollRerender() {
+    for (let i = 0; i < 180; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      let st;
+      try {
+        st = (await api.getKeyframes(clipId)).rerender;
+      } catch {
+        continue;
+      }
+      if (st?.state === "done") return;
+      if (st?.state === "error") throw new Error(st.error || "re-render falhou");
+    }
+    throw new Error("o re-render demorou demais");
+  }
+  async function applyCrop() {
+    if (!cropKf.length) {
+      toast.error("Arraste a caixa para criar ao menos um keyframe.");
+      return;
+    }
+    setCropBusy(true);
+    try {
+      await api.putKeyframes(clipId, { kf: cropKf });
+      toast.info("Re-renderizando o enquadramento…");
+      await pollRerender();
+      setCropDirty(false);
+      setCropKfMode("manual");
+      setCropVersion((v) => v + 1); // recarrega o preview 9:16 com o novo enquadramento
+      qc.invalidateQueries({ queryKey: ["captions", clipId] });
+      toast.success("Enquadramento aplicado.");
+    } catch (e) {
+      toast.error((e as Error)?.message || "Falha ao aplicar o enquadramento.");
+    } finally {
+      setCropBusy(false);
+    }
+  }
+  async function resetCrop() {
+    setCropBusy(true);
+    try {
+      await api.putKeyframes(clipId, { reset: true });
+      toast.info("Voltando ao enquadramento automático…");
+      await pollRerender();
+      if (cropAuto) setCropKf(cropAuto);
+      setCropKfMode("auto");
+      setCropDirty(false);
+      setCropVersion((v) => v + 1);
+      qc.invalidateQueries({ queryKey: ["captions", clipId] });
+      toast.success("Enquadramento automático restaurado.");
+    } catch (e) {
+      toast.error((e as Error)?.message || "Falha ao restaurar o automático.");
+    } finally {
+      setCropBusy(false);
+    }
+  }
+
   function exportClip() {
     // Com legenda -> versao queimada (com trim); Sem legenda -> corte cru (com trim) via ?nocap=1.
     // (baseSrc e a JANELA inteira com sobras, usada so pelo preview ao vivo; nao serve pra exportar.)
@@ -743,7 +896,7 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
           className="editor-icon-btn"
           aria-label="Voltar"
           onNavigate={(e) => {
-            if (dirty) {
+            if (dirty || cropDirty) {
               e.preventDefault();
               setLeaveTo(projectHref);
             }
@@ -753,22 +906,43 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
         </Link>
         <span className="editor-title">{title || "Editar clipe"}</span>
 
-        <div className="ml-2 flex items-center gap-1 rounded-full border border-[var(--border)] p-1">
-          <button
-            type="button"
-            className={cn("chip !rounded-full !border-0 !px-3 !py-1", captionsOn && "is-active")}
-            onClick={() => setCaptionsOn(true)}
-          >
-            Com legenda
-          </button>
-          <button
-            type="button"
-            className={cn("chip !rounded-full !border-0 !px-3 !py-1", !captionsOn && "is-active")}
-            onClick={() => setCaptionsOn(false)}
-          >
-            Sem legenda
-          </button>
-        </div>
+        {cropEditable && (
+          <div className="ml-2 flex items-center gap-1 rounded-full border border-[var(--border)] p-1">
+            <button
+              type="button"
+              className={cn("chip !rounded-full !border-0 !px-3 !py-1", mode === "caption" && "is-active")}
+              onClick={() => toggleMode("caption")}
+            >
+              Legenda
+            </button>
+            <button
+              type="button"
+              className={cn("chip !rounded-full !border-0 !px-3 !py-1", mode === "crop" && "is-active")}
+              onClick={() => toggleMode("crop")}
+            >
+              Enquadramento
+            </button>
+          </div>
+        )}
+
+        {mode === "caption" && (
+          <div className="ml-2 flex items-center gap-1 rounded-full border border-[var(--border)] p-1">
+            <button
+              type="button"
+              className={cn("chip !rounded-full !border-0 !px-3 !py-1", captionsOn && "is-active")}
+              onClick={() => setCaptionsOn(true)}
+            >
+              Com legenda
+            </button>
+            <button
+              type="button"
+              className={cn("chip !rounded-full !border-0 !px-3 !py-1", !captionsOn && "is-active")}
+              onClick={() => setCaptionsOn(false)}
+            >
+              Sem legenda
+            </button>
+          </div>
+        )}
 
         <div className="flex-1" />
         <Button variant="brandGhost" onClick={save} disabled={saving || !editable}>
@@ -853,46 +1027,87 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
               />
             </div>
 
-            <PreviewStage
-              videoRef={videoRef}
-              src={previewSrc}
-              captionText={activeText}
-              captionY={captionY}
-              captionStyle={capStyle}
-              onChangeY={
-                captionsOn && !usingBurned
-                  ? (y) => {
-                      setCaptionY(y);
-                      setCaptionMoved(true);
-                      setDirty(true);
-                    }
-                  : undefined
-              }
-              barExtra={
-                captionsOn && !usingBurned ? (
-                  <>
-                    <span className="text-ink-muted">arraste a legenda p/ posicionar</span>
-                    {captionMoved && (
+            {mode === "crop" ? (
+              <CropStage
+                videoRef={videoRef}
+                src={src169}
+                cx={displayCx}
+                onDragCx={cropBusy ? undefined : onCropDrag}
+                onCommitCx={cropBusy ? undefined : onCropCommit}
+                onError={() => {}}
+                onTogglePlay={togglePlay}
+                barExtra={
+                  <div className="editor-crop-bar">
+                    <span className="text-ink-muted">
+                      {cropKfMode === "auto" ? "Automático" : "Manual"} · {cropKf.length}{" "}
+                      {cropKf.length === 1 ? "keyframe" : "keyframes"}
+                    </span>
+                    <button
+                      type="button"
+                      className="text-gold underline-offset-2 hover:underline disabled:opacity-50"
+                      onClick={addKfHere}
+                      disabled={cropBusy}
+                    >
+                      + keyframe aqui
+                    </button>
+                    {cropAuto && cropKfMode === "manual" && (
                       <button
                         type="button"
-                        className="text-gold underline-offset-2 hover:underline"
-                        onClick={() => {
-                          setCaptionY(SB_DEFAULT_Y);
-                          setCaptionMoved(false);
-                          setDirty(true);
-                        }}
+                        className="text-ink-muted hover:text-ink disabled:opacity-50"
+                        onClick={resetCrop}
+                        disabled={cropBusy}
                       >
-                        Resetar posição
+                        voltar ao automático
                       </button>
                     )}
-                  </>
-                ) : null
-              }
-              onError={() => {
-                if (!usingBurned) setUsingBurned(true);
-              }}
-              onTogglePlay={togglePlay}
-            />
+                    <Button variant="gold" size="sm" onClick={applyCrop} disabled={cropBusy || !cropDirty}>
+                      {cropBusy ? "Aplicando…" : "Aplicar enquadramento"}
+                    </Button>
+                  </div>
+                }
+              />
+            ) : (
+              <PreviewStage
+                videoRef={videoRef}
+                src={previewSrc}
+                captionText={activeText}
+                captionY={captionY}
+                captionStyle={capStyle}
+                onChangeY={
+                  captionsOn && !usingBurned
+                    ? (y) => {
+                        setCaptionY(y);
+                        setCaptionMoved(true);
+                        setDirty(true);
+                      }
+                    : undefined
+                }
+                barExtra={
+                  captionsOn && !usingBurned ? (
+                    <>
+                      <span className="text-ink-muted">arraste a legenda p/ posicionar</span>
+                      {captionMoved && (
+                        <button
+                          type="button"
+                          className="text-gold underline-offset-2 hover:underline"
+                          onClick={() => {
+                            setCaptionY(SB_DEFAULT_Y);
+                            setCaptionMoved(false);
+                            setDirty(true);
+                          }}
+                        >
+                          Resetar posição
+                        </button>
+                      )}
+                    </>
+                  ) : null
+                }
+                onError={() => {
+                  if (!usingBurned) setUsingBurned(true);
+                }}
+                onTogglePlay={togglePlay}
+              />
+            )}
           </div>
 
           <EditorTimeline
@@ -927,6 +1142,14 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
               else setCutOut(value);
               setDirty(true);
             }}
+            cropActive={mode === "crop"}
+            keyframes={cropKf}
+            selectedKf={selectedKf}
+            onSelectKf={(t) => {
+              setSelectedKf(t);
+              seek(t);
+            }}
+            onDeleteKf={deleteKf}
             onZoom={setPxPerSec}
           />
         </>
@@ -952,6 +1175,7 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
           const dest = leaveTo;
           setLeaveTo(null);
           setDirty(false); // libera o onNavigate p/ a navegacao programatica abaixo
+          setCropDirty(false);
           if (dest) router.push(dest);
         }}
       />

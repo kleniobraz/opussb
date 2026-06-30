@@ -140,6 +140,25 @@ export interface CaptionBounds {
   out: number;
 }
 
+// Crop por keyframe (enquadramento manual). Cada keyframe = um instante t (s, relativo à janela do
+// clipe) + cx (CENTRO horizontal do recorte 9:16, fração 0..1 da largura do 16:9). Só pan, sem zoom.
+export interface CropKeyframe {
+  t: number;
+  cx: number;
+}
+// Registro persistido por clipe: mode (auto = trajetória da máquina; manual = ajustada pelo usuário),
+// kf (a trajetória em uso), auto (o seed da máquina, preservado pra "voltar ao automático").
+export interface CropKeyframes {
+  mode: "auto" | "manual";
+  kf: CropKeyframe[];
+  auto?: CropKeyframe[] | null;
+}
+// Estado do re-render assíncrono do crop (regenera o base 9:16 a partir do 16:9 retido).
+export interface RerenderStatus {
+  state: "idle" | "rendering" | "done" | "error";
+  error?: string | null;
+}
+
 export interface Captions {
   editable: boolean;
   segments?: Segment[];
@@ -147,6 +166,8 @@ export interface Captions {
   caption_y?: number | null; // posição vertical (fração 0..1); null = padrão SB
   style?: CaptionStyle | null; // estilo da fonte; null = padrão SB
   bounds?: CaptionBounds | null; // handles do corte; null = clipe sem margem (legado)
+  keyframes?: CropKeyframes | null; // crop por keyframe; null = sem crop manual (usa o auto do base)
+  crop_editable?: boolean; // true quando há o 16:9 retido + base re-renderizável (independe de legenda)
   // Tela final (outro) anexada ao fim. end_screen = override do clipe (null=herda, "none"=removida,
   // "<id>"=forçada); end_screen_effective = o que de fato será anexado (id ou null após herança);
   // project_end_screen = default do projeto; end_screens = biblioteca de opções.

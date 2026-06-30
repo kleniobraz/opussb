@@ -858,11 +858,317 @@ def test_admin_delete():
             cc.execute("DELETE FROM users WHERE email = ?", (em,))
 
 
+def test_crop_keyframe():
+    print("[crop por keyframe: key 16:9 + keyframes db + rota src169 + lifecycle (Fase 1a)]")
+    import db, json as _json, s3_client, config
+    from werkzeug.security import generate_password_hash
+
+    # 1) key do 16:9 retido: prefixo dedicado, 1-based (idx0 -> clip_01)
+    check(app._src169_key_for("J9", 0) == "source16x9/J9/clip_01.mp4", "_src169_key_for idx0 -> clip_01")
+    check(app._src169_key_for("J9", 4) == "source16x9/J9/clip_05.mp4", "_src169_key_for idx4 -> clip_05")
+
+    # 2) keyframes round-trip no banco (UPSERT cobre clipe sem linha previa)
+    kf = {"mode": "manual", "kf": [{"t": 0.0, "cx": 0.3}, {"t": 2.5, "cx": 0.7}]}
+    db.set_clip_keyframes("JK:3", _json.dumps(kf))
+    check(_json.loads(db.get_clip_keyframes("JK:3")) == kf, "set/get_clip_keyframes round-trip (upsert)")
+    check(db.get_clip_keyframes("NOPE:0") is None, "clipe sem keyframes -> None")
+
+    # 3) rota /src169: 404 sem o 16:9, 302 com ele; crop_editable/keyframes no GET /captions
+    db.upsert_user("crop@test", generate_password_hash("pw12345678"), must_change=False)
+    db.create_job("JC", "v.mp4", 10, 60, "/x", "crop@test")
+    db.update_job("JC", status="done",
+                  result_urls=_json.dumps([{"key": "jobs/JC/clips/clip_01_base.mp4"}]))
+    db.set_clip_captions("JC:0", _json.dumps([{"start": 0, "end": 1, "text": "a"}]))
+    c = app.app.test_client()
+    c.post("/api/login", json={"email": "crop@test", "password": "pw12345678"})
+    _orig_exists = s3_client.exists
+    try:
+        s3_client.exists = lambda k: False
+        check(c.get("/api/clips/JC:0/src169").status_code == 404, "src169 sem o 16:9 retido -> 404")
+        r = c.get("/api/clips/JC:0/captions")
+        check(r.status_code == 200 and r.get_json().get("crop_editable") is False,
+              "captions GET: crop_editable=False sem o 16:9")
+        check("keyframes" in r.get_json(), "captions GET expoe keyframes")
+        s3_client.exists = lambda k: True
+        check(c.get("/api/clips/JC:0/src169").status_code == 302, "src169 com o 16:9 retido -> 302")
+        check(c.get("/api/clips/JC:0/captions").get_json().get("crop_editable") is True,
+              "captions GET: crop_editable=True com o 16:9")
+    finally:
+        s3_client.exists = _orig_exists
+
+    # 4) ensure_lifecycle_rule: idempotente, merge por id, prefixo namespaced (cliente fake, sem rede)
+    from botocore.exceptions import ClientError
+
+    class _FakeS3:
+        def __init__(self):
+            self.rules = None
+            self.puts = 0
+        def get_bucket_lifecycle_configuration(self, Bucket):
+            if self.rules is None:
+                raise ClientError({"Error": {"Code": "NoSuchLifecycleConfiguration"}}, "Get")
+            return {"Rules": self.rules}
+        def put_bucket_lifecycle_configuration(self, Bucket, LifecycleConfiguration):
+            self.rules = LifecycleConfiguration["Rules"]
+            self.puts += 1
+
+    fake = _FakeS3()
+    _orig_client = s3_client._client
+    try:
+        s3_client._client = lambda: fake
+        want_pfx = config.S3_KEY_PREFIX + "source16x9/"
+        ch1 = s3_client.ensure_lifecycle_rule("source16x9/", 30, "rid")
+        check(ch1 and fake.puts == 1, "lifecycle: 1o ensure aplica (PUT)")
+        check(fake.rules[0]["Filter"]["Prefix"] == want_pfx and fake.rules[0]["Expiration"]["Days"] == 30,
+              "lifecycle: prefixo namespaced + Days=30")
+        ch2 = s3_client.ensure_lifecycle_rule("source16x9/", 30, "rid")
+        check(ch2 is False and fake.puts == 1, "lifecycle: 2o ensure idempotente (sem PUT)")
+        fake.rules = [{"ID": "other", "Filter": {"Prefix": "x/"}, "Status": "Enabled",
+                       "Expiration": {"Days": 7}}]
+        s3_client.ensure_lifecycle_rule("source16x9/", 30, "rid")
+        check({r["ID"] for r in fake.rules} == {"other", "rid"}, "lifecycle: merge preserva outra regra")
+    finally:
+        s3_client._client = _orig_client
+
+    db.delete_job("JC")
+    with db._conn() as cc:
+        cc.execute("DELETE FROM users WHERE email = ?", ("crop@test",))
+
+
+def test_keyframes_seed():
+    print("[keyframe seed: keyframes_from_trajectory (Fase 1b)]")
+    import reframe_core
+    # trajetoria sintetica: pan linear da borda esquerda 0 -> (width-crop_w), 60 frames @30fps, corte em 30
+    width, crop_w, fps, n = 1920, 608, 30.0, 60
+    per = [round(i * (width - crop_w) / (n - 1)) for i in range(n)]
+    out = reframe_core.keyframes_from_trajectory(per, fps, width, crop_w, cuts=[30], interval_s=0.5)
+    check(out and out["mode"] == "auto" and len(out["kf"]) >= 2, "seed devolve mode=auto + keyframes")
+    ks = out["kf"]
+    check(all(0.0 <= k["cx"] <= 1.0 for k in ks), "cx em fracao [0,1]")
+    check(abs(ks[0]["t"]) < 1e-9 and abs(ks[0]["cx"] - (per[0] + crop_w / 2) / width) < 1e-3,
+          "1o keyframe = frame 0 (centro = borda + crop_w/2)")
+    check(abs(ks[-1]["t"] - (n - 1) / fps) < 1e-3, "ultimo keyframe = ultimo frame")
+    check(all(ks[i]["cx"] <= ks[i + 1]["cx"] + 1e-9 for i in range(len(ks) - 1)), "cx monotonico no pan")
+    ts = {round(k["t"], 3) for k in ks}
+    check(round(29 / fps, 3) in ts and round(30 / fps, 3) in ts,
+          "corte ancorado (frame anterior + frame do corte)")
+    check(reframe_core.keyframes_from_trajectory([], 30, 1920, 608) is None, "trajetoria vazia -> None")
+
+
+def test_rerender_keyframes():
+    print("[crop re-render: interpolacao + validacao + rota PUT/GET (Fase 2a)]")
+    import db, json as _json, s3_client, reframe_core
+    from werkzeug.security import generate_password_hash
+
+    # 1) trajectory_from_keyframes: round-trip aproximado com keyframes_from_trajectory
+    width, crop_w, fps, n = 1920, 608, 30.0, 90
+    per = [round(i * (width - crop_w) / (n - 1)) for i in range(n)]   # pan linear esq->dir
+    kf = reframe_core.keyframes_from_trajectory(per, fps, width, crop_w, cuts=[], interval_s=0.5)
+    dense = reframe_core.trajectory_from_keyframes(kf["kf"], fps, n, width, crop_w)
+    check(len(dense) == n, "trajectory_from_keyframes devolve 1 valor por frame")
+    err = max(abs(dense[i] - per[i]) for i in range(n))
+    check(err <= 3, f"round-trip keyframes<->trajetoria fiel (err max {err}px <= 3 num pan linear)")
+    check(all(0 <= v <= width - crop_w for v in dense), "trajetoria clampada a [0, width-crop_w]")
+    # lista vazia -> corte central fixo
+    cen = reframe_core.trajectory_from_keyframes([], fps, 5, width, crop_w)
+    check(cen == [(width - crop_w) // 2] * 5, "sem keyframes -> centro fixo")
+
+    # 2) _validate_keyframes: clamp de cx, ordena por t, rejeita vazio
+    v = app._validate_keyframes({"kf": [{"t": 2.0, "cx": 1.5}, {"t": 0.0, "cx": -0.2}]})
+    check([k["t"] for k in v] == [0.0, 2.0], "valida ordena por t")
+    check(v[0]["cx"] == 0.0 and v[1]["cx"] == 1.0, "valida clampa cx a [0,1]")
+    try:
+        app._validate_keyframes({"kf": []})
+        check(False, "kf vazio deveria levantar")
+    except ValueError:
+        check(True, "kf vazio -> ValueError")
+
+    # 3) rota PUT/GET (com _do_rerender STUBADO: nao roda cv2/S3 de verdade)
+    db.upsert_user("rr@test", generate_password_hash("pw12345678"), must_change=False)
+    db.create_job("JR", "v.mp4", 10, 60, "/x", "rr@test")
+    db.update_job("JR", status="done",
+                  result_urls=_json.dumps([{"key": "jobs/JR/clips/clip_01_base.mp4"}]))
+    db.set_clip_captions("JR:0", _json.dumps([{"start": 0, "end": 1, "text": "a"}]))
+    db.set_clip_keyframes("JR:0", _json.dumps({"mode": "auto", "kf": [{"t": 0.0, "cx": 0.5}]}))
+    c = app.app.test_client()
+    c.post("/api/login", json={"email": "rr@test", "password": "pw12345678"})
+    _orig_exists, _orig_do = s3_client.exists, app._do_rerender
+    captured = {}
+    try:
+        s3_client.exists = lambda k: False
+        check(c.put("/api/clips/JR:0/keyframes", json={"kf": [{"t": 0, "cx": 0.4}]}).status_code == 409,
+              "PUT sem 16:9 retido -> 409")
+        s3_client.exists = lambda k: True
+        # _do_rerender LE os keyframes do DB; o stub so captura args + marca done (sem cv2/S3)
+        app._do_rerender = lambda clip_id, bk, sk: captured.update(
+            clip_id=clip_id, base_key=bk, src_key=sk) or app._set_rerender(clip_id, "done")
+        r = c.put("/api/clips/JR:0/keyframes", json={"kf": [{"t": 0, "cx": 0.4}, {"t": 1, "cx": 0.6}]})
+        check(r.status_code == 202 and r.get_json()["mode"] == "manual", "PUT manual -> 202 mode=manual")
+        check(captured.get("src_key") == "source16x9/JR/clip_01.mp4", "re-render recebe a key do 16:9")
+        rec = _json.loads(db.get_clip_keyframes("JR:0"))
+        check(rec["mode"] == "manual" and rec.get("auto") == [{"t": 0.0, "cx": 0.5}],
+              "PUT manual preserva o seed auto")
+        # reset volta ao auto: o DB passa a guardar a trajetoria auto (que _do_rerender vai reler)
+        r = c.put("/api/clips/JR:0/keyframes", json={"reset": True})
+        check(r.status_code == 202 and r.get_json()["mode"] == "auto", "PUT reset -> 202 mode=auto")
+        check(_json.loads(db.get_clip_keyframes("JR:0"))["kf"] == [{"t": 0.0, "cx": 0.5}],
+              "reset grava a trajetoria auto pro re-render")
+        g = c.get("/api/clips/JR:0/keyframes").get_json()
+        check(g["keyframes"]["mode"] == "auto" and g["rerender"]["state"] in ("done", "rendering"),
+              "GET keyframes devolve mode + estado do re-render")
+        # [7] regressao: clipe SO com keyframes (sem fala) NAO vira legenda-editavel (segments='[]')
+        db.create_job("JP", "v.mp4", 10, 60, "/x", "rr@test")
+        db.update_job("JP", status="done",
+                      result_urls=_json.dumps([{"key": "jobs/JP/clips/clip_01_base.mp4"}]))
+        db.set_clip_keyframes("JP:0", _json.dumps({"mode": "auto", "kf": [{"t": 0.0, "cx": 0.5}]}))
+        gp = c.get("/api/clips/JP:0/captions").get_json()
+        check(gp["editable"] is False, "[7] linha so-de-keyframes (sem fala) nao vira legenda-editavel")
+        check(gp["crop_editable"] is True,
+              "crop_editable independe de legenda (sem fala + 16:9 retido continua cropavel)")
+        db.delete_job("JP")
+        # callback idempotente: job 'done' recebendo callback duplicado e PULADO (nao re-spawna a
+        # thread2, que poderia falhar e disparar _fail_job -> apagar o 16:9 retido vivo)
+        r = c.post("/api/callback", json={"job_id": "JR", "transcript": "x", "clips_json": "[]"})
+        check(r.status_code == 200 and r.get_json().get("skipped"), "callback em job 'done' -> skipped")
+        check(db.get_job("JR")["status"] == "done", "callback duplicado nao re-processa o job done")
+    finally:
+        s3_client.exists, app._do_rerender = _orig_exists, _orig_do
+
+    db.delete_job("JR")
+    with db._conn() as cc:
+        cc.execute("DELETE FROM users WHERE email = ?", ("rr@test",))
+
+
+def test_rerender_gpu():
+    print("[crop GPU (Fase 2b): submit_rerender + auto-seed na GPU + dispatch/fallback do re-render]")
+    import runpod_client, processor, s3_client, db, json as _json, sys, config as _cfg
+
+    # 1) submit_rerender monta o payload de RE-RENDER (input.keyframes liga o modo sem-YOLO no worker)
+    calls = {}
+
+    class FakeResp:
+        def raise_for_status(self): pass
+        def json(self): return {"id": "job-9"}
+
+    class FakePost:
+        def post(self, url, json=None, headers=None, timeout=None):
+            calls["url"], calls["payload"] = url, json
+            return FakeResp()
+
+    orig_req, orig_ep = runpod_client.requests, _cfg.RUNPOD_REFRAME_ENDPOINT_ID
+    _cfg.RUNPOD_REFRAME_ENDPOINT_ID = "epTEST"
+    try:
+        runpod_client.requests = FakePost()
+        kfl = [{"t": 0, "cx": 0.4}, {"t": 1, "cx": 0.6}]
+        jid = runpod_client.submit_rerender("http://get", "http://put", "video/mp4", kfl, 1800)
+        check(jid == "job-9", "submit_rerender devolve o job_id")
+        check(calls["payload"]["input"]["keyframes"] == kfl, "submit_rerender poe os keyframes no input")
+        check(calls["payload"]["policy"]["executionTimeout"] == 1800000, "executionTimeout em ms")
+    finally:
+        runpod_client.requests, _cfg.RUNPOD_REFRAME_ENDPOINT_ID = orig_req, orig_ep
+
+    # 2) _reframe_clips_gpu: o worker devolve {"keyframes": {mode,kf}} -> vira produced[i]["keyframes_json"]
+    #    (auto-seed na GPU); params carregam keyframe_interval_s. Worker velho (sem o campo) -> sem seed.
+    o_up = processor.s3_client.upload_file
+    o_gu = processor.s3_client.get_presigned_url
+    o_pu = processor.s3_client.get_presigned_put_url
+    o_sr = processor.runpod_client.submit_reframe
+    o_po = processor.runpod_client.poll
+    pcalls = {}
+    try:
+        processor.s3_client.upload_file = lambda lp, k: None
+        processor.s3_client.get_presigned_url = lambda k, expiry_seconds=0: "http://get"
+        processor.s3_client.get_presigned_put_url = lambda k, ct, expiry_seconds=0: "http://put"
+        processor.runpod_client.submit_reframe = (
+            lambda g, p, ct, params, to: pcalls.update(params=params) or "rp-1")
+        processor.runpod_client.poll = lambda rp, to: {
+            "duration": 5.0, "keyframes": {"mode": "auto", "kf": [{"t": 0.0, "cx": 0.5}]}}
+        produced = [{"path": "/x/cut.mp4"}]
+        ok = processor._reframe_clips_gpu("JG", produced)
+        check(ok == [True], "_reframe_clips_gpu -> True quando a GPU completa")
+        check(produced[0]["src169_retained"] is True, "16:9 retido (src169_retained)")
+        check(produced[0]["window_dur"] == 5.0, "window_dur vem do worker")
+        check(produced[0]["gpu_base_key"] == "jobs/JG/clips/clip_01_base.mp4", "gpu_base_key na key final")
+        seed = _json.loads(produced[0]["keyframes_json"])
+        check(seed["mode"] == "auto" and seed["kf"] == [{"t": 0.0, "cx": 0.5}], "auto-seed da GPU gravado")
+        check(pcalls["params"].get("keyframe_interval_s") == _cfg.KEYFRAME_SEED_INTERVAL_S,
+              "params do reframe GPU carregam keyframe_interval_s")
+        # worker VELHO: poll sem 'keyframes' -> sem seed, mas ainda ok (gracioso)
+        processor.runpod_client.poll = lambda rp, to: {"duration": 4.0}
+        produced2 = [{"path": "/x/cut.mp4"}]
+        ok2 = processor._reframe_clips_gpu("JG2", produced2)
+        check(ok2 == [True] and produced2[0].get("keyframes_json") is None,
+              "worker velho (sem keyframes) -> ok sem seed (gracioso)")
+    finally:
+        processor.s3_client.upload_file = o_up
+        processor.s3_client.get_presigned_url = o_gu
+        processor.s3_client.get_presigned_put_url = o_pu
+        processor.runpod_client.submit_reframe = o_sr
+        processor.runpod_client.poll = o_po
+
+    # 3) _do_rerender: dispatch GPU quando RERENDER_GPU_ENABLED, com fallback CPU. Seção crítica
+    #    (sobrescreve base + invalida) roda nos DOIS caminhos. cv2/S3/RunPod reais sao stubados.
+    base_key = "jobs/JD/clips/clip_01_base.mp4"
+    o_dl, o_upl, o_del = s3_client.download_file, s3_client.upload_file, s3_client.delete_object
+    o_inv, o_kf = app._invalidate_cap, db.get_clip_keyframes
+    o_rg, o_en = app._rerender_gpu, _cfg.RERENDER_GPU_ENABLED
+    o_reframer = sys.modules.get("reframer")
+    state = {}
+
+    def _write(p):
+        with open(p, "wb") as f:
+            f.write(b"0" * 4096)
+
+    class _FakeReframer:
+        @staticmethod
+        def reframe_clip_with_keyframes(src, out, kf, subtitles=None):
+            state["cpu"] = True
+            _write(out)
+
+    try:
+        db.get_clip_keyframes = lambda cid: _json.dumps({"mode": "manual", "kf": [{"t": 0, "cx": 0.4}]})
+        s3_client.download_file = lambda k, lp: _write(lp)
+        s3_client.upload_file = lambda lp, k: state.update(uploaded=k)
+        s3_client.delete_object = lambda k: None
+        app._invalidate_cap = lambda k: state.update(invalidated=k)
+        sys.modules["reframer"] = _FakeReframer
+
+        # GPU ligado + _rerender_gpu produz o arquivo -> usa GPU, NAO cai no CPU
+        _cfg.RERENDER_GPU_ENABLED = True
+        app._rerender_gpu = lambda sk, bk, kf, out: (state.update(gpu=True), _write(out))[0]
+        state.clear()
+        app._do_rerender("JD:0", base_key, "source16x9/JD/clip_01.mp4")
+        check(state.get("gpu") and not state.get("cpu"), "GPU ligado -> re-render na GPU (sem CPU)")
+        check(state.get("uploaded") == base_key and state.get("invalidated") == base_key,
+              "seção crítica roda no caminho GPU (sobrescreve base + invalida)")
+        check(app._rerender_status.get("JD:0", {}).get("state") == "done", "status -> done (GPU)")
+
+        # GPU falha -> fallback CPU (reframe_clip_with_keyframes), base ainda sobrescrita
+        def _boom(sk, bk, kf, out): raise RuntimeError("gpu down")
+        app._rerender_gpu = _boom
+        state.clear()
+        app._do_rerender("JD:0", base_key, "source16x9/JD/clip_01.mp4")
+        check(state.get("cpu") and state.get("uploaded") == base_key,
+              "GPU falha -> fallback CPU + base sobrescrita")
+        check(app._rerender_status.get("JD:0", {}).get("state") == "done", "status -> done (fallback CPU)")
+    finally:
+        s3_client.download_file, s3_client.upload_file, s3_client.delete_object = o_dl, o_upl, o_del
+        app._invalidate_cap, db.get_clip_keyframes = o_inv, o_kf
+        app._rerender_gpu, _cfg.RERENDER_GPU_ENABLED = o_rg, o_en
+        if o_reframer is not None:
+            sys.modules["reframer"] = o_reframer
+        else:
+            sys.modules.pop("reframer", None)
+
+    # 4) default SEGURO: RERENDER_GPU_ENABLED off em staging (so liga apos confirmar workers novos)
+    check(_cfg.RERENDER_GPU_ENABLED is False, "RERENDER_GPU_ENABLED default false (deploy seguro)")
+
+
 def main():
     for t in (test_burn_cmd, test_burn_semaphore, test_presigned_put, test_runpod_client,
               test_validate_segments, test_parse_clips_json,
               test_captions_roundtrip, test_words_for_clip, test_caption_style, test_youtube_helpers,
               test_snap_clip_bounds, test_thumbnail, test_clip_window, test_download_all, test_end_screen,
+              test_crop_keyframe, test_keyframes_seed, test_rerender_keyframes, test_rerender_gpu,
               test_sessions_helpers, test_sessions_ownership, test_sessions_flow,
               test_sessions_extra, test_admin_delete):
         t()
