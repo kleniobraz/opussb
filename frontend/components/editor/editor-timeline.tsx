@@ -5,9 +5,12 @@ import { Maximize2, Minus, Pause, Play, Plus, SkipBack, SkipForward } from "luci
 import type { EditSeg } from "./clip-editor";
 import type { CropKeyframe } from "@/lib/types";
 
-const MIN_BLOCK_W = 26; // largura minima clicavel de um bloco, mesmo pra legenda curtissima
-const ZOOM_MIN = 4;
-const ZOOM_MAX = 48;
+const MIN_BLOCK_W = 34; // largura minima clicavel de um bloco, mesmo pra legenda curtissima
+const ZOOM_MIN = 6;
+const ZOOM_MAX = 160;
+const TARGET_BLOCK_PX = 46; // largura-alvo do bloco medio: define o zoom default por DENSIDADE
+const ZOOM_DEFAULT_MIN = 28; // piso/teto do zoom default (clipes esparsos x cheios de trechos curtos)
+const ZOOM_DEFAULT_MAX = 120;
 const DRAG_THRESHOLD = 4; // px que o ponteiro precisa andar antes de virar arraste (clique != mover)
 const MIN_CUT = 1; // duracao minima do corte (s) ao arrastar as alcas; bate com _MIN_CUT_SECONDS no backend
 
@@ -224,13 +227,15 @@ export function EditorTimeline({
       ctx.fillRect(0, h / 2 - 1, w, 2);
       return;
     }
-    ctx.fillStyle = "rgba(245,197,24,0.5)";
+    // Barras na cor "cheia" (tocado). O trecho AINDA NAO tocado e escurecido por um overlay
+    // posicionado no playhead (editor-wave-future), pra nao redesenhar o canvas a cada frame.
+    ctx.fillStyle = "rgba(245,197,24,0.85)";
     const step = 2;
     for (let x = 0; x < w; x += step) {
       const idx = Math.floor((x / w) * peaks.length);
       const peak = peaks[idx] || 0;
       const bh = Math.max(1, peak * (h - 4));
-      ctx.fillRect(x, (h - bh) / 2, 1.4, bh);
+      ctx.fillRect(x, (h - bh) / 2, 1.6, bh);
     }
   }, [peaks, trackWidth]);
 
@@ -242,17 +247,20 @@ export function EditorTimeline({
     onZoom(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.floor(w / dur))));
   }
 
-  // Abre o clipe ja cabendo inteiro na tela (uma vez, quando a duracao fica conhecida).
+  // Zoom default por DENSIDADE (uma vez, quando duracao E trechos sao conhecidos): mira ~TARGET_BLOCK_PX
+  // por bloco medio, pra os blocos nascerem pegaveis em vez de espremidos. Melhor sobrar e rolar na
+  // horizontal do que colar tudo. O "ajustar a tela" (fitToClip) continua no botao Maximize.
   useEffect(() => {
     if (didFit.current) return;
-    const el = scrollRef.current;
-    if (dur > 0 && el) {
-      const w = el.clientWidth - 16;
-      onZoom(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.floor(w / dur))));
-      didFit.current = true;
-    }
+    if (dur <= 0 || segments.length === 0) return;
+    const px = Math.max(
+      ZOOM_DEFAULT_MIN,
+      Math.min(ZOOM_DEFAULT_MAX, Math.round((TARGET_BLOCK_PX * segments.length) / dur)),
+    );
+    onZoom(px);
+    didFit.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dur]);
+  }, [dur, segments.length]);
 
   // Playhead acompanha sozinho enquanto toca: rola pra manter o cursor ~no centro da janela.
   // So enquanto `playing`, e com um respiro se o usuario rolou na mao no meio do play.
@@ -353,6 +361,20 @@ export function EditorTimeline({
         </button>
       </div>
 
+      <div className="editor-legend">
+        <span className="editor-legend-item"><i style={{ background: "var(--gold)" }} />Legendas</span>
+        <span className="editor-legend-item"><i style={{ background: "rgba(245,197,24,0.45)" }} />Áudio</span>
+        {hasHandles && (
+          <span className="editor-legend-item"><i style={{ background: "#2fe0bf" }} />Aparar</span>
+        )}
+        {endScreenLabel && (
+          <span className="editor-legend-item"><i style={{ background: "rgba(47,224,191,0.7)" }} />Tela final</span>
+        )}
+        {cropActive && (
+          <span className="editor-legend-item"><i style={{ background: "var(--gold)" }} />Keyframes</span>
+        )}
+      </div>
+
       <div className="editor-tracks-scroll" ref={scrollRef} onScroll={onTracksScroll}>
         <div
           className="editor-tracks"
@@ -370,14 +392,16 @@ export function EditorTimeline({
 
           <div className="editor-track editor-track--film">
             {filmstrip && (
-              // O sprite (N frames lado a lado) e esticado na largura da trilha: distribui os frames
-              // ao longo do tempo (o nº exato de frames nao importa). Gerado no servidor (CORS do S3).
+              // Sprite (N frames lado a lado) gerado no servidor (CORS do S3). O CSS repete os frames
+              // na PROPORCAO certa (background-size:auto 100% + repeat-x), sem esticar/achatar a imagem.
               <div className="editor-film-strip" style={{ backgroundImage: `url(${filmstrip})` }} />
             )}
           </div>
 
           <div className="editor-track editor-track--wave">
             <canvas ref={waveRef} className="editor-wave-canvas" style={{ width: trackWidth }} />
+            {/* Escurece o trecho ainda nao tocado (do playhead pra frente): da o "antes/depois". */}
+            <div className="editor-wave-future" style={{ left: currentTime * pxPerSec }} />
           </div>
 
           <div className="editor-track editor-track--caps">
@@ -385,7 +409,7 @@ export function EditorTimeline({
               <div
                 key={s._id}
                 className={`editor-cap-block${selectedId === s._id ? " is-selected" : ""}${activeId === s._id ? " is-active" : ""}${s.end - s.start < 0.7 ? " is-short" : ""}`}
-                style={{ left: s.start * pxPerSec, width: Math.max(MIN_BLOCK_W, (s.end - s.start) * pxPerSec) }}
+                style={{ left: s.start * pxPerSec, width: Math.max(MIN_BLOCK_W, (s.end - s.start) * pxPerSec - 2) }}
                 onPointerDown={(e) => startDrag(e, s._id, "move")}
                 title={s.text}
               >

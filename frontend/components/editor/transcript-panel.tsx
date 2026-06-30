@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Scissors, Merge, Trash2, Search, Plus } from "lucide-react";
+import { Scissors, Merge, Trash2, Search, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { EditSeg } from "./clip-editor";
 
@@ -179,8 +179,6 @@ export function TranscriptPanel({
   onChangeText,
   onDelete,
   onAdd,
-  onSetEdge,
-  onNudge,
   onSetTime,
   onSplit,
   onMerge,
@@ -195,8 +193,6 @@ export function TranscriptPanel({
   onChangeText: (id: string, text: string) => void;
   onDelete: (id: string) => void;
   onAdd: () => void;
-  onSetEdge: (id: string, edge: "start" | "end") => void;
-  onNudge: (id: string, edge: "start" | "end", delta: number) => void;
   onSetTime: (id: string, edge: "start" | "end", seconds: number) => void;
   onSplit: (id: string, caret?: number) => void;
   onMerge: (id: string, dir: "prev" | "next") => void;
@@ -307,23 +303,6 @@ export function TranscriptPanel({
             )}
             <div className="flex-1" />
             <button
-              className="editor-seg-del"
-              type="button"
-              onClick={() => onDelete(sel._id)}
-              aria-label="Remover trecho"
-            >
-              <Trash2 className="size-3.5" />
-            </button>
-          </div>
-          <div className="editor-seg-tools">
-            <span className="editor-seg-tools-lbl">No player ({fmtT(currentTime)}):</span>
-            <button type="button" className="editor-seg-mark" onClick={() => onSetEdge(sel._id, "start")}>
-              Início
-            </button>
-            <button type="button" className="editor-seg-mark" onClick={() => onSetEdge(sel._id, "end")}>
-              Fim
-            </button>
-            <button
               type="button"
               className="editor-seg-mark"
               onClick={() => onSplit(sel._id)}
@@ -339,25 +318,14 @@ export function TranscriptPanel({
             >
               <Merge className="size-3" /> Juntar
             </button>
-            <span className="editor-seg-tools-sep" />
-            <span className="editor-seg-nudge">
-              início
-              <button type="button" onClick={() => onNudge(sel._id, "start", -0.1)} aria-label="Início −0,1s">
-                <ChevronLeft className="size-3" />
-              </button>
-              <button type="button" onClick={() => onNudge(sel._id, "start", 0.1)} aria-label="Início +0,1s">
-                <ChevronRight className="size-3" />
-              </button>
-            </span>
-            <span className="editor-seg-nudge">
-              fim
-              <button type="button" onClick={() => onNudge(sel._id, "end", -0.1)} aria-label="Fim −0,1s">
-                <ChevronLeft className="size-3" />
-              </button>
-              <button type="button" onClick={() => onNudge(sel._id, "end", 0.1)} aria-label="Fim +0,1s">
-                <ChevronRight className="size-3" />
-              </button>
-            </span>
+            <button
+              className="editor-seg-del"
+              type="button"
+              onClick={() => onDelete(sel._id)}
+              aria-label="Remover trecho"
+            >
+              <Trash2 className="size-3.5" />
+            </button>
           </div>
         </div>
       )}

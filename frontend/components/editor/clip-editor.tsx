@@ -567,33 +567,6 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
     setDirty(true);
   }
 
-  // Marca o inicio/fim da linha no instante atual do player (sem precisar arrastar blocos).
-  function setSegEdge(id: string, edge: "start" | "end") {
-    const t = r2(currentTime);
-    setSegments((arr) =>
-      arr.map((row) => {
-        if (row._id !== id) return row;
-        return edge === "start"
-          ? { ...row, start: Math.max(0, Math.min(t, r2(row.end - 0.1))) }
-          : { ...row, end: Math.max(r2(row.start + 0.1), t) };
-      }),
-    );
-    setDirty(true);
-  }
-
-  // Ajuste fino de +-0.1s no inicio/fim da linha.
-  function nudgeSeg(id: string, edge: "start" | "end", delta: number) {
-    setSegments((arr) =>
-      arr.map((row) => {
-        if (row._id !== id) return row;
-        return edge === "start"
-          ? { ...row, start: r2(Math.max(0, Math.min(row.start + delta, row.end - 0.1))) }
-          : { ...row, end: r2(Math.max(row.start + 0.1, row.end + delta)) };
-      }),
-    );
-    setDirty(true);
-  }
-
   // Define um tempo digitado (vindo do campo editavel). Clampa pra nunca cruzar a outra borda
   // nem ficar negativo. NaN e ignorado (o campo reverte sozinho pro valor anterior).
   function setSegTime(id: string, edge: "start" | "end", seconds: number) {
@@ -1002,8 +975,6 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
                 onChangeText={(id, text) => patchSegment(id, { text })}
                 onDelete={deleteSeg}
                 onAdd={addSeg}
-                onSetEdge={setSegEdge}
-                onNudge={nudgeSeg}
                 onSetTime={setSegTime}
                 onSplit={splitSeg}
                 onMerge={mergeSeg}
