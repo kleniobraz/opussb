@@ -1315,3 +1315,34 @@ frame), NAO pelo NVENC (segundos) -> **a GPU quase nao acelera o re-render vs CP
 disco `JOB_DIR`), nao direto pro S3. A VPS NAO e gargalo: entrada medida **3-5 Gbit/s**, nginx faz streaming
 (`proxy_request_buffering off`, limite 15G, timeout 1h), disco 177 MB/s. O limite e o UPLOAD da internet do
 dono + a distancia. VPS = **Hetzner Ashburn, Virginia (US-East)**, nao Europa (bom pro Brasil, ~120-150ms).
+
+## 38. Editor timeline-first + layout Premiere: toques de backend (2026-06-30) [front em FRONTEND §28]
+
+Redesign do editor de clipe estilo OpusClip (roteiro corrido + timeline + layout Premiere), feito em
+STAGING (worktree `/opt/opussb-staging`) por partes e DEPLOYADO em prod. O backend foi tocado SO em 3 pontos,
+todos ADITIVOS e seguros (sem mudar schema; contrato de save intocado):
+
+- **`words` (clip_words) exposto no `GET /api/clips/<id>/captions`** (`app.py`, `clip_captions_get`): o tempo
+  por PALAVRA que a §26 ja gravava em `clip_captions.words` (relativo a janela) passa a sair na resposta
+  (`"words": [{start,end,word}] | null`, parse igual ao de `keyframes`). **SOMENTE LEITURA**: o `PUT /captions`
+  segue aceitando so `{start,end,text}` (via `_validate_segments`); o save NAO mexe em words. null = clipe
+  legado/sem fala. Destrava o karaoke por palavra no front (o consumo VISUAL e a Parte 5, ainda pendente; o
+  DADO ja flui). Confirmado em prod: 39/48 clipes ja tinham `words` gravado.
+- **Rota nova `GET /api/clips/<id>/music/audio`** (`app.py`, `clip_music_audio`, `@login_required`): 302 pra
+  URL presignada do `music_key` do clipe (404 se nao tem musica). So pra o preview AO VIVO do editor tocar a
+  musica em paralelo ao video base, via um `<audio>` no front (sem re-queimar). Era por isso que parecia que
+  "a musica nunca funcionou": o preview tocava o `/base` (sem musica); a musica so existia no video QUEIMADO.
+- **Musica mantida no "Exportar sem legenda" (`?nocap=1`)** (`app.py`, `clip_video`): o branch do nocap deixou
+  de descartar a musica (era `do_caps = do_music = False`); agora `do_caps=False; do_music=use_music`, entao o
+  `_trim.mp4` queima COM musica (e trim, se houver). So serve a base crua quando NAO ha trim NEM musica.
+  `_invalidate_cap` ja apaga `_trim.mp4` quando a musica muda, entao a regeneracao e automatica.
+
+Sem mudanca de schema (`clip_captions.words` ja existia desde a §26). `_validate_segments`, `set_clip_captions`
+e `_build_burn_cmd`/`_ensure_burn` (que ja mixava a musica via `-stream_loop -1` + `[1:a]volume[m]` +
+`amix`) inalterados. Validado no staging (upload de musica 200, `/music/audio` 302, `/captions` com `words`).
+
+**Deploy:** merge ff `staging -> master` (`964d265 -> 4c87293`, 11 commits), `next build` + restart
+`opussb`/`opussb-web` com `active_jobs=0` + backup (`/opt/opussb_backups/*-20260630-211141*`; rollback ref =
+`964d265`; banco NAO precisa de rollback, sem mudanca de schema). Push autorizado pelo dono (regra 9).
+**GIT: `origin/master` == `4c87293`** [SUPERSEDE o git da §36]. Smoke server-side ok (/health, paginas, rota
+nova 401). Validacao visual (gaveta Ajustes, musica no preview, crop) com o dono. Front: FRONTEND §28.

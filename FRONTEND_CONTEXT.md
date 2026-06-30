@@ -42,7 +42,11 @@ de API) e a memória do projeto (`frontend-stack-decision`).
   via API); o custo da Claude fica parado (a org é "Individual", sem Admin API; ver BACKEND §32/§34).
 - **PRÓXIMA GRANDE FRENTE (decidida 2026-06-26, NÃO começada): editor de crop por KEYFRAME estilo OpusClip
   + multi-apresentador**, em STAGING. Decisões e arquitetura em **BACKEND §33** (front: §26 abaixo).
-- **Git:** `origin/master` em `62b7be4` (tudo pushado). Working tree tem só docs + `.gitignore` (do dono).
+- **Onda 2026-06-30 (em produção):** crop por keyframe LIVE (§27 / BACKEND §35-37) **e** o **editor
+  "timeline-first" (roteiro corrido) + layout estilo Premiere** + Ctrl+S + pop-up de sair-sem-salvar +
+  música no preview e no export sem legenda + atalho de zoom `-`/`+` + fix de z-index dos diálogos (**§28**;
+  backend em BACKEND §38). Só a **Parte 5 (karaokê por PALAVRA)** ficou pendente (o dado `words` já flui).
+- **Git:** `origin/master` em `4c87293` (deploy 2026-06-30, §28; código todo pushado). Working tree tem só docs + `.gitignore` (do dono).
 - **Falta (pendente):** validar a tela final num **clipe real da Carbone**; o **editor de crop por keyframe**
   (§26 / BACKEND §33, staging); o **editor estilo OpusClip texto-corrido** (§22, staging); remover a SPA
   `static/`; popstate no editor (§7/§9). Estado completo + git em **BACKEND §34**.
@@ -749,3 +753,62 @@ excluir (so habilitada pra conta `rejected`/`inactive`), `lib/api.ts` ganhou `ad
 
 **PENDENTE:** validacao visual num podcast real do dono (1o upload pos-deploy). Multi-apresentador
 (split/3/4) segue fase posterior.
+
+## 28. Editor timeline-first (roteiro corrido) + layout Premiere + refinamentos (2026-06-30) [implementa §22; backend BACKEND §38]
+
+O redesign do editor que a §22 decidiu (OpusClip texto-corrido), feito em STAGING (`/opt/opussb-staging`,
+Flask 5002 + next dev 3001, clipe semeado isolado sob prefixo S3 `staging/`) EM PARTES validadas com o dono,
+e DEPLOYADO em prod (commit `4c87293`, merge ff). Substitui a lista de cards por um roteiro corrido e
+reorganiza o editor num layout estilo Premiere. **Modo Enquadramento e o contrato de dados/save intocados.**
+
+**Roteiro corrido (`components/editor/transcript-panel.tsx`, reescrito):** a transcricao virou um roteiro
+continuo (teleprompter): cada trecho e um `<span>` inline editavel separado por espaco. Cor por estado: ativo
+= pilula dourada (`var(--gold)` #F5C518, a cor da MARCA, nao o #E7B917 do mock); ja passou = texto cheio; vai
+tocar = apagado. **Edicao contentEditable NAO-controlada** (valor inicial congelado + sync externo so fora de
+foco) -> cursor-safe durante o play (nunca reescreve o no em edicao). Commit no `onBlur` (colapsa espacos +
+trim); Enter confirma. **Auto-scroll por `scrollTop`** (NAO `scrollIntoView`, refina a §21), com guarda de
+foco editavel. Busca no roteiro (case/acento-insensitive) + botao "+". Barra contextual enxuta do trecho
+selecionado: inicio->fim (digitavel via `TimeField`) + Dividir/Juntar/Excluir (tirados os botoes Inicio/Fim e
+os nudges +-0,1s, redundantes agora que arrastar o bloco na timeline funciona bem).
+
+**Layout final estilo PREMIERE (`clip-editor.tsx` + `brand.css`):** previa 9:16 SOZINHA na coluna DIREITA
+(altura inteira; `aspect-ratio:9/16`, cap `48vw`, min `260px`); a ESQUERDA empilha roteiro (cima) + timeline
+(baixo) com **divisoria arrastavel** (`.editor-split`, `startTimelineResize`) cuja altura persiste em
+localStorage (`opussb_editor_timelineH`). Vale pros 2 modos (no Enquadramento o palco 16:9 encaixa pela
+largura na coluna 9:16, com tarja, sem distorcer). Substituiu um layout 1b de 3 colunas que tinha sido feito
+no caminho. Musica/Estilo/Tela final sairam da coluna do roteiro pra um painel lateral **"Ajustes"** (Sheet)
+acionado por botao na topbar (limpa a coluna do roteiro).
+
+**Timeline usavel (`editor-timeline.tsx`):** zoom default por DENSIDADE (`round(46*nSeg/dur)`, clamp 28..120)
+no lugar de fit-to-screen, pra os blocos nascerem pegaveis (rola na horizontal em vez de colar); `ZOOM_MAX`
+48->160 (exportados `ZOOM_MIN`/`ZOOM_MAX`). Blocos: min 34px + seam de 2px, alcas de redimensionar SEMPRE
+visiveis. Faixas mais altas e empilhadas: Legendas 88 (sob a regua, a que se arrasta) -> Video 76 -> Audio
+104; a timeline rola na VERTICAL se a divisoria a encolher abaixo do conteudo. **Filmstrip na proporcao certa**
+(CSS `background-size:auto 100%` + `repeat-x`, sem esticar/achatar o rosto) + sprite de **36 frames** (backend,
+era 12, BACKEND §31.1) pra menos repeticao no zoom + `cache:no-store` no `use-filmstrip` (o browser reusava o
+sprite velho cacheado). Waveform com cor antes/depois do playhead (overlay que escurece o futuro, sem
+redesenhar o canvas por frame) + playhead com diamante.
+
+**Karaoke por palavra (`words`):** `lib/types.ts` ganhou `Word {start,end,word}` + `Captions.words?`; o GET
+/captions ja entrega (BACKEND §38). **O consumo VISUAL (palavra acesa no roteiro/overlay) ficou PENDENTE
+(Parte 5)** - hoje o destaque e por SEGMENTO; o dado ja flui.
+
+**Refinamentos (mesma leva):**
+- **Ctrl/Cmd+S** salva (preventDefault pra nao abrir o "salvar pagina" do Chrome); funciona com foco num
+  campo (blur comita a edicao inline, salva no proximo tick) via um `saveRef` sempre atual.
+- **Musica no preview AO VIVO:** `<audio>` paralelo sincronizado com o video (play/pause/seek juntos, loop),
+  volume = o configurado; so quando ha musica e o preview NAO e o video ja queimado (senao dobraria). Rota +
+  musica no export sem legenda: BACKEND §38.
+- **Atalho de zoom da timeline:** `-` afasta, `+`/`=` aproxima (x1.25, clamp `ZOOM_MIN..MAX`); respeita as
+  guardas de foco/dialogo dos outros atalhos.
+- **Pop-up "Sair sem salvar?" dedicado** (NAO usa o `ConfirmDialog` compartilhado, que tambem serve
+  `projetos/[id]`): estilo da marca (icone de alerta dourado; "Continuar editando" = acao principal dourada,
+  "Sair sem salvar" = secundaria/perigo), fade+zoom. [refina a §9/§7]
+- **FIX z-index (bug bloqueante):** `.editor-shell` e `position:fixed z-index:100`; o Sheet e o Dialog do
+  shadcn portam no `<body>` com z-50, entao a gaveta Ajustes e o pop-up de sair abriam ATRAS do editor
+  (invisiveis - "o botao nao fazia nada"). `components/ui/sheet.tsx` e `dialog.tsx`: overlay+content de z-50
+  pra **z-[200]** (acima do shell, abaixo dos toasts). Conserta TODOS os dialogos dentro do editor.
+
+`tsc --noEmit` + `next build` limpos. **EM PRODUCAO** (`4c87293`; merge ff staging->master, `next build` +
+restart com `active_jobs=0` + backup `*-20260630-211141`, rollback ref `964d265`). Esta secao IMPLEMENTA o
+plano da §22 e SUPERSEDE o arranjo de 3 colunas que tinha sido tentado antes.
