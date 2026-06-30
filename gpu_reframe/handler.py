@@ -4,12 +4,23 @@ Recebe um clipe (presigned GET), reenquadra com a MESMA lógica da VPS (`reframe
 travada) só que com encode **NVENC** (GPU), e sobe o resultado via presigned PUT. Devolve a duração.
 Roda só dentro da imagem do worker (gpu_reframe/Dockerfile); não é importado na VPS.
 
+Dois modos (BACKEND §33, crop por keyframe):
+  AUTO (default): reenquadra com YOLO (câmera travada) e, de brinde, devolve os keyframes ESPARSOS
+                  da trajetória ({"keyframes": {mode,kf}}) pro app semear o editor de crop. Custo zero
+                  (pega carona no mesmo job).
+  RE-RENDER: se o input traz `keyframes` (lista [{t,cx}]), NÃO roda YOLO: re-renderiza o 16:9 com a
+             trajetória do usuário (reframe_with_keyframes). É o "Aplicar" do crop manual na GPU.
+
 Contrato de input (job["input"]):
-  input_url           presigned GET do corte (janela) a reenquadrar
+  input_url           presigned GET do corte (janela)/16:9 a reenquadrar
   output_put_url      presigned PUT onde subir a base 9:16 resultante
   output_content_type Content-Type a usar no PUT (TEM que casar com o assinado, senão 403)
-  deadzone_frac, max_pan_frac, min_conf   params da câmera travada (mesmos da VPS)
-Saída: {"duration": <s>, "ok": true} ou {"error": "<msg>"}.
+  deadzone_frac, max_pan_frac, min_conf   params da câmera travada (modo AUTO)
+  keyframe_interval_s intervalo (s) de amostragem do auto-seed (modo AUTO; default 0.75)
+  keyframes           lista [{t,cx}] -> liga o modo RE-RENDER (sem YOLO)
+Saída AUTO:     {"duration": <s>, "ok": true, "keyframes": {mode,kf}|null}
+Saída RE-RENDER:{"duration": <s>, "ok": true, "rerender": true}
+Erro:           {"error": "<msg>"}.
 """
 import os
 import subprocess
@@ -48,27 +59,48 @@ def _probe_duration(path: str):
         return None
 
 
+def _upload(out_path: str, put_url: str, ct: str) -> None:
+    with open(out_path, "rb") as f:
+        # Content-Type IGUAL ao assinado no presigned PUT (mismatch = 403).
+        put = requests.put(put_url, data=f, headers={"Content-Type": ct}, timeout=_HTTP_TIMEOUT)
+    put.raise_for_status()
+
+
 def reframe_job(job_input: dict) -> dict:
     src = job_input["input_url"]
     put_url = job_input["output_put_url"]
     ct = job_input.get("output_content_type", "video/mp4")
-    params = dict(
-        deadzone_frac=float(job_input.get("deadzone_frac", 0.35)),
-        max_pan_frac=float(job_input.get("max_pan_frac", 0.18)),
-        min_conf=float(job_input.get("min_conf", 0.30)),
-        detect_cuts=bool(job_input.get("detect_cuts", False)),
-    )
+    kf_list = job_input.get("keyframes")        # presença -> modo RE-RENDER (crop manual, sem YOLO)
     with tempfile.TemporaryDirectory() as tmp:
         cut = os.path.join(tmp, "cut.mp4")
         out = os.path.join(tmp, "base.mp4")
         _download(src, cut)
-        reframe_core.reframe_to_file(cut, out, _model, video_codec_args=_NVENC_CODEC, **params)
+        if isinstance(kf_list, list) and kf_list:
+            # RE-RENDER: aplica a trajetória do usuário no 16:9, sem detecção (mesma matemática da CPU).
+            reframe_core.reframe_with_keyframes(cut, out, kf_list, video_codec_args=_NVENC_CODEC)
+            dur = _probe_duration(out)
+            _upload(out, put_url, ct)
+            return {"duration": dur, "ok": True, "rerender": True}
+        # AUTO: reframe com YOLO + auto-seed de keyframes (BACKEND §33).
+        params = dict(
+            deadzone_frac=float(job_input.get("deadzone_frac", 0.35)),
+            max_pan_frac=float(job_input.get("max_pan_frac", 0.18)),
+            min_conf=float(job_input.get("min_conf", 0.30)),
+            detect_cuts=bool(job_input.get("detect_cuts", False)),
+        )
+        traj = reframe_core.reframe_to_file(cut, out, _model, video_codec_args=_NVENC_CODEC, **params)
         dur = _probe_duration(out)
-        with open(out, "rb") as f:
-            # Content-Type IGUAL ao assinado no presigned PUT (mismatch = 403).
-            put = requests.put(put_url, data=f, headers={"Content-Type": ct}, timeout=_HTTP_TIMEOUT)
-        put.raise_for_status()
-    return {"duration": dur, "ok": True}
+        _upload(out, put_url, ct)
+    # Reduz a trajetória a keyframes esparsos pro app semear o editor (None se já-vertical/sem trajetória).
+    kf = None
+    if traj:
+        try:
+            kf = reframe_core.keyframes_from_trajectory(
+                traj["per_frame_cx"], traj["fps"], traj["width"], traj["crop_w"],
+                traj.get("cuts"), float(job_input.get("keyframe_interval_s", 0.75)))
+        except Exception:
+            kf = None
+    return {"duration": dur, "ok": True, "keyframes": kf}
 
 
 def handler(job):

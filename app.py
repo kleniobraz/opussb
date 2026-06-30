@@ -2036,8 +2036,8 @@ def clip_captions_put(clip_id):
 # Regenera o clip_NN_base.mp4 a partir do 16:9 RETIDO (/src169) com a trajetoria dos keyframes do
 # usuario. E um ENCODE completo (pesado): roda em thread DAEMON (nao prende a request) serializado por
 # semaforo (1 por vez, protege a CPU como a queima). Status em memoria (gunicorn --workers 1 = 1
-# processo; dict compartilhado entre as threads; restart no meio = o front re-dispara). CPU-only nesta
-# fase (Fase 2a); o caminho GPU vem na Fase 2b. So clipe NOVO com 16:9 retido (crop_editable).
+# processo; dict compartilhado entre as threads; restart no meio = o front re-dispara). Roda na GPU
+# quando RERENDER_GPU_ENABLED (Fase 2b), com fallback CPU sempre ativo. So clipe NOVO com 16:9 retido.
 _MAX_KEYFRAMES = 2000
 _rerender_sem = threading.BoundedSemaphore(1)
 _rerender_lock = threading.Lock()
@@ -2073,13 +2073,37 @@ def _set_rerender(clip_id, state, error=None):
         _rerender_status[clip_id] = {"state": state, "error": error}
 
 
+def _rerender_gpu(src_key, base_key, kf_list, out_local):
+    """Produz o re-render NA GPU (BACKEND §33, Fase 2b): o worker baixa o 16:9 retido (presigned GET),
+    re-renderiza com a trajetoria do usuario (sem YOLO) e sobe num key TEMPORARIO (presigned PUT). Baixa
+    o temporario pro `out_local` e o apaga. Levanta em qualquer falha (o chamador cai pro CPU). Escreve
+    num temporario, NAO na base: a promocao pra base acontece sob _clip_burn_lock no chamador (atomico
+    contra a queima)."""
+    import runpod_client   # lazy: requests/config fora do hot path do web
+    ct = config.REFRAME_PUT_CONTENT_TYPE
+    url_expiry = config.REFRAME_GPU_TIMEOUT + 600
+    tmp_key = base_key.replace("_base.mp4", "_base.rerender.mp4")   # transitorio; limpo no fim/no delete do job
+    get_url = s3_client.get_presigned_url(src_key, expiry_seconds=url_expiry)
+    put_url = s3_client.get_presigned_put_url(tmp_key, ct, expiry_seconds=url_expiry)
+    rp_id = runpod_client.submit_rerender(get_url, put_url, ct, kf_list, config.REFRAME_GPU_TIMEOUT)
+    try:
+        runpod_client.poll(rp_id, config.REFRAME_GPU_TIMEOUT)
+        s3_client.download_file(tmp_key, out_local)
+    finally:
+        try:
+            s3_client.delete_object(tmp_key)
+        except Exception:
+            pass
+
+
 def _do_rerender(clip_id, base_key, src_key):
     """Worker do re-render (thread daemon). Sob _rerender_sem (1 por vez): LE os keyframes ATUAIS do DB
-    (PUTs concorrentes do mesmo clipe convergem pro ULTIMO salvo, em vez de "vence quem termina"), baixa
-    o 16:9 retido e reenquadra na CPU. Depois, sob _clip_burn_lock(clip_id) (serializa contra a queima do
-    MESMO clipe, senao um _cap.mp4 feito da base ANTIGA viraria cache quente): sobrescreve a base 9:16 e
-    invalida os derivados (cap/trim/*_es + thumb/strip, que derivam da base). NAO mexe na janela/segmentos:
-    mesma duracao/fps, so muda o pan, entao a legenda segue valida."""
+    (PUTs concorrentes do mesmo clipe convergem pro ULTIMO salvo, em vez de "vence quem termina") e
+    produz a base 9:16 reenquadrada na GPU (se RERENDER_GPU_ENABLED) ou na CPU (fallback sempre ativo).
+    Depois, sob _clip_burn_lock(clip_id) (serializa contra a queima do MESMO clipe, senao um _cap.mp4
+    feito da base ANTIGA viraria cache quente): sobrescreve a base 9:16 e invalida os derivados
+    (cap/trim/*_es + thumb/strip, que derivam da base). NAO mexe na janela/segmentos: mesma duracao/fps,
+    so muda o pan, entao a legenda segue valida."""
     tmp = None
     try:
         with _rerender_sem:
@@ -2091,12 +2115,20 @@ def _do_rerender(clip_id, base_key, src_key):
             kf_list = (rec or {}).get("kf") or []
             if not kf_list:
                 raise RuntimeError("sem keyframes pra renderizar")
-            from reframer import reframe_clip_with_keyframes   # lazy: cv2 fora do import do web
             tmp = tempfile.mkdtemp(prefix="rerender_")
-            src_local = os.path.join(tmp, "src169.mp4")
             out_local = os.path.join(tmp, "base.mp4")
-            s3_client.download_file(src_key, src_local)
-            reframe_clip_with_keyframes(src_local, out_local, kf_list)
+            produced_gpu = False
+            if config.RERENDER_GPU_ENABLED:
+                try:
+                    _rerender_gpu(src_key, base_key, kf_list, out_local)
+                    produced_gpu = True
+                except Exception as e:
+                    log.warning("[rerender] clip %s: GPU falhou (%s); fallback CPU", clip_id, e)
+            if not produced_gpu:
+                from reframer import reframe_clip_with_keyframes   # lazy: cv2 fora do import do web
+                src_local = os.path.join(tmp, "src169.mp4")
+                s3_client.download_file(src_key, src_local)
+                reframe_clip_with_keyframes(src_local, out_local, kf_list)
             if not os.path.exists(out_local) or os.path.getsize(out_local) < 1024:
                 raise RuntimeError("re-render produziu arquivo vazio")
             with _clip_burn_lock(clip_id):              # serializa contra a queima do MESMO clipe
@@ -2108,7 +2140,7 @@ def _do_rerender(clip_id, base_key, src_key):
                     except Exception:
                         pass
         _set_rerender(clip_id, "done")
-        log.info("[rerender] clip %s ok", clip_id)
+        log.info("[rerender] clip %s ok (%s)", clip_id, "gpu" if produced_gpu else "cpu")
     except Exception as e:
         _set_rerender(clip_id, "error", str(e))
         log.warning("[rerender] clip %s falhou: %s", clip_id, e)

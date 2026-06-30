@@ -986,12 +986,137 @@ def test_rerender_keyframes():
         cc.execute("DELETE FROM users WHERE email = ?", ("rr@test",))
 
 
+def test_rerender_gpu():
+    print("[crop GPU (Fase 2b): submit_rerender + auto-seed na GPU + dispatch/fallback do re-render]")
+    import runpod_client, processor, s3_client, db, json as _json, sys, config as _cfg
+
+    # 1) submit_rerender monta o payload de RE-RENDER (input.keyframes liga o modo sem-YOLO no worker)
+    calls = {}
+
+    class FakeResp:
+        def raise_for_status(self): pass
+        def json(self): return {"id": "job-9"}
+
+    class FakePost:
+        def post(self, url, json=None, headers=None, timeout=None):
+            calls["url"], calls["payload"] = url, json
+            return FakeResp()
+
+    orig_req, orig_ep = runpod_client.requests, _cfg.RUNPOD_REFRAME_ENDPOINT_ID
+    _cfg.RUNPOD_REFRAME_ENDPOINT_ID = "epTEST"
+    try:
+        runpod_client.requests = FakePost()
+        kfl = [{"t": 0, "cx": 0.4}, {"t": 1, "cx": 0.6}]
+        jid = runpod_client.submit_rerender("http://get", "http://put", "video/mp4", kfl, 1800)
+        check(jid == "job-9", "submit_rerender devolve o job_id")
+        check(calls["payload"]["input"]["keyframes"] == kfl, "submit_rerender poe os keyframes no input")
+        check(calls["payload"]["policy"]["executionTimeout"] == 1800000, "executionTimeout em ms")
+    finally:
+        runpod_client.requests, _cfg.RUNPOD_REFRAME_ENDPOINT_ID = orig_req, orig_ep
+
+    # 2) _reframe_clips_gpu: o worker devolve {"keyframes": {mode,kf}} -> vira produced[i]["keyframes_json"]
+    #    (auto-seed na GPU); params carregam keyframe_interval_s. Worker velho (sem o campo) -> sem seed.
+    o_up = processor.s3_client.upload_file
+    o_gu = processor.s3_client.get_presigned_url
+    o_pu = processor.s3_client.get_presigned_put_url
+    o_sr = processor.runpod_client.submit_reframe
+    o_po = processor.runpod_client.poll
+    pcalls = {}
+    try:
+        processor.s3_client.upload_file = lambda lp, k: None
+        processor.s3_client.get_presigned_url = lambda k, expiry_seconds=0: "http://get"
+        processor.s3_client.get_presigned_put_url = lambda k, ct, expiry_seconds=0: "http://put"
+        processor.runpod_client.submit_reframe = (
+            lambda g, p, ct, params, to: pcalls.update(params=params) or "rp-1")
+        processor.runpod_client.poll = lambda rp, to: {
+            "duration": 5.0, "keyframes": {"mode": "auto", "kf": [{"t": 0.0, "cx": 0.5}]}}
+        produced = [{"path": "/x/cut.mp4"}]
+        ok = processor._reframe_clips_gpu("JG", produced)
+        check(ok == [True], "_reframe_clips_gpu -> True quando a GPU completa")
+        check(produced[0]["src169_retained"] is True, "16:9 retido (src169_retained)")
+        check(produced[0]["window_dur"] == 5.0, "window_dur vem do worker")
+        check(produced[0]["gpu_base_key"] == "jobs/JG/clips/clip_01_base.mp4", "gpu_base_key na key final")
+        seed = _json.loads(produced[0]["keyframes_json"])
+        check(seed["mode"] == "auto" and seed["kf"] == [{"t": 0.0, "cx": 0.5}], "auto-seed da GPU gravado")
+        check(pcalls["params"].get("keyframe_interval_s") == _cfg.KEYFRAME_SEED_INTERVAL_S,
+              "params do reframe GPU carregam keyframe_interval_s")
+        # worker VELHO: poll sem 'keyframes' -> sem seed, mas ainda ok (gracioso)
+        processor.runpod_client.poll = lambda rp, to: {"duration": 4.0}
+        produced2 = [{"path": "/x/cut.mp4"}]
+        ok2 = processor._reframe_clips_gpu("JG2", produced2)
+        check(ok2 == [True] and produced2[0].get("keyframes_json") is None,
+              "worker velho (sem keyframes) -> ok sem seed (gracioso)")
+    finally:
+        processor.s3_client.upload_file = o_up
+        processor.s3_client.get_presigned_url = o_gu
+        processor.s3_client.get_presigned_put_url = o_pu
+        processor.runpod_client.submit_reframe = o_sr
+        processor.runpod_client.poll = o_po
+
+    # 3) _do_rerender: dispatch GPU quando RERENDER_GPU_ENABLED, com fallback CPU. Seção crítica
+    #    (sobrescreve base + invalida) roda nos DOIS caminhos. cv2/S3/RunPod reais sao stubados.
+    base_key = "jobs/JD/clips/clip_01_base.mp4"
+    o_dl, o_upl, o_del = s3_client.download_file, s3_client.upload_file, s3_client.delete_object
+    o_inv, o_kf = app._invalidate_cap, db.get_clip_keyframes
+    o_rg, o_en = app._rerender_gpu, _cfg.RERENDER_GPU_ENABLED
+    o_reframer = sys.modules.get("reframer")
+    state = {}
+
+    def _write(p):
+        with open(p, "wb") as f:
+            f.write(b"0" * 4096)
+
+    class _FakeReframer:
+        @staticmethod
+        def reframe_clip_with_keyframes(src, out, kf, subtitles=None):
+            state["cpu"] = True
+            _write(out)
+
+    try:
+        db.get_clip_keyframes = lambda cid: _json.dumps({"mode": "manual", "kf": [{"t": 0, "cx": 0.4}]})
+        s3_client.download_file = lambda k, lp: _write(lp)
+        s3_client.upload_file = lambda lp, k: state.update(uploaded=k)
+        s3_client.delete_object = lambda k: None
+        app._invalidate_cap = lambda k: state.update(invalidated=k)
+        sys.modules["reframer"] = _FakeReframer
+
+        # GPU ligado + _rerender_gpu produz o arquivo -> usa GPU, NAO cai no CPU
+        _cfg.RERENDER_GPU_ENABLED = True
+        app._rerender_gpu = lambda sk, bk, kf, out: (state.update(gpu=True), _write(out))[0]
+        state.clear()
+        app._do_rerender("JD:0", base_key, "source16x9/JD/clip_01.mp4")
+        check(state.get("gpu") and not state.get("cpu"), "GPU ligado -> re-render na GPU (sem CPU)")
+        check(state.get("uploaded") == base_key and state.get("invalidated") == base_key,
+              "seção crítica roda no caminho GPU (sobrescreve base + invalida)")
+        check(app._rerender_status.get("JD:0", {}).get("state") == "done", "status -> done (GPU)")
+
+        # GPU falha -> fallback CPU (reframe_clip_with_keyframes), base ainda sobrescrita
+        def _boom(sk, bk, kf, out): raise RuntimeError("gpu down")
+        app._rerender_gpu = _boom
+        state.clear()
+        app._do_rerender("JD:0", base_key, "source16x9/JD/clip_01.mp4")
+        check(state.get("cpu") and state.get("uploaded") == base_key,
+              "GPU falha -> fallback CPU + base sobrescrita")
+        check(app._rerender_status.get("JD:0", {}).get("state") == "done", "status -> done (fallback CPU)")
+    finally:
+        s3_client.download_file, s3_client.upload_file, s3_client.delete_object = o_dl, o_upl, o_del
+        app._invalidate_cap, db.get_clip_keyframes = o_inv, o_kf
+        app._rerender_gpu, _cfg.RERENDER_GPU_ENABLED = o_rg, o_en
+        if o_reframer is not None:
+            sys.modules["reframer"] = o_reframer
+        else:
+            sys.modules.pop("reframer", None)
+
+    # 4) default SEGURO: RERENDER_GPU_ENABLED off em staging (so liga apos confirmar workers novos)
+    check(_cfg.RERENDER_GPU_ENABLED is False, "RERENDER_GPU_ENABLED default false (deploy seguro)")
+
+
 def main():
     for t in (test_burn_cmd, test_burn_semaphore, test_presigned_put, test_runpod_client,
               test_validate_segments, test_parse_clips_json,
               test_captions_roundtrip, test_words_for_clip, test_caption_style, test_youtube_helpers,
               test_snap_clip_bounds, test_thumbnail, test_clip_window, test_download_all, test_end_screen,
-              test_crop_keyframe, test_keyframes_seed, test_rerender_keyframes,
+              test_crop_keyframe, test_keyframes_seed, test_rerender_keyframes, test_rerender_gpu,
               test_sessions_helpers, test_sessions_ownership, test_sessions_flow,
               test_sessions_extra):
         t()

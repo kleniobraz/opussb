@@ -541,6 +541,8 @@ def _reframe_clips_gpu(job_id: str, produced: list) -> list:
         "max_pan_frac": config.REFRAME_MAX_PAN_FRAC,
         "min_conf": config.REFRAME_MIN_CONF,
         "detect_cuts": config.REFRAME_CUT_DETECT,
+        # auto-seed do crop por keyframe (BACKEND §33): o worker devolve os keyframes esparsos no output.
+        "keyframe_interval_s": config.KEYFRAME_SEED_INTERVAL_S,
     }
     ct = config.REFRAME_PUT_CONTENT_TYPE
     url_expiry = config.REFRAME_GPU_TIMEOUT + 600       # URLs vivem mais que fila + cold start + job
@@ -569,6 +571,11 @@ def _reframe_clips_gpu(job_id: str, produced: list) -> list:
             dur = out.get("duration")
             produced[i]["window_dur"] = float(dur) if dur else None
             produced[i]["gpu_base_key"] = base_key      # base já está no S3 nessa key
+            # Auto-seed do crop (BACKEND §33): o worker NOVO devolve {"keyframes": {mode,kf}}; o run_thread2
+            # grava no DB (mesmo caminho do CPU). Worker VELHO nao manda o campo -> sem seed (gracioso).
+            kf = out.get("keyframes")
+            if isinstance(kf, dict) and kf.get("kf"):
+                produced[i]["keyframes_json"] = json.dumps(kf, ensure_ascii=False)
             ok[i] = True
         except Exception as e:
             log.warning("[reframe-gpu] clip %d: %s; fallback CPU", i + 1, e)

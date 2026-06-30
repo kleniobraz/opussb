@@ -124,6 +124,14 @@ REFRAME_GPU_ENABLED: bool = (
 )
 REFRAME_GPU_TIMEOUT: int = int(os.environ.get("REFRAME_GPU_TIMEOUT", "1800"))  # teto por clipe (s); > 600s default do RunPod
 REFRAME_PUT_CONTENT_TYPE: str = os.environ.get("REFRAME_PUT_CONTENT_TYPE", "video/mp4")
+# Re-render do crop por keyframe NA GPU (BACKEND §33, Fase 2b). INDEPENDENTE do REFRAME_GPU_ENABLED e
+# default FALSE de proposito: se o app NOVO mandar re-render pro worker VELHO, o worker velho ignora os
+# keyframes e devolve um auto-reframe ERRADO. Entao o re-render fica na CPU (ja validado) ate o dono
+# confirmar workers novos no ar e LIGAR este flag. So tem efeito com REFRAME_GPU_ENABLED + endpoint id.
+RERENDER_GPU_ENABLED: bool = (
+    os.environ.get("RERENDER_GPU_ENABLED", "false").lower() in ("1", "true", "yes")
+    and REFRAME_GPU_ENABLED
+)
 
 # Retencao do corte 16:9 por clipe (fonte de verdade do crop por keyframe, BACKEND §33). O corte
 # 16:9 que hoje vira o base 9:16 passa a ser RETIDO no S3 sob um prefixo DEDICADO (pra a regra de
