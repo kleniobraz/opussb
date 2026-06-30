@@ -130,12 +130,20 @@ function UsersPanel() {
     },
     onError: (e) => toast.error((e as Error)?.message || "Erro ao atualizar"),
   });
+  const del = useMutation({
+    mutationFn: (email: string) => api.adminDelete(email),
+    onSuccess: () => {
+      refresh();
+      toast.success("Usuário excluído");
+    },
+    onError: (e) => toast.error((e as Error)?.message || "Erro ao excluir"),
+  });
 
   if (isLoading) return <div className="skel" style={{ height: 200 }} />;
   if (isError) return <p className="editor-hint">Não consegui carregar os usuários.</p>;
 
   const users: AdminUser[] = data?.users ?? [];
-  const busy = setActive.isPending || setAdmin.isPending;
+  const busy = setActive.isPending || setAdmin.isPending || del.isPending;
 
   return (
     <div className="admin-list">
@@ -193,6 +201,24 @@ function UsersPanel() {
               >
                 {u.is_admin ? "Remover admin" : "Tornar admin"}
               </Button>
+              {(u.status === "rejected" || u.status === "inactive") && !isSelf && (
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={busy}
+                  title="Excluir em definitivo (só recusado ou inativo)"
+                  onClick={() => {
+                    if (
+                      confirm(
+                        `Excluir ${u.email} em definitivo? Esta ação não pode ser desfeita. Os projetos compartilhados continuam.`,
+                      )
+                    )
+                      del.mutate(u.email);
+                  }}
+                >
+                  Excluir
+                </Button>
+              )}
             </div>
           </div>
         );

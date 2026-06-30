@@ -720,6 +720,26 @@ def admin_set_admin():
     return jsonify({"ok": True})
 
 
+@app.route("/api/admin/delete", methods=["POST"])
+@admin_required
+def admin_delete():
+    """Exclui um usuário em definitivo. Regra (reforçada no servidor, não só na UI): só pode
+    excluir conta 'rejected' ou 'inactive' — nunca um usuário ativo/pendente. Não exclui a si
+    mesmo. Limpa os dados pessoais (db.delete_user); jobs/projetos compartilhados ficam."""
+    email = ((request.get_json(silent=True) or {}).get("email") or "").strip().lower()
+    target = db.get_user(email)
+    if not target:
+        return jsonify({"error": "Usuário não encontrado."}), 404
+    if email == session["user"]:
+        return jsonify({"error": "Você não pode excluir a si mesmo."}), 400
+    status = (target.get("status") or "active")
+    if status not in ("rejected", "inactive"):
+        return jsonify({"error": "Só é possível excluir usuários recusados ou inativos."}), 400
+    db.delete_user(email)
+    log.info("admin %s excluiu %s", session["user"], email)
+    return jsonify({"ok": True})
+
+
 # ─── Painel de saldos (créditos) — só admin ──────────────────────────────────
 _RUNPOD_GQL = "https://api.runpod.io/graphql"
 _CREDITS_TTL = 300  # cache de 5 min: não bater nas APIs externas a cada abertura do painel

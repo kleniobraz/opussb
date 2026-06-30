@@ -495,6 +495,7 @@
 .chip:hover { color: var(--ink); }
 .chip.is-active { background: rgba(245,197,24,0.14); border-color: var(--gold); color: var(--gold); font-weight: 600; }
 .chip-preset { gap: 6px; }
+.chip-ico { width: 15px; height: 15px; flex-shrink: 0; }
 .chip-sub { color: var(--ink-muted); font-weight: 400; }
 .chip.is-active .chip-sub { color: var(--gold); opacity: 0.72; }
 .chip:focus-visible { outline: none; box-shadow: var(--focus-ring); }

@@ -806,13 +806,65 @@ def test_end_screen():
         cc.execute("DELETE FROM end_screens WHERE id = ?", ("testes_es_x",))
 
 
+def test_admin_delete():
+    """Exclusão de usuário pelo admin (POST /api/admin/delete): regra reforçada no servidor
+    (só 'rejected'/'inactive', nunca ativo/pendente/self/inexistente) e limpeza dos dados
+    pessoais (favoritos/preferências/sessões) preservando o job compartilhado."""
+    print("[admin: exclusão de usuário]")
+    import db
+    from werkzeug.security import generate_password_hash
+
+    # admin que vai operar (status nasce 'active'), logado via test client
+    db.upsert_user("adm@test", generate_password_hash("pw12345678"), must_change=False)
+    db.set_user_admin("adm@test", True)
+    c = app.app.test_client()
+    check(c.post("/api/login", json={"email": "adm@test", "password": "pw12345678"}).status_code == 200,
+          "admin loga")
+
+    # alvos em cada estado
+    db.upsert_user("rej@test", "!", must_change=False); db.set_user_status("rej@test", "rejected")
+    db.upsert_user("ina@test", "!", must_change=False); db.set_user_status("ina@test", "inactive")
+    db.upsert_user("act@test", "!", must_change=False)  # 'active'
+    db.create_pending_user("pen@test", "!")             # 'pending'
+
+    # não exclui ativo, pendente, self, nem inexistente
+    check(c.post("/api/admin/delete", json={"email": "act@test"}).status_code == 400, "não exclui ATIVO")
+    check(c.post("/api/admin/delete", json={"email": "pen@test"}).status_code == 400, "não exclui PENDENTE")
+    check(c.post("/api/admin/delete", json={"email": "adm@test"}).status_code == 400, "não exclui a si mesmo")
+    check(c.post("/api/admin/delete", json={"email": "nada@test"}).status_code == 404, "inexistente -> 404")
+    check(db.get_user("act@test") and db.get_user("pen@test"), "ativo/pendente seguem existindo")
+
+    # recusado: exclui e limpa dados pessoais; preserva o job (biblioteca compartilhada)
+    db.add_favorite("rej@test", "clipX")
+    db.set_preferences("rej@test", "{}")
+    db.create_session("sid-rej", "rej@test", "1.2.3.4", "ua")
+    db.create_job("JREJ", "v.mp4", 10, 30, "/tmp/v.mp4", user_email="rej@test")
+    r = c.post("/api/admin/delete", json={"email": "rej@test"})
+    check(r.status_code == 200 and r.get_json().get("ok") is True, "exclui RECUSADO -> 200 ok")
+    check(db.get_user("rej@test") is None, "recusado some de users")
+    check(db.list_favorites("rej@test") == [], "favoritos do recusado limpos")
+    check(db.get_preferences("rej@test") is None, "preferências do recusado limpas")
+    check(db.get_session("sid-rej") is None, "sessões do recusado limpas")
+    check(db.get_job("JREJ") is not None, "job compartilhado NÃO é apagado junto")
+
+    # inativo: também exclui
+    check(c.post("/api/admin/delete", json={"email": "ina@test"}).status_code == 200, "exclui INATIVO -> 200")
+    check(db.get_user("ina@test") is None, "inativo some de users")
+
+    c.post("/api/logout")
+    db.delete_job("JREJ")
+    with db._conn() as cc:
+        for em in ("adm@test", "act@test", "pen@test"):
+            cc.execute("DELETE FROM users WHERE email = ?", (em,))
+
+
 def main():
     for t in (test_burn_cmd, test_burn_semaphore, test_presigned_put, test_runpod_client,
               test_validate_segments, test_parse_clips_json,
               test_captions_roundtrip, test_words_for_clip, test_caption_style, test_youtube_helpers,
               test_snap_clip_bounds, test_thumbnail, test_clip_window, test_download_all, test_end_screen,
               test_sessions_helpers, test_sessions_ownership, test_sessions_flow,
-              test_sessions_extra):
+              test_sessions_extra, test_admin_delete):
         t()
     print()
     if _failures:

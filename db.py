@@ -758,6 +758,19 @@ def set_user_admin(email: str, is_admin: bool) -> None:
         )
 
 
+def delete_user(email: str) -> None:
+    """Remove o usuário e seus dados PESSOAIS (sessões, favoritos, preferências). NÃO toca
+    em jobs/projetos: a biblioteca de Projetos é compartilhada pelo time (owner_email), então
+    excluir a conta não apaga o conteúdo dela. Chamado só pelo painel admin, que restringe a
+    exclusão a contas 'rejected'/'inactive'."""
+    email = email.strip().lower()
+    with _conn() as conn:
+        conn.execute("DELETE FROM sessions WHERE user_email = ?", (email,))
+        conn.execute("DELETE FROM favorites WHERE user_email = ?", (email,))
+        conn.execute("DELETE FROM preferences WHERE user_email = ?", (email,))
+        conn.execute("DELETE FROM users WHERE email = ?", (email,))
+
+
 def count_active_admins() -> int:
     """Quantos admins ativos existem — usado pra impedir derrubar o último admin."""
     with _conn() as conn:

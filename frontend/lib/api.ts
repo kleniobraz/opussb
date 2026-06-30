@@ -297,3 +297,5 @@ export const adminSetActive = (email: string, active: boolean) =>
   postJson<{ ok?: boolean }>("/api/admin/set_active", { email, active });
 export const adminSetAdmin = (email: string, is_admin: boolean) =>
   postJson<{ ok?: boolean }>("/api/admin/set_admin", { email, is_admin });
+export const adminDelete = (email: string) =>
+  postJson<{ ok?: boolean }>("/api/admin/delete", { email });
