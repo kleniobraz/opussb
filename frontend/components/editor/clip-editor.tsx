@@ -5,12 +5,13 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ArrowLeft, Download } from "lucide-react";
+import { ArrowLeft, Download, SlidersHorizontal } from "lucide-react";
 import * as api from "@/lib/api";
 import { useFilmstrip } from "@/hooks/use-filmstrip";
 import { useWaveform } from "@/hooks/use-waveform";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { PreviewStage } from "./preview-stage";
@@ -305,6 +306,7 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
 
   const [segments, setSegments] = useState<EditSeg[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false); // painel lateral "Ajustes" (musica/estilo/tela final)
   const [music, setMusic] = useState<Music | null>(null);
   const [volume, setVolume] = useState(15);
   const [captionsOn, setCaptionsOn] = useState(true);
@@ -945,6 +947,11 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
         )}
 
         <div className="flex-1" />
+        {editable && (
+          <Button variant="brandGhost" onClick={() => setSettingsOpen(true)}>
+            <SlidersHorizontal className="size-4" /> Ajustes
+          </Button>
+        )}
         <Button variant="brandGhost" onClick={save} disabled={saving || !editable}>
           {saving ? "Salvando…" : "Salvar alterações"}
         </Button>
@@ -983,8 +990,8 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
         </div>
       ) : (
         <>
-          <div className="editor-main">
-            <div className="editor-transcript">
+          <div className={cn("editor-main", mode === "crop" ? "is-crop" : "is-caption")}>
+            <div className="editor-roteiro-col">
               <TranscriptPanel
                 segments={ordered}
                 selectedId={selectedId}
@@ -1001,30 +1008,6 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
                 onSplit={splitSeg}
                 onMerge={mergeSeg}
                 onEditStart={() => videoRef.current?.pause()}
-              />
-              <MusicControl
-                music={music}
-                volume={volume}
-                onUpload={onUploadMusic}
-                onRemove={onRemoveMusic}
-                onVolume={(v) => {
-                  setVolume(v);
-                  setDirty(true);
-                }}
-              />
-              <StyleControl
-                value={capStyle}
-                changed={styleChanged}
-                onChange={patchStyle}
-                onReset={resetStyle}
-              />
-              <EndScreenControl
-                options={endScreens}
-                effectiveId={endEffective}
-                override={endOverride}
-                projectDefault={projectEnd}
-                busy={endBusy}
-                onChange={applyEndScreen}
               />
             </div>
 
@@ -1161,6 +1144,40 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
           Preview ao vivo indisponível (reinicie o backend p/ habilitar a rota do vídeo base).
         </p>
       )}
+
+      <Sheet open={settingsOpen} onOpenChange={setSettingsOpen}>
+        <SheetContent side="right" className="editor-settings-sheet">
+          <SheetHeader>
+            <SheetTitle>Ajustes do clipe</SheetTitle>
+          </SheetHeader>
+          <div className="editor-settings-body">
+            <MusicControl
+              music={music}
+              volume={volume}
+              onUpload={onUploadMusic}
+              onRemove={onRemoveMusic}
+              onVolume={(v) => {
+                setVolume(v);
+                setDirty(true);
+              }}
+            />
+            <StyleControl
+              value={capStyle}
+              changed={styleChanged}
+              onChange={patchStyle}
+              onReset={resetStyle}
+            />
+            <EndScreenControl
+              options={endScreens}
+              effectiveId={endEffective}
+              override={endOverride}
+              projectDefault={projectEnd}
+              busy={endBusy}
+              onChange={applyEndScreen}
+            />
+          </div>
+        </SheetContent>
+      </Sheet>
 
       <ConfirmDialog
         open={leaveTo !== null}
