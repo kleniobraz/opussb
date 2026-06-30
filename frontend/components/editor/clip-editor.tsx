@@ -307,6 +307,9 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
   const [segments, setSegments] = useState<EditSeg[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false); // painel lateral "Ajustes" (musica/estilo/tela final)
+  // Ref pro save() mais recente: o efeito de atalhos tem deps vazias; chamar save direto la
+  // pegaria uma closure velha (salvaria estado obsoleto). O efeito abaixo mantem a ref atual.
+  const saveRef = useRef<(() => void) | null>(null);
   const [music, setMusic] = useState<Music | null>(null);
   const [volume, setVolume] = useState(15);
   const [captionsOn, setCaptionsOn] = useState(true);
@@ -439,6 +442,15 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
   // num campo de texto ou com um dialogo aberto. Usa videoRef direto (sem stale closure).
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      // Ctrl/Cmd+S salva (mesmo comportamento do botao Salvar) e impede o "salvar pagina" do
+      // navegador. Funciona ate com foco num campo de texto: faz blur pra comitar a edicao inline
+      // em andamento, e salva no proximo tick (apos o commit do estado).
+      if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+        e.preventDefault();
+        (document.activeElement as HTMLElement | null)?.blur?.();
+        setTimeout(() => saveRef.current?.(), 0);
+        return;
+      }
       const el = e.target as HTMLElement | null;
       const tag = el?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || el?.isContentEditable) return;
@@ -717,6 +729,7 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
   }
 
   async function save() {
+    if (saving || !editable) return; // re-entrancia / clipe nao editavel (Ctrl+S tambem cai aqui)
     // Monta um array limpo {start,end,text}, em ordem cronologica, sem o _id de cliente.
     const out: Segment[] = [];
     let bad: number | null = null;
@@ -757,6 +770,10 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
       setSaving(false);
     }
   }
+  // Mantem saveRef apontando pro save() mais recente (pro atalho Ctrl+S nao usar closure velha).
+  useEffect(() => {
+    saveRef.current = save;
+  });
 
   // ── Crop por keyframe (enquadramento) ──────────────────────────────────────
   function toggleMode(next: "caption" | "crop") {
