@@ -51,9 +51,15 @@ Acesso por tunel SSH (`ssh -L 3001:127.0.0.1:3001 <vps>` + `-L 5002:127.0.0.1:50
   `manage_users.py` apontando o `.env` do staging se precisar logar.
 - **RunPod:** staging usa os MESMOS endpoints (serverless, pay-per-use). Reframe GPU de teste custa centavos.
 
-## Pendente da Fase 0
+## Status (atualizado 2026-06-30)
 
-- **Lifecycle do Hetzner (TTL 30d do 16:9):** o teste de `PutBucketLifecycle` (escopado em
-  `staging/lifecycle-probe/`) foi BLOQUEADO pelo classificador do harness (mutacao no bucket de producao).
-  Decidir: liberar a permissao pro teste, ou ir de plano B (cron no app por LastModified, sem mexer no
-  bucket). Sem lifecycle no bucket hoje (`NoSuchLifecycleConfiguration`).
+A feature de crop por keyframe (Fase 0-2b) foi IMPLEMENTADA aqui no staging e MESCLADA pra producao
+(BACKEND_CONTEXT §35/§36, commit `7eff531`). O staging e a branch `staging` seguem existindo pra proxima
+frente (ex.: multi-apresentador).
+
+- **Lifecycle do Hetzner (TTL 30d do 16:9): RESOLVIDO.** O Hetzner (Ceph RGW) HONRA `PutBucketLifecycle`
+  (teste escopado confirmou `x-amz-expiration` no head_object). Em PROD a regra `opussb-source16x9-ttl-prod`
+  esta Enabled (prefix `source16x9/`, 30d), criada no boot via `SOURCE16X9_LIFECYCLE_ENSURE=true`. O rule_id
+  e namespaceado por ambiente (staging usaria `...-staging`) pra as duas regras coexistirem no mesmo bucket.
+- **Build da imagem GPU:** rodar pelo BuildKit com estado no volume sdb (o disco de sistema nao cabe a
+  CUDA ~11G). Ver a memoria `gpu-image-build-disk` / BACKEND_CONTEXT §35.

@@ -1165,3 +1165,109 @@ ja existe vazio; quando virar Team, e so setar no .env que eu ligo o cost report
    proximo passo = design pass (mapear o stack de reframe/render + projetar fases) e implementar em STAGING.
 3. **Editor estilo OpusClip texto-corrido** (FRONTEND §22, staging).
 4. Pendencias antigas: `reprocess`, ultralytics RCE, static/ legado.
+
+## 35. Crop por KEYFRAME: IMPLEMENTADO (Fase 0-2b) (2026-06-30) [IMPLEMENTA §33]
+
+Editor de enquadramento manual estilo OpusClip, NAO-destrutivo, por keyframes. Implementa o plano da §33.
+Feito 100% em STAGING (worktree, branch `staging`), validado empiricamente, depois mesclado pra prod (§36).
+Memoria: `reframe-void-fix-and-crop-editor`, `gpu-image-build-disk`.
+
+**Data model (db.py):** coluna nova `clip_captions.keyframes` TEXT (via `_ensure_column`, aditivo). JSON
+`{mode:"auto"|"manual", kf:[{t, cx}], auto?:[...]}` onde `t`=segundos (relativo a janela do clipe) e
+`cx`=CENTRO horizontal em FRACAO 0..1 da largura (resolucao-independente). `get_clip_keyframes`/
+`set_clip_keyframes` (upsert). O campo `auto` preserva a trajetoria da maquina pro toggle reverter.
+
+**16:9 retido (fonte de verdade):** o corte 16:9 que vira o `clip_NN_base.mp4` passa a ser RETIDO em
+`source16x9/{job_id}/clip_NN.mp4` (prefixo dedicado, 1-based; `app._src169_key_for`). Caminho GPU sobe
+direto pra essa key (flag `item["src169_retained"]`, zero upload extra) e NAO deleta mais; caminho CPU sobe
+no loop do `run_thread2`. TTL de 30d via lifecycle do bucket (ver config). `_cleanup_job_s3` limpa o
+prefixo no cancel/`_fail_job`; o delete de projeto tambem.
+
+**reframe_core.py (matematica pura, CPU+GPU):**
+- `reframe_to_file(...)` agora DEVOLVE a trajetoria `{per_frame_cx, fps, width, crop_w, cuts}` (ou None se
+  ja-vertical). `per_frame_cx` = BORDA ESQUERDA do recorte em px por frame.
+- `keyframes_from_trajectory(per_frame_cx, fps, width, crop_w, cuts, interval_s)` -> reduz a trajetoria a
+  keyframes esparsos `{t, cx-fracao-centro}` (amostra a cada `interval_s` + ancora nos cortes de camera =
+  "degrau"). E o AUTO-SEED.
+- `trajectory_from_keyframes(kf, fps, total_frames, width, crop_w)` -> inverso: expande pra `per_frame_cx`
+  denso (1/frame), interpolacao LINEAR + clamp em [0, width-crop_w] (pan-only).
+- `reframe_with_keyframes(input, output, kf, codec, subtitles)` -> render 9:16 SEM YOLO (abre o 16:9 so pra
+  dims/fps, interpola, chama `_pipe_encode`).
+- `_pipe_encode`: no broken-pipe agora ANEXA o tail do stderr do ffmpeg (a causa real - args/NVENC/driver -
+  se perdia).
+- `reframer.py` (CPU): `reframe_clip` propaga a trajetoria; `reframe_clip_with_keyframes` (casca sem YOLO).
+
+**processor.py:** `_reframe_clips_gpu` retem o 16:9, passa `keyframe_interval_s` nos params e COLHE
+`out["keyframes"]` do worker -> `produced[i]["keyframes_json"]`; `_reframe_clips` (CPU) semeia do `traj`;
+`run_thread2` grava via `set_clip_keyframes`. Worker velho sem o campo -> sem seed (gracioso).
+
+**Worker GPU (gpu_reframe/handler.py), ADITIVO/retrocompativel:** dois modos. AUTO (default) reframa com
+YOLO e DEVOLVE os keyframes esparsos no output (`{"keyframes":{mode,kf}}`) pro auto-seed. RE-RENDER (input
+traz `keyframes`) roda `reframe_with_keyframes` sem YOLO. **Retry com backoff** no `_download`/`_upload`
+(5xx/429/rede): o Hetzner Object Storage devolve 502/504 transitorios (~10% nos smoke) que derrubavam o
+reframe pro fallback CPU; agora reabsorvidos. Reporta o nome da GPU no output (diagnostico).
+`runpod_client.submit_rerender` (keyframes no input, key temporaria); `submit_reframe` carrega o intervalo.
+
+**Rotas (app.py):**
+- `GET /api/clips/<id>/src169` -> 302 pro 16:9 retido (404 se ausente = clipe legado).
+- `GET/PUT /api/clips/<id>/keyframes` -> le/grava `{mode,kf,auto}` + estado do re-render. PUT valida
+  (`_validate_keyframes`: t>=0, cx clampado [0,1], ordena por t), aceita `{reset:true}` (volta ao auto
+  semeado), dispara `_do_rerender` em thread daemon, responde 202.
+- `GET /captions` expoe `keyframes` + `crop_editable` (= `_base.mp4 in base_key` AND 16:9 retido existe;
+  INDEPENDENTE de ter legenda).
+- **`_do_rerender`** (sob `_rerender_sem`, 1 por vez): LE os keyframes ATUAIS do DB (PUTs concorrentes
+  convergem pro ultimo), produz a base por GPU (`_rerender_gpu`: worker escreve key TEMPORARIA, app baixa e
+  promove) ou CPU (fallback sempre ativo); a promocao pra base + invalidacao de derivados (cap/trim/es +
+  thumb/strip) roda sob **`_clip_burn_lock`** (atomico contra a queima). NAO mexe na janela/segmentos: so
+  muda o pan, a legenda segue valida.
+
+**config.py (knobs novos):** `S3_KEY_PREFIX` (isola staging na borda do `s3_client._k()`; "" em prod = zero
+efeito); `SOURCE16X9_PREFIX`/`SOURCE16X9_TTL_DAYS`(30)/`SOURCE16X9_LIFECYCLE_ENSURE`(default off, liga o
+ensure no boot); `KEYFRAME_SEED_INTERVAL_S`(0.75); `RERENDER_GPU_ENABLED` (re-render na GPU, default FALSE,
+exige `REFRAME_GPU_ENABLED` - trava de deploy: app novo + worker velho daria reframe ERRADO no re-render).
+`s3_client.ensure_lifecycle_rule` (idempotente, merge por rule_id namespaceado por ambiente).
+
+**Validado EMPIRICAMENTE no metal (endpoint RunPod real, sem clipe de teste no app):** reframe + auto-seed
+confiavel em RTX 4090 e A5000; as falhas intermitentes ("ffmpeg morreu cedo / broken pipe") eram **502/504
+transitorios do Hetzner no DOWNLOAD** do input pelo worker (NAO NVENC, NAO tipo de GPU) - PRE-EXISTENTES -
+agora absorvidos pelo retry (smoke 4/4 limpo no 2b2). Lifecycle do Hetzner honra o TTL (head_object devolve
+x-amz-expiration). Multi-apresentador (split/3/4) segue como fase POSTERIOR (nao implementado).
+
+**Imagem do worker:** rebuild via **BuildKit descartavel com estado no volume sdb** (`/mnt/opussb-jobs`); o
+disco de sistema (sda, 38G) NAO comporta a CUDA ~11G e NAO da pra mover o data-root do Docker ao vivo (mata
+o n8n de prod). Ver `gpu-image-build-disk`. `--provenance=false` (manifest single-arch). RunPod serverless
+NAO atualiza worker existente num push de `:latest` -> usar **tag NOVA** por release (`:2b1`, `:2b2`) e
+"New release" no painel.
+
+## 36. Estado atual e proximos passos (fim da sessao 2026-06-30) [SUPERSEDE §34]
+
+Producao saudavel (`active_jobs=0`, opussb + opussb-web ativos, https://sbclips.space).
+
+**DEPLOYADO + PUSHADO nesta sessao** (`origin/master` em `7eff531`):
+- **§35 crop por keyframe (Fase 0-2b)** LIVE em prod: editor de enquadramento, auto-seed (CPU+GPU), 16:9
+  retido 30d, re-render GPU/fallback CPU. Front correspondente: FRONTEND §26.
+- **Excluir usuario no painel admin** (commit `086bb5b`, era trabalho do dono nao-commitado no working tree
+  de prod, subiu junto): `POST /api/admin/delete` (`admin_required`): so exclui conta `rejected`/`inactive`
+  (regra reforcada no servidor), nunca a si mesmo/ativo/pendente; `db.delete_user` limpa dados pessoais
+  (sessions/favorites/preferences), preservando jobs/projetos (biblioteca compartilhada por `owner_email`).
+- Worker GPU publicado em `kleniobraz/opussb-reframe:2b2` + `:latest` (dono fez o New release com `:2b2`).
+
+**.env de prod (Fase 6):** `SOURCE16X9_LIFECYCLE_ENSURE=true` (regra `opussb-source16x9-ttl-prod` Enabled no
+bucket, prefix `source16x9/`, 30d - CONFIRMADO) + `RERENDER_GPU_ENABLED=true`. Backups de rollback na VPS:
+`opussb.db.bak-pre-fase6-20260630` (+copia em /mnt/opussb-jobs), `.env.bak-pre-fase6`. Rollback do codigo:
+`git reset` do master pro `f6e953f` + rebuild front + restart (worker e retrocompativel).
+
+**GIT:** `origin/master` == local == `7eff531`. Merge de `staging` (Fase 0-2b) sobre o `086bb5b` (admin).
+A branch `staging` e o worktree `/opt/opussb-staging` seguem existindo (uteis pra proxima feature).
+
+**Cosmetico (PRE-EXISTENTE, nao e do deploy):** `Control server error: Permission denied /var/www/.gunicorn`
+no log do boot do gunicorn (47 ocorrencias historicas); worker boota e atende normal.
+
+**PROXIMOS PASSOS:**
+1. **Validacao visual do crop num PODCAST real** (dono vai subir): o 1o upload pos-deploy retem o 16:9 +
+   auto-semeia; conferir o toggle Enquadramento, arrastar a caixa, keyframes e o "Aplicar" (re-render GPU).
+2. **Multi-apresentador (split/3/4)** - fase posterior do §33, nao implementado.
+3. **Hardening residual** (Fase 5, §35): status do re-render sem epoch (pode piscar 'done' cedo com PUTs
+   concorrentes; o entregavel converge); TOCTOU menor no fast-path do `_ensure_burn`.
+4. Validar a tela final num clipe REAL (§34 #1, ainda pendente); editor texto-corrido (FRONTEND §22).
+5. Pendencias antigas: `reprocess`, ultralytics RCE, static/ legado.

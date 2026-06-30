@@ -717,3 +717,35 @@ Backend + arquitetura completa: **BACKEND §33** (e estado/git em BACKEND §34).
 - **Multi-apresentador** (split / 3 / 4, o "Ativar layout" do print): no escopo, mas FASE POSTERIOR.
 - Reusa a timeline/preview/drag que ja existem (handles §15/§18, blocos de legenda). Decidir data model
   e rotas no design pass (BACKEND §33 "A FAZER").
+
+## 27. Editor de crop por KEYFRAME: IMPLEMENTADO + EM PRODUCAO (2026-06-30) [implementa §26]
+
+O editor de enquadramento do §26, agora FEITO e LIVE em prod (commit `7eff531`; backend BACKEND §35/§36).
+Feito em STAGING e mesclado pra prod com o resto da Fase 6.
+
+- **`components/editor/crop-stage.tsx` (NOVO):** palco 16:9 (busca o `/src169` do clipe) com a **caixa 9:16
+  arrastavel SO horizontal** por cima (recorte via CSS, largura fixa `CROP_BOX_W_FRAC = 81/256` da
+  largura). Enquanto toca, a caixa SEGUE a trajetoria dos keyframes. Props: `videoRef`, `src`, `cx`,
+  `onDragCx`/`onCommitCx`, etc.
+- **`components/editor/clip-editor.tsx`:** toggle **Legenda / Enquadramento** no header (so quando
+  `crop_editable`). Reusa o MESMO `videoRef`/timeline (o 16:9 e a mesma janela do base), preservando o
+  playhead na troca de modo (`restoreTimeRef`). Helpers `cxAt`/`upsertKf` (merge por `KF_MERGE_EPS`).
+  Arrastar a caixa cria/atualiza um keyframe no tempo atual. **"Aplicar"** = `putKeyframes` + poll do estado
+  do re-render + cache-bust (`cropVersion` no `?v=` da preview, pra trocar o base re-renderizado). **"voltar
+  ao automatico"** = `putKeyframes({reset:true})`. O guard de "sair sem salvar" cobre `cropDirty`.
+- **`components/editor/editor-timeline.tsx`:** 5a trilha (`.editor-track--key`) com os keyframes como
+  losangos (clicar = seleciona + busca o tempo; selecionado mostra o "x" pra excluir).
+- **`lib/types.ts`:** `CropKeyframe {t,cx}`, `CropKeyframes {mode,kf,auto?}`, `RerenderStatus`; `Captions`
+  ganhou `keyframes?` + `crop_editable?`. **`lib/api.ts`:** `getKeyframes(id)` + `putKeyframes(id, {kf}|
+  {reset:true})`.
+- **`app/brand.css`:** `.editor-crop-*` (palco/mascara/caixa/grip/barra) + `.editor-track--key`/`.editor-kf`
+  (dourado, pra distinguir das trilhas aqua de trim/tela-final).
+- Clipe SEM 16:9 retido (legado) -> `crop_editable=false` -> sem o toggle (degrada gracioso). `next build` +
+  restart do `opussb-web` feitos. `tsc`/build limpos.
+
+**Excluir usuario no painel (subiu junto, trabalho do dono):** `app/(app)/painel/page.tsx` ganhou a acao de
+excluir (so habilitada pra conta `rejected`/`inactive`), `lib/api.ts` ganhou `adminDelete(email)`,
+`components/upload-console.tsx` teve ajustes. Backend: BACKEND §36.
+
+**PENDENTE:** validacao visual num podcast real do dono (1o upload pos-deploy). Multi-apresentador
+(split/3/4) segue fase posterior.
