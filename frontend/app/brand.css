@@ -774,16 +774,23 @@
 .editor-shell { position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column; background: #0b0b0c; }
 .editor-topbar { display: flex; align-items: center; gap: 14px; padding: 11px 18px; border-bottom: 1px solid var(--border); background: rgba(10,10,11,0.92); }
 .editor-title { font-size: 0.92rem; font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46vw; }
-.editor-main { flex: 1; display: flex; min-height: 0; }
-/* Layout 1b (modo legenda): previa estreita (308px) a esquerda + roteiro largo a direita. Modo
-   Enquadramento: roteiro estreito a esquerda + palco 16:9 largo a direita (como antes). O lado de
-   cada coluna vem do `order`; .editor-stage e a raiz do PreviewStage E do CropStage. */
+/* Layout estilo Premiere: previa 9:16 SOZINHA na coluna DIREITA (altura inteira); a ESQUERDA
+   empilha roteiro (cima) + timeline (baixo) com divisoria arrastavel. Vale pros 2 modos (no crop
+   o palco 16:9 encaixa pela largura na coluna 9:16, com tarja em cima/embaixo). .editor-stage e a
+   raiz do PreviewStage E do CropStage. */
+.editor-body { flex: 1; display: flex; min-height: 0; }
+.editor-left { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .editor-roteiro-col { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-.editor-main.is-caption > .editor-stage { order: 0; flex: none; width: 308px; border-right: 1px solid var(--border); justify-content: flex-start; }
-.editor-main.is-caption > .editor-stage .editor-video-wrap { width: 100%; height: auto; max-width: 100%; max-height: 100%; }
-.editor-main.is-caption > .editor-roteiro-col { order: 1; }
-.editor-main.is-crop > .editor-roteiro-col { order: 0; flex: none; width: 340px; border-right: 1px solid var(--border); }
-.editor-main.is-crop > .editor-stage { order: 1; flex: 1; min-width: 0; }
+.editor-split { flex: none; height: 7px; cursor: ns-resize; background: var(--border); position: relative; touch-action: none; }
+.editor-split::after { content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 44px; height: 3px; border-radius: 2px; background: var(--border-strong); }
+.editor-split:hover { background: rgba(245,197,24,0.35); }
+.editor-timeline-wrap { flex: none; min-height: 0; overflow: hidden; }
+.editor-right { flex: none; height: 100%; aspect-ratio: 9 / 16; min-width: 260px; max-width: 48vw; border-left: 1px solid var(--border); display: flex; min-height: 0; }
+.editor-right > .editor-stage { flex: 1; width: 100%; min-height: 0; }
+/* Previa 9:16 preenche a coluna (altura). O crop usa o base dele (16:9 exato, encaixe por largura
+   com tarja em cima/embaixo) - NAO forcar flex aqui, senao o object-fit:fill do crop distorce. */
+.editor-right .editor-video-wrap { flex: 1; min-height: 0; height: auto; max-width: 100%; max-height: 100%; }
+.editor-right .editor-crop-wrap { max-width: 100%; max-height: 100%; }
 .editor-stage { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 0; padding: 18px; gap: 12px; }
 .editor-stage-bar { display: flex; align-items: center; gap: 12px; font-size: 0.72rem; color: var(--ink-muted); }
 .editor-aspect-pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 8px; border: 1px solid var(--border); color: var(--ink-soft); font-weight: 600; }
@@ -793,21 +800,21 @@
 .editor-caption span { font-family: var(--font-inter), "Inter", system-ui, sans-serif; font-weight: 500; color: #fff; letter-spacing: -0.01em; line-height: 1.16; font-size: 3.65cqh; text-shadow: 0 0 0.6cqh rgba(0,0,0,0.95), 0 0.2cqh 0.8cqh rgba(0,0,0,0.9); pointer-events: auto; cursor: ns-resize; }
 .editor-caption span:hover { outline: 1px dashed rgba(245,197,24,0.7); outline-offset: 5px; border-radius: 2px; }
 
-.editor-timeline { border-top: 1px solid var(--border); background: rgba(10,10,11,0.96); display: flex; flex-direction: column; }
+.editor-timeline { background: rgba(10,10,11,0.96); display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .editor-transport { display: flex; align-items: center; gap: 14px; padding: 8px 16px; border-bottom: 1px solid var(--border); }
 .editor-transport-spacer { flex: 1; }
 .editor-transport-time { font-variant-numeric: tabular-nums; font-size: 0.82rem; color: var(--ink-soft); }
 .editor-icon-btn { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 8px; border: 1px solid var(--border); background: transparent; color: var(--ink-soft); cursor: pointer; transition: color var(--dur), border-color var(--dur); }
 .editor-icon-btn:hover { color: var(--gold); border-color: rgba(245,197,24,0.4); }
 .editor-play-btn { width: 38px; height: 38px; border-radius: 50%; background: var(--grad); color: var(--on-gold); display: grid; place-items: center; border: none; cursor: pointer; box-shadow: var(--gold-glow); }
-.editor-tracks-scroll { overflow-x: auto; overflow-y: hidden; padding-bottom: 10px; }
+.editor-tracks-scroll { overflow-x: auto; overflow-y: auto; flex: 1; min-height: 0; padding-bottom: 10px; }
 .editor-tracks { position: relative; min-width: 100%; }
 .editor-ruler { position: relative; height: 24px; border-bottom: 1px solid var(--border); }
 .editor-ruler-tick { position: absolute; top: 0; bottom: 0; border-left: 1px solid rgba(255,255,255,0.09); padding-left: 4px; font-size: 0.6rem; color: var(--ink-muted); }
 .editor-track { position: relative; border-bottom: 1px solid var(--border); }
-.editor-track--film { height: 44px; background: #0e0e10; }
-.editor-track--wave { height: 48px; background: #0e0e10; }
-.editor-track--caps { height: 64px; }
+.editor-track--film { height: 76px; background: #0e0e10; }
+.editor-track--wave { height: 104px; background: #0e0e10; }
+.editor-track--caps { height: 88px; }
 /* Legend row do mock (fixa, nao rola): o que cada cor representa na timeline. */
 .editor-legend { display: flex; align-items: center; gap: 16px; padding: 8px 16px; border-bottom: 1px solid var(--border); }
 .editor-legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 0.66rem; font-weight: 500; color: var(--ink-muted); }
@@ -895,7 +902,7 @@
    o ativo acende (pilula dourada da marca, var(--gold) #F5C518), o que ja passou fica texto cheio e
    o que ainda vem fica apagado. Edicao nao-controlada (cursor-safe durante o play); fonte Inter. */
 .editor-roteiro-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-.editor-roteiro-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px 10px; border-bottom: 1px solid var(--border); }
+.editor-roteiro-head { display: flex; align-items: center; gap: 10px; padding: 14px 24px 10px; border-bottom: 1px solid var(--border); }
 .editor-roteiro-title { font-size: 0.92rem; font-weight: 600; color: var(--ink); }
 .editor-roteiro-count { font-size: 0.66rem; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
 .editor-roteiro-search { display: flex; align-items: center; gap: 7px; flex: 1; min-width: 0; max-width: 220px; background: var(--surface); border: 1px solid var(--border); border-radius: 9px; padding: 6px 10px; color: var(--ink-muted); transition: border-color var(--dur); }
@@ -905,7 +912,7 @@
 .editor-roteiro-add { flex: none; width: 32px; height: 32px; display: grid; place-items: center; border-radius: 9px; border: 1px solid rgba(245,197,24,0.4); background: rgba(245,197,24,0.12); color: var(--gold); cursor: pointer; transition: background var(--dur); }
 .editor-roteiro-add:hover { background: rgba(245,197,24,0.22); }
 
-.editor-roteiro { position: relative; flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px 18px; font-family: var(--font-inter), "Inter", system-ui, sans-serif; font-weight: 500; font-size: 1.05rem; line-height: 2.05; color: var(--ink-muted); }
+.editor-roteiro { position: relative; flex: 1; min-height: 0; overflow-y: auto; padding: 16px 26px 26px; font-family: var(--font-inter), "Inter", system-ui, sans-serif; font-weight: 500; font-size: 1.1rem; line-height: 2.2; color: var(--ink-muted); }
 .editor-roteiro-empty { font-size: 0.8rem; color: var(--ink-muted); }
 .roteiro-seg { display: inline; padding: 2px 5px; border-radius: 6px; cursor: text; outline: none; transition: color 0.16s, background 0.16s; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
 .roteiro-seg.is-future { color: var(--ink-muted); }
@@ -915,14 +922,11 @@
 .roteiro-seg:hover:not(.is-active) { background: rgba(255,255,255,0.07); }
 
 /* Barra contextual do trecho selecionado (tempos + ferramentas); reusa as classes editor-seg-*. */
-.editor-seg-ctx { flex: none; border-top: 1px solid var(--border); padding: 10px 16px; display: flex; flex-direction: column; gap: 2px; }
+.editor-seg-ctx { flex: none; border-top: 1px solid var(--border); padding: 12px 24px; display: flex; flex-direction: column; gap: 2px; }
 
 /* Modo legenda (coluna larga): o respiro do teleprompter do mock 1b - line-height alto e pilulas
    espacadas, que na coluna estreita nao apareciam. So no modo legenda (no crop o roteiro e estreito). */
-.editor-main.is-caption .editor-roteiro-head { padding: 16px 26px 12px; }
-.editor-main.is-caption .editor-roteiro { padding: 18px 28px 30px; font-size: 1.12rem; line-height: 2.25; }
-.editor-main.is-caption .editor-roteiro .roteiro-seg { padding: 3px 6px; }
-.editor-main.is-caption .editor-seg-ctx { padding: 12px 26px; }
+.editor-roteiro .roteiro-seg { padding: 3px 6px; }
 
 /* Painel lateral "Ajustes" (Sheet): musica de fundo, estilo da legenda e tela final saem da coluna
    do roteiro (poluiam e nao existem no mock) pra ca. Corpo rolavel. */
@@ -949,9 +953,8 @@
 @media (max-width: 720px) { .editor-transport-hint { display: none; } }
 
 @media (max-width: 640px) {
-  .editor-main { flex-direction: column; }
-  .editor-main.is-caption > .editor-stage { width: auto; border-right: none; border-bottom: 1px solid var(--border); }
-  .editor-main.is-crop > .editor-roteiro-col { width: auto; border-right: none; border-bottom: 1px solid var(--border); }
+  .editor-body { flex-direction: column; }
+  .editor-right { width: auto; max-width: none; aspect-ratio: auto; height: 38vh; order: -1; border-left: none; border-bottom: 1px solid var(--border); }
 }
 
 /* ─── prefers-reduced-motion (global) ──────────────────────────────────── */

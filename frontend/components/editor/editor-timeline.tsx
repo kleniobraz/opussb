@@ -390,20 +390,6 @@ export function EditorTimeline({
             ))}
           </div>
 
-          <div className="editor-track editor-track--film">
-            {filmstrip && (
-              // Sprite (N frames lado a lado) gerado no servidor (CORS do S3). O CSS repete os frames
-              // na PROPORCAO certa (background-size:auto 100% + repeat-x), sem esticar/achatar a imagem.
-              <div className="editor-film-strip" style={{ backgroundImage: `url(${filmstrip})` }} />
-            )}
-          </div>
-
-          <div className="editor-track editor-track--wave">
-            <canvas ref={waveRef} className="editor-wave-canvas" style={{ width: trackWidth }} />
-            {/* Escurece o trecho ainda nao tocado (do playhead pra frente): da o "antes/depois". */}
-            <div className="editor-wave-future" style={{ left: currentTime * pxPerSec }} />
-          </div>
-
           <div className="editor-track editor-track--caps">
             {segments.map((s) => (
               <div
@@ -418,6 +404,20 @@ export function EditorTimeline({
                 <div className="editor-cap-handle right" onPointerDown={(e) => startDrag(e, s._id, "right")} />
               </div>
             ))}
+          </div>
+
+          <div className="editor-track editor-track--film">
+            {filmstrip && (
+              // Sprite (N frames lado a lado) gerado no servidor (CORS do S3). O CSS repete os frames
+              // na PROPORCAO certa (background-size:auto 100% + repeat-x), sem esticar/achatar a imagem.
+              <div className="editor-film-strip" style={{ backgroundImage: `url(${filmstrip})` }} />
+            )}
+          </div>
+
+          <div className="editor-track editor-track--wave">
+            <canvas ref={waveRef} className="editor-wave-canvas" style={{ width: trackWidth }} />
+            {/* Escurece o trecho ainda nao tocado (do playhead pra frente): da o "antes/depois". */}
+            <div className="editor-wave-future" style={{ left: currentTime * pxPerSec }} />
           </div>
 
           {/* Trilha de keyframes do crop (só no modo enquadramento): losangos no tempo de cada

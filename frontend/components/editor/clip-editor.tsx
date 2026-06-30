@@ -310,6 +310,10 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
   // Ref pro save() mais recente: o efeito de atalhos tem deps vazias; chamar save direto la
   // pegaria uma closure velha (salvaria estado obsoleto). O efeito abaixo mantem a ref atual.
   const saveRef = useRef<(() => void) | null>(null);
+  // Layout: previa sozinha a direita; a esquerda empilha roteiro (cima) + timeline (baixo) com
+  // divisoria arrastavel. timelineH = altura da timeline (px), persistida em localStorage.
+  const leftRef = useRef<HTMLDivElement>(null);
+  const [timelineH, setTimelineH] = useState(380);
   const [music, setMusic] = useState<Music | null>(null);
   const [volume, setVolume] = useState(15);
   const [captionsOn, setCaptionsOn] = useState(true);
@@ -469,6 +473,19 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Restaura a altura salva da timeline (divisoria arrastavel), clampada ao tamanho da janela.
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem("opussb_editor_timelineH");
+      if (v) {
+        const n = parseInt(v, 10);
+        if (!isNaN(n)) setTimelineH(Math.max(160, Math.min(n, window.innerHeight - 220)));
+      }
+    } catch {
+      // localStorage indisponivel: mantem o default
+    }
   }, []);
 
   // Eventos do video + playhead suave (rAF enquanto toca).
@@ -874,6 +891,31 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
     a.remove();
   }
 
+  // Arrasta a divisoria entre roteiro (cima) e timeline (baixo) na coluna esquerda: ajusta a altura
+  // da timeline e persiste no fim. Clampa pra os dois manterem um minimo.
+  function startTimelineResize(e: React.PointerEvent) {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = timelineH;
+    const leftH = leftRef.current?.getBoundingClientRect().height ?? window.innerHeight;
+    let finalH = startH;
+    const move = (ev: PointerEvent) => {
+      finalH = Math.max(160, Math.min(startH - (ev.clientY - startY), leftH - 200));
+      setTimelineH(finalH);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      try {
+        localStorage.setItem("opussb_editor_timelineH", String(Math.round(finalH)));
+      } catch {
+        // ignora
+      }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
   function selectAndSeek(id: string) {
     setSelectedId(id);
     const seg = segments.find((s) => s._id === id);
@@ -980,8 +1022,9 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
         </div>
       ) : (
         <>
-          <div className={cn("editor-main", mode === "crop" ? "is-crop" : "is-caption")}>
-            <div className="editor-roteiro-col">
+          <div className="editor-body">
+            <div className="editor-left" ref={leftRef}>
+              <div className="editor-roteiro-col">
               <TranscriptPanel
                 segments={ordered}
                 selectedId={selectedId}
@@ -997,8 +1040,64 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
                 onMerge={mergeSeg}
                 onEditStart={() => videoRef.current?.pause()}
               />
+              </div>
+
+              <div
+                className="editor-split"
+                onPointerDown={startTimelineResize}
+                role="separator"
+                aria-orientation="horizontal"
+                aria-label="Ajustar altura da timeline"
+                title="Arraste para ajustar a altura da timeline"
+              />
+
+              <div className="editor-timeline-wrap" style={{ height: timelineH }}>
+                <EditorTimeline
+                  duration={duration}
+                  currentTime={currentTime}
+                  playing={playing}
+                  segments={ordered}
+                  selectedId={selectedId}
+                  pxPerSec={pxPerSec}
+                  filmstrip={filmstrip}
+                  peaks={peaks}
+                  hasHandles={hasHandles}
+                  cutIn={cutIn}
+                  cutOut={cutOut}
+                  endScreenLabel={
+                    endEffective ? (endScreens.find((o) => o.id === endEffective)?.label ?? "Tela final") : null
+                  }
+                  endScreenDur={
+                    endEffective
+                      ? endDur ?? endScreens.find((o) => o.id === endEffective)?.duration ?? 0
+                      : 0
+                  }
+                  endScreenAssetDur={endScreens.find((o) => o.id === endEffective)?.duration ?? 0}
+                  onChangeEndDur={onChangeEndDur}
+                  onCommitEndDur={commitEndDur}
+                  onSeek={seek}
+                  onPlayPause={togglePlay}
+                  onSelect={setSelectedId}
+                  onChangeSegment={(id, patch) => patchSegment(id, patch)}
+                  onChangeCut={(edge, value) => {
+                    if (edge === "in") setCutIn(value);
+                    else setCutOut(value);
+                    setDirty(true);
+                  }}
+                  cropActive={mode === "crop"}
+                  keyframes={cropKf}
+                  selectedKf={selectedKf}
+                  onSelectKf={(t) => {
+                    setSelectedKf(t);
+                    seek(t);
+                  }}
+                  onDeleteKf={deleteKf}
+                  onZoom={setPxPerSec}
+                />
+              </div>
             </div>
 
+            <div className="editor-right">
             {mode === "crop" ? (
               <CropStage
                 videoRef={videoRef}
@@ -1080,50 +1179,8 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
                 onTogglePlay={togglePlay}
               />
             )}
+            </div>
           </div>
-
-          <EditorTimeline
-            duration={duration}
-            currentTime={currentTime}
-            playing={playing}
-            segments={ordered}
-            selectedId={selectedId}
-            pxPerSec={pxPerSec}
-            filmstrip={filmstrip}
-            peaks={peaks}
-            hasHandles={hasHandles}
-            cutIn={cutIn}
-            cutOut={cutOut}
-            endScreenLabel={
-              endEffective ? (endScreens.find((o) => o.id === endEffective)?.label ?? "Tela final") : null
-            }
-            endScreenDur={
-              endEffective
-                ? endDur ?? endScreens.find((o) => o.id === endEffective)?.duration ?? 0
-                : 0
-            }
-            endScreenAssetDur={endScreens.find((o) => o.id === endEffective)?.duration ?? 0}
-            onChangeEndDur={onChangeEndDur}
-            onCommitEndDur={commitEndDur}
-            onSeek={seek}
-            onPlayPause={togglePlay}
-            onSelect={setSelectedId}
-            onChangeSegment={(id, patch) => patchSegment(id, patch)}
-            onChangeCut={(edge, value) => {
-              if (edge === "in") setCutIn(value);
-              else setCutOut(value);
-              setDirty(true);
-            }}
-            cropActive={mode === "crop"}
-            keyframes={cropKf}
-            selectedKf={selectedKf}
-            onSelectKf={(t) => {
-              setSelectedKf(t);
-              seek(t);
-            }}
-            onDeleteKf={deleteKf}
-            onZoom={setPxPerSec}
-          />
         </>
       )}
 
