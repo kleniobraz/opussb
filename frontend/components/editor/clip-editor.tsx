@@ -17,7 +17,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { PreviewStage } from "./preview-stage";
 import { CropStage } from "./crop-stage";
 import { TranscriptPanel } from "./transcript-panel";
-import { EditorTimeline } from "./editor-timeline";
+import { EditorTimeline, ZOOM_MIN, ZOOM_MAX } from "./editor-timeline";
 import type { CropKeyframe, EndScreenOption, Music, Segment } from "@/lib/types";
 
 // Segmento como vive no estado do editor: o {start,end,text} do contrato + um id de
@@ -314,6 +314,8 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
   // divisoria arrastavel. timelineH = altura da timeline (px), persistida em localStorage.
   const leftRef = useRef<HTMLDivElement>(null);
   const [timelineH, setTimelineH] = useState(380);
+  // <audio> paralelo: toca a musica no preview AO VIVO, sincronizada com o video (sem re-queimar).
+  const musicAudioRef = useRef<HTMLAudioElement>(null);
   const [music, setMusic] = useState<Music | null>(null);
   const [volume, setVolume] = useState(15);
   const [captionsOn, setCaptionsOn] = useState(true);
@@ -365,6 +367,8 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
   const previewSrc = (usingBurned ? burnedSrc : baseSrc) + bust;
   const src169 = `/api/clips/${enc}/src169`;
   const stageSrc = mode === "crop" ? src169 : previewSrc;
+  // Rota do arquivo de musica (302 -> presignado) pro <audio> do preview. null = clipe sem musica.
+  const musicSrc = music ? `/api/clips/${enc}/music/audio` : null;
   // cx exibido na caixa: durante o arraste, o cx arrastado; senao, interpolado pelo tempo atual
   // (a caixa "segue" a trajetoria enquanto o video toca).
   const displayCx = cropDragCx != null ? cropDragCx : cxAt(cropKf, currentTime);
@@ -469,6 +473,12 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
       } else if (e.code === "ArrowRight" && v) {
         e.preventDefault();
         seek(v.currentTime + (e.shiftKey ? 5 : 1));
+      } else if ((e.key === "+" || e.key === "=") && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault(); // zoom da timeline: + aproxima
+        setPxPerSec((p) => Math.min(ZOOM_MAX, Math.round(p * 1.25)));
+      } else if ((e.key === "-" || e.key === "_") && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault(); // zoom da timeline: - afasta
+        setPxPerSec((p) => Math.max(ZOOM_MIN, Math.round(p / 1.25)));
       }
     }
     window.addEventListener("keydown", onKey);
@@ -527,6 +537,48 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
       v.removeEventListener("timeupdate", onTime);
     };
   }, [stageSrc, editable]);
+
+  // Preview da musica: <audio> paralelo sincronizado com o video (toca/pausa/seek juntos), em loop.
+  // So ativa quando ha musica e o preview NAO e o video ja queimado (senao a musica dobraria).
+  // Nao re-queima nada; e so pra OUVIR a musica enquanto edita.
+  useEffect(() => {
+    const v = videoRef.current;
+    const a = musicAudioRef.current;
+    if (!v || !a) return;
+    if (!music || usingBurned) {
+      a.pause();
+      return;
+    }
+    const syncTime = () => {
+      const d = a.duration;
+      a.currentTime = d && isFinite(d) && d > 0 ? v.currentTime % d : v.currentTime;
+    };
+    const onPlay = () => {
+      syncTime();
+      a.play().catch(() => {});
+    };
+    const onPause = () => a.pause();
+    const onSeeked = () => syncTime();
+    v.addEventListener("play", onPlay);
+    v.addEventListener("pause", onPause);
+    v.addEventListener("seeked", onSeeked);
+    if (!v.paused) {
+      syncTime();
+      a.play().catch(() => {});
+    }
+    return () => {
+      v.removeEventListener("play", onPlay);
+      v.removeEventListener("pause", onPause);
+      v.removeEventListener("seeked", onSeeked);
+      a.pause();
+    };
+  }, [music, usingBurned, musicSrc, stageSrc]);
+
+  // Volume da musica no preview = volume configurado (0..100 -> 0..1).
+  useEffect(() => {
+    const a = musicAudioRef.current;
+    if (a) a.volume = Math.max(0, Math.min(1, volume / 100));
+  }, [volume]);
 
   useEffect(() => {
     if (!playing) return;
@@ -1189,6 +1241,9 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
           Preview ao vivo indisponível (reinicie o backend p/ habilitar a rota do vídeo base).
         </p>
       )}
+
+      {/* Musica do preview (oculto): toca em paralelo ao video base, sincronizado, sem re-queimar. */}
+      <audio ref={musicAudioRef} src={musicSrc ?? undefined} loop preload="auto" className="hidden" />
 
       <Sheet open={settingsOpen} onOpenChange={setSettingsOpen}>
         <SheetContent side="right" className="editor-settings-sheet">

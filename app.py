@@ -1586,13 +1586,14 @@ def clip_video(clip_id):
     es_dur = db.get_clip_end_screen_dur(clip_id) if es_id else None   # encurtar a tela neste clipe
 
     if want_trim:
-        # Export sem legenda: corte cru reenquadrado (sem legenda, sem música). A tela final ENTRA
-        # aqui também (decisão do dono: em todo entregável), anexada por _serve_clip. Sem trim real,
-        # a base já é o content.
-        if not trim_needed:
+        # Export SEM legenda: corte cru reenquadrado, sem legenda MAS COM música (a música não some
+        # só porque tirou a legenda). A tela final entra por cima (anexada por _serve_clip). Se não há
+        # trim NEM música, a base já é o content (serve direto, sem re-render).
+        do_caps = False
+        do_music = use_music
+        if not trim_needed and not do_music:
             return _serve_clip(base_key, es_id, dl_name, es_dur)
         target_key = base_key.replace("_base.mp4", "_trim.mp4")
-        do_caps = do_music = False
     else:
         # Sem queima/trim (clipe antigo, ou novo sem legenda/música e sem trim): o content é a base
         # (a tela final ainda pode entrar por cima dela).
@@ -2453,6 +2454,18 @@ def clip_music_remove(clip_id):
     db.delete_clip_music(clip_id)
     _invalidate_cap(base_key)
     return jsonify({"ok": True})
+
+
+@app.route("/api/clips/<path:clip_id>/music/audio")
+@login_required
+def clip_music_audio(clip_id):
+    """Entrega o ARQUIVO de música do clipe (302 pra URL presignada do S3), pra o preview AO VIVO do
+    editor tocar a música em paralelo ao vídeo base (sem re-queimar). 404 se o clipe não tem música."""
+    _clip_lookup(clip_id)  # valida formato/job/sessão (aborta 404 se inválido)
+    music = db.get_clip_music(clip_id)
+    if not music or not music.get("music_key"):
+        abort(404)
+    return _clip_redirect(music["music_key"])
 
 
 def _can_manage(job) -> bool:

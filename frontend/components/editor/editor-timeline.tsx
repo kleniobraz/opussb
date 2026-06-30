@@ -6,8 +6,8 @@ import type { EditSeg } from "./clip-editor";
 import type { CropKeyframe } from "@/lib/types";
 
 const MIN_BLOCK_W = 34; // largura minima clicavel de um bloco, mesmo pra legenda curtissima
-const ZOOM_MIN = 6;
-const ZOOM_MAX = 160;
+export const ZOOM_MIN = 6;
+export const ZOOM_MAX = 160;
 const TARGET_BLOCK_PX = 46; // largura-alvo do bloco medio: define o zoom default por DENSIDADE
 const ZOOM_DEFAULT_MIN = 28; // piso/teto do zoom default (clipes esparsos x cheios de trechos curtos)
 const ZOOM_DEFAULT_MAX = 120;
