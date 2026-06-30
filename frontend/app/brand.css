@@ -932,6 +932,15 @@
    do roteiro (poluiam e nao existem no mock) pra ca. Corpo rolavel. */
 .editor-settings-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0 16px 18px; display: flex; flex-direction: column; gap: 18px; }
 
+/* Pop-up "Sair sem salvar?" (dialogo dedicado do editor; estilo da marca SB, dourado no principal). */
+.editor-leave-dialog { max-width: 400px; padding: 26px 24px 22px; text-align: center; }
+.editor-leave-icon { width: 46px; height: 46px; margin: 0 auto; display: grid; place-items: center; border-radius: 999px; background: rgba(245,197,24,0.13); border: 1px solid rgba(245,197,24,0.3); color: var(--gold); }
+.editor-leave-head { align-items: center; gap: 7px; }
+.editor-leave-title { font-size: 1.12rem; line-height: 1.2; }
+.editor-leave-text { color: var(--ink-soft); line-height: 1.55; max-width: 320px; margin: 0 auto; }
+.editor-leave-actions { display: flex; gap: 10px; margin-top: 4px; }
+.editor-leave-actions > * { flex: 1; }
+
 /* Bloco sendo falado na timeline (destaque karaoke). */
 .editor-cap-block.is-active { background: rgba(245,197,24,0.26); border-color: var(--gold); }
 /* Bloco de legenda curtissima (pisca rapido): borda de alerta sutil. */

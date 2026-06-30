@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ArrowLeft, Download, SlidersHorizontal } from "lucide-react";
+import { ArrowLeft, Download, SlidersHorizontal, TriangleAlert } from "lucide-react";
 import * as api from "@/lib/api";
 import { useFilmstrip } from "@/hooks/use-filmstrip";
 import { useWaveform } from "@/hooks/use-waveform";
@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
-import { ConfirmDialog } from "@/components/confirm-dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { PreviewStage } from "./preview-stage";
 import { CropStage } from "./crop-stage";
 import { TranscriptPanel } from "./transcript-panel";
@@ -435,7 +435,7 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
 
   // Aviso nativo do navegador ao recarregar / fechar a aba / sair pra fora do app
   // com alteracoes nao salvas. (Navegacao SPA pelo botao Voltar do editor e tratada
-  // pelo onNavigate do Link + ConfirmDialog abaixo.)
+  // pelo onNavigate do Link + o pop-up dedicado "Sair sem salvar?" abaixo.)
   useEffect(() => {
     if (!dirty && !cropDirty) return;
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -1279,24 +1279,43 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
         </SheetContent>
       </Sheet>
 
-      <ConfirmDialog
+      {/* Pop-up "Sair sem salvar?" do editor (dedicado, NAO usa o ConfirmDialog compartilhado).
+          Acao principal = Continuar editando (dourado); Sair sem salvar = secundaria/perigo. */}
+      <Dialog
         open={leaveTo !== null}
         onOpenChange={(v) => {
           if (!v) setLeaveTo(null);
         }}
-        title="Sair sem salvar?"
-        message="Você tem alterações não salvas neste clipe. Se sair agora, elas serão perdidas."
-        okLabel="Sair sem salvar"
-        cancelLabel="Continuar editando"
-        danger
-        onConfirm={() => {
-          const dest = leaveTo;
-          setLeaveTo(null);
-          setDirty(false); // libera o onNavigate p/ a navegacao programatica abaixo
-          setCropDirty(false);
-          if (dest) router.push(dest);
-        }}
-      />
+      >
+        <DialogContent showCloseButton={false} className="editor-leave-dialog duration-200">
+          <div className="editor-leave-icon" aria-hidden>
+            <TriangleAlert className="size-5" />
+          </div>
+          <DialogHeader className="editor-leave-head">
+            <DialogTitle className="editor-leave-title">Sair sem salvar?</DialogTitle>
+            <DialogDescription className="editor-leave-text">
+              Você tem alterações não salvas neste clipe. Se sair agora, elas serão perdidas.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="editor-leave-actions">
+            <Button
+              variant="destructive"
+              onClick={() => {
+                const dest = leaveTo;
+                setLeaveTo(null);
+                setDirty(false); // libera o onNavigate p/ a navegacao programatica abaixo
+                setCropDirty(false);
+                if (dest) router.push(dest);
+              }}
+            >
+              Sair sem salvar
+            </Button>
+            <Button variant="gold" onClick={() => setLeaveTo(null)}>
+              Continuar editando
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
