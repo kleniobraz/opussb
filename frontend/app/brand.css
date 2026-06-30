@@ -832,6 +832,22 @@
 .editor-trim-handle::after { content: ""; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 8px; height: 32px; background: #2fe0bf; border-radius: 4px; box-shadow: 0 0 8px rgba(47,224,191,0.55); }
 .editor-trim-dur { position: absolute; top: 1px; transform: translateX(-50%); z-index: 6; font-size: 0.62rem; font-weight: 600; color: #2fe0bf; background: rgba(8,8,10,0.78); padding: 1px 7px; border-radius: 999px; pointer-events: none; white-space: nowrap; }
 
+/* Crop por keyframe (enquadramento): palco 16:9 + caixa 9:16 arrastavel (so pan). Acento DOURADO
+   pra distinguir das trilhas de corte/tela final (aqua). */
+.editor-crop-wrap { position: relative; width: 100%; max-width: calc(68vh * 16 / 9); aspect-ratio: 16 / 9; border-radius: 14px; overflow: hidden; background: #000; box-shadow: var(--shadow-hero); }
+.editor-crop-wrap video { width: 100%; height: 100%; object-fit: fill; display: block; background: #000; }
+.editor-crop-mask { position: absolute; top: 0; bottom: 0; background: rgba(6,6,8,0.6); pointer-events: none; z-index: 2; }
+.editor-crop-box { position: absolute; top: 0; bottom: 0; z-index: 3; border-left: 2px solid var(--gold); border-right: 2px solid var(--gold); box-shadow: inset 0 0 0 1px rgba(245,197,24,0.35); background: rgba(245,197,24,0.04); touch-action: none; }
+.editor-crop-box.is-draggable { cursor: ew-resize; }
+.editor-crop-box.is-draggable:hover { background: rgba(245,197,24,0.1); }
+.editor-crop-grip { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 26px; height: 40px; border-radius: 7px; background: rgba(245,197,24,0.85); box-shadow: 0 0 10px rgba(245,197,24,0.5); pointer-events: none; }
+.editor-crop-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.editor-track--key { height: 30px; background: #0c0c0e; }
+.editor-kf { position: absolute; top: 50%; width: 14px; height: 14px; margin-left: -7px; transform: translateY(-50%) rotate(45deg); background: var(--gold); border: 0; border-radius: 3px; box-shadow: 0 0 8px rgba(245,197,24,0.55); cursor: pointer; padding: 0; z-index: 2; }
+.editor-kf:hover { box-shadow: 0 0 12px rgba(245,197,24,0.9); }
+.editor-kf.is-sel { outline: 2px solid #fff; outline-offset: 1px; }
+.editor-kf-del { position: absolute; top: -20px; left: 50%; transform: translateX(-50%) rotate(-45deg); width: 16px; height: 16px; display: grid; place-items: center; border-radius: 50%; background: #e5484d; color: #fff; font-size: 12px; line-height: 1; }
+
 .editor-seg-row { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--surface); cursor: pointer; transition: border-color var(--dur), background var(--dur); }
 .editor-seg-row:hover { border-color: var(--border-strong); }
 .editor-seg-row.is-selected { border-color: var(--gold); box-shadow: inset 0 0 0 1px rgba(245,197,24,0.4); }

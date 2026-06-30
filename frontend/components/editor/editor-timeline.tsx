@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { Maximize2, Minus, Pause, Play, Plus, SkipBack, SkipForward } from "lucide-react";
 import type { EditSeg } from "./clip-editor";
+import type { CropKeyframe } from "@/lib/types";
 
 const MIN_BLOCK_W = 26; // largura minima clicavel de um bloco, mesmo pra legenda curtissima
 const ZOOM_MIN = 4;
@@ -57,6 +58,11 @@ export function EditorTimeline({
   onSelect,
   onChangeSegment,
   onChangeCut,
+  cropActive,
+  keyframes,
+  selectedKf,
+  onSelectKf,
+  onDeleteKf,
   onZoom,
 }: {
   duration: number;
@@ -80,6 +86,11 @@ export function EditorTimeline({
   onSelect: (id: string) => void;
   onChangeSegment: (id: string, patch: { start: number; end: number }) => void;
   onChangeCut: (edge: "in" | "out", value: number) => void;
+  cropActive: boolean; // modo enquadramento ativo: mostra a trilha de keyframes
+  keyframes: CropKeyframe[]; // keyframes do crop (t em s, cx fração 0..1)
+  selectedKf: number | null; // tempo (s) do keyframe selecionado, ou null
+  onSelectKf: (t: number) => void; // seleciona + posiciona o playhead no keyframe
+  onDeleteKf: (t: number) => void; // remove o keyframe daquele tempo
   onZoom: (px: number) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null); // container que rola (mede clientWidth, move scrollLeft)
@@ -384,6 +395,45 @@ export function EditorTimeline({
               </div>
             ))}
           </div>
+
+          {/* Trilha de keyframes do crop (só no modo enquadramento): losangos no tempo de cada
+              keyframe. Clicar seleciona + leva o playhead; o selecionado mostra um × pra remover.
+              A criação/ajuste de keyframe é arrastando a CAIXA no preview (estilo OpusClip). */}
+          {cropActive && (
+            <div className="editor-track editor-track--key">
+              {keyframes.length === 0 ? (
+                <span className="editor-end-empty">sem keyframes — arraste a caixa no preview</span>
+              ) : (
+                keyframes.map((k) => {
+                  const sel = selectedKf != null && Math.abs(selectedKf - k.t) < 1e-6;
+                  return (
+                    <button
+                      key={k.t}
+                      type="button"
+                      className={"editor-kf" + (sel ? " is-sel" : "")}
+                      style={{ left: k.t * pxPerSec }}
+                      onClick={() => onSelectKf(k.t)}
+                      title={`Keyframe em ${k.t.toFixed(2)}s`}
+                    >
+                      {sel && (
+                        <span
+                          className="editor-kf-del"
+                          role="button"
+                          aria-label="Remover keyframe"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDeleteKf(k.t);
+                          }}
+                        >
+                          ×
+                        </span>
+                      )}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          )}
 
           {/* 4a camada: tela final. Bloco a partir do fim do corte, com largura = duração usada;
               arraste a alça direita pra encurtar. So o bloco e clicavel (resto pointer-events:none). */}
