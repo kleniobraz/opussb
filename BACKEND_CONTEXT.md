@@ -1271,3 +1271,47 @@ no log do boot do gunicorn (47 ocorrencias historicas); worker boota e atende no
    concorrentes; o entregavel converge); TOCTOU menor no fast-path do `_ensure_burn`.
 4. Validar a tela final num clipe REAL (§34 #1, ainda pendente); editor texto-corrido (FRONTEND §22).
 5. Pendencias antigas: `reprocess`, ultralytics RCE, static/ legado.
+
+## 37. Crop: custo/perf MEDIDO + opcoes de otimizacao (DECIDIDAS PENDENTES) (2026-06-30)
+
+Apos o deploy (§35/§36), o dono subiu um podcast real e questionou o custo de RunPod. Medicoes reais no
+metal (executionTime via API da RunPod), NADA otimizado ainda (decisao do dono: medir primeiro). Os 2
+pontos de codigo abaixo foram verificados por workflow (analise + refutacao adversarial, 0 refutado).
+
+**Re-render do "Aplicar" = 1 job de GPU por clipe, INDEPENDENTE do nº de keyframes.** Cadeia: `_do_rerender`
+-> `_rerender_gpu` -> `submit_rerender` (1 POST /run com a lista inteira) -> worker `reframe_with_keyframes`
+-> `trajectory_from_keyframes` EXPANDE os N keyframes esparsos numa trajetoria DENSA por-frame -> 1
+`_pipe_encode` (1 ffmpeg, loop por FRAME nao por keyframe). 5 trocas de camera = 1 job. Cada "Aplicar"
+salvo (PUT /keyframes) = 1 render (por SALVAMENTO, nao por keyframe); `_rerender_sem` serializa.
+
+**Re-render NAO invoca YOLO** (`reframe_with_keyframes` nao recebe `model`; YOLO so em `reframe_to_file`/
+`detect_people`). Ressalva de custo: o worker CARREGA o YOLO no import (handler.py:46) mesmo num re-render,
+entao um worker FRIO paga esse load no startup (nao no compute).
+
+**Custo medido:** re-render ~**1 a 2 centavos/clipe** (clip7=98s ~US$0,016; clip12=68s ~US$0,011 em A5000
+@ ~US$0,00016/s). Whisper de 1 podcast ~119s ~US$0,03. **O GROSSO e o reframe INICIAL de TODOS os clipes no
+upload** (~US$0,21 pra 16 clipes ~ US$0,013/clipe); com 6-7 podcasts/dia ~ **US$30-45/mes** de RunPod. O
+custo NAO esta no re-render (centavos) e sim no reframe inicial por upload.
+
+**Perf:** o "Aplicando" leva ~90s wall-clock = cold start (~18s, worker escala a 0) + ~68s de compute. O
+compute e dominado pelo **loop Python/cv2 quadro-a-quadro** do `_pipe_encode` (decodifica+recorta cada
+frame), NAO pelo NVENC (segundos) -> **a GPU quase nao acelera o re-render vs CPU**.
+
+**Como medir:** `journalctl -u opussb | grep -i rerender` (linhas `[rerender-gpu] submetido job <id>` +
+`[rerender] clip ... ok (gpu|cpu)`); pegar o `<id>` e consultar `executionTime` em
+`/v2/<endpoint>/status/<id>`; custo EXATO no dashboard RunPod (aba Requests). Re-render NAO emite `[timing]`
+(so `[rerender]`) - se quiser timing ao vivo no log, falta 1 linha de instrumentacao no `_do_rerender`.
+
+**OPCOES DE OTIMIZACAO (identificadas, DECIDIDAS PENDENTES - dono adiou pra depois de medir):**
+1. **Re-render na CPU** (`RERENDER_GPU_ENABLED=false`): custo US$0 (VPS fixa), tempo ~igual (gargalo e o cv2
+   loop, nao o codec). Lever de graça pros ajustes. (Hoje em prod esta `true` = GPU.)
+2. **Reframe sob demanda (lazy):** so reenquadrar os clipes que o usuario ABRIR/exportar, nao os N no upload.
+   Corta ~60-70% do custo recorrente. Mudanca media (miniatura sai do 16:9, nao quebra a grade).
+3. **Render so na exportacao (metadado):** "Aplicar" so grava keyframes (instantaneo, US$0); o 9:16 final
+   renderiza 1x no export (como a legenda). Mata o "Aplicando" E o custo-por-ajuste. Refatoracao maior.
+- VPS com GPU propria: REJEITADO (US$180-360/mes fixos >> US$30-45 RunPod no volume atual).
+
+**Upload (investigado, sem mudanca):** o video sobe ATRAVES da VPS (`POST /api/upload` -> `request.files` ->
+disco `JOB_DIR`), nao direto pro S3. A VPS NAO e gargalo: entrada medida **3-5 Gbit/s**, nginx faz streaming
+(`proxy_request_buffering off`, limite 15G, timeout 1h), disco 177 MB/s. O limite e o UPLOAD da internet do
+dono + a distancia. VPS = **Hetzner Ashburn, Virginia (US-East)**, nao Europa (bom pro Brasil, ~120-150ms).
