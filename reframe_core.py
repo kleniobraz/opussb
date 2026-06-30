@@ -389,8 +389,18 @@ def _pipe_encode(input_path: str, output_path: str, per_frame_cx: list, fps: flo
             proc.kill()
             raise RuntimeError("reframe encode estourou o timeout")
     except (BrokenPipeError, OSError) as e:
-        proc.kill()
-        raise RuntimeError(f"reframe pipe quebrou (ffmpeg morreu cedo): {e}")
+        # ffmpeg morreu antes de drenar o pipe (ex.: NVENC nao inicializou). Da um tempinho pra ele
+        # fechar o stderr e ANEXA o tail do log do ffmpeg, senao a causa real (args/NVENC/driver) se perde.
+        try:
+            proc.wait(timeout=10)
+        except Exception:
+            proc.kill()
+        try:
+            errf.seek(0)
+            ff_tail = errf.read()[-800:].decode("utf-8", "replace")
+        except Exception:
+            ff_tail = "(stderr indisponivel)"
+        raise RuntimeError(f"reframe pipe quebrou (ffmpeg morreu cedo): {e}; ffmpeg: {ff_tail}")
     finally:
         cap.release()
         if proc.poll() is None:
