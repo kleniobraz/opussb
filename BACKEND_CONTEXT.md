@@ -1346,3 +1346,164 @@ e `_build_burn_cmd`/`_ensure_burn` (que ja mixava a musica via `-stream_loop -1`
 `964d265`; banco NAO precisa de rollback, sem mudanca de schema). Push autorizado pelo dono (regra 9).
 **GIT: `origin/master` == `4c87293`** [SUPERSEDE o git da §36]. Smoke server-side ok (/health, paginas, rota
 nova 401). Validacao visual (gaveta Ajustes, musica no preview, crop) com o dono. Front: FRONTEND §28.
+
+## 39. Pipeline paralelo de Podcast completo pra YouTube (16:9): DESIGN aprovado + Parte 1 em validacao (2026-07-01)
+
+Feature NOVA, pipeline PARALELO ao de clipes 9:16 (nao mexe nele). Editar podcast inteiro pra YouTube: o dono
+sobe um podcast 16:9 de 1-2h e escolhe uma vinheta; o sistema monta GANCHO (1-3 min do melhor momento) +
+VINHETA + PODCAST COMPLETO e exporta 16:9 1920x1080, com o **fps NATIVO do arquivo** (NAO forcar 24 por fora;
+ver Parte 1, o arquivo de teste real e 30fps), SEM legenda, SEM reframe (ja e horizontal). Design revisado e
+aprovado pelo dono; implementacao NAO comecada (so a Parte 1, validacao isolada do concat, em andamento).
+
+**Fluxo COM gate de aprovacao humana (pra nao montar gancho errado):** upload + escolhe vinheta -> transcreve
+(RunPod, igual hoje) -> Claude sugere 3 OPCOES de gancho (inicio/fim + razao) -> o dono ve as 3, escolhe 1 e
+AJUSTA os tempos (reusa o editor de trim, §18) -> SO DEPOIS o sistema monta e exporta.
+
+**Decisao arquitetural central (a PAUSA):** o gate humano colide com 3 premissas do pipeline atual, e e o ponto
+mais delicado. (1) `MAX_CONCURRENT_JOBS=1` travaria a fila com um job parado por horas; (2) `reap_stale_jobs`
+(db.py:824) mata job sem update ha >30min; (3) o cleanup (`rmtree` no fim do `run_thread2`) apagaria o fonte.
+SOLUCAO: quebrar em 2 fases com pausa persistente. Fase A (automatica, e "active job"): upload -> transcricao
+-> Claude sugere 3 ganchos -> grava e vai pro estado novo `aguardando_aprovacao`. PAUSA: esse estado e
+QUASE-TERMINAL (sai do `count_active_jobs`, liberando a fila, e e IGNORADO pelo `reap_stale_jobs`, nao morre);
+o fonte 16:9 fica RETIDO local em `JOB_DIR` (sem subir GBs cross-region) com TTL de expiracao (ex: reaper limpa
+`aguardando_aprovacao` com >14d). Fase B (automatica, disparada pela aprovacao): vira active job de novo, monta,
+exporta, `done`.
+
+**Bifurcacao minima:** coluna aditiva `jobs.job_type` (default `'clips'`, novo `'podcast'`); `run_thread2` e o
+callback bifurcam por ela; o caminho `'clips'` fica byte-identico ao de hoje. Estados novos:
+`analisando_gancho` -> `aguardando_aprovacao` (a pausa) -> `montando` -> `done`.
+
+**Onde o Claude analisa 2h (DECISAO PENDENTE do dono, Parte 0):** hoje o Claude roda 100% no N8N (o Flask NAO
+chama a Anthropic; `ANTHROPIC_API_KEY` existe em config.py:28 mas nunca e usado). Opcoes: (A, RECOMENDADA) Flask
+chama a Anthropic direto (modulo novo `hooks.py`), pra nao tocar o workflow N8N de producao (regra 3) e porque a
+logica de dividir/rankear 2h e trivial em Python; (B) branch no N8N por `mode=podcast`. Estrategia de tokens: 2h
+de fala ~18 mil palavras, SRT cru ~60-70k tokens, CABE numa chamada (contexto 200k), entao o risco nao e
+estourar contexto e sim QUALIDADE (o modelo se perde no meio) e um pouco de custo. Duas abordagens: chamada
+unica compacta (`[mm:ss] texto` em blocos de ~30s, ~30k tokens, ~US$0,02 Haiku) OU map-reduce (~8 blocos de
+15min, cada um propoe 2 candidatos, um passo final escolhe os 3, ~US$0,03-0,05, cobertura melhor). Sugestao:
+comecar pela chamada unica (Parte 3, valida o fluxo) e evoluir pra map-reduce se a qualidade nao agradar; o gate
+humano e a rede de seguranca. E analise NOVA (nao o scoring de clipes, nao fere a regra 6).
+
+**Concatenacao 16:9 (o nucleo tecnico, a Parte 1):** a tecnica do §29 (tela final) VALE pra colar na FRENTE (e
+agnostica a posicao): re-encoda so os pedacos pequenos casando os params + `concat-copy` do grande. CORRECAO
+necessaria: `_ensure_matched_outro` (app.py:1380) tem `scale=1080:1920` (9:16) FIXO; este pipeline precisa de
+uma funcao IRMA que escale pra 1920x1080. Mecanica: `ffprobe` no PODCAST define os params de verdade (reusa
+`_probe_av_signature`, app.py:1352, estendido pra pegar tambem profile/level/SAR); o GANCHO (recorte do proprio
+podcast) e re-encodado casando esses params + 1920x1080 (re-encode e preciso; 1-3 min de video, ~1-3 min de
+CPU); a VINHETA idem (upload arbitrario, sempre normaliza; cacheia por assinatura como em `_matched/`);
+`concat-copy` da lista `[gancho, vinheta, podcast]` (`-f concat -safe 0 -c copy -movflags +faststart`). O
+PODCAST de 2h NUNCA e re-encodado. `snap_clip_bounds` (captions.py:81) reusa direto pro gancho comecar/terminar
+em fronteira de fala.
+
+**Vinheta:** biblioteca dinamica no DB espelhando as telas finais (§31.2, que e a tabela `end_screens` semeada
+do config no boot): tabela nova `vinhetas` (id, label, s3_key, duration, created_at), rotas `GET/POST/DELETE
+/api/vinhetas`, escolha POR PROJETO (`jobs.vinheta_id`), assets em `assets/vinhetas/<uuid>.mp4` no S3.
+
+**Custo/tempo por podcast:** RunPod Whisper 2h ~US$0,05-0,10 (~3-8min); Claude gancho ~US$0,02-0,05; montagem
+ffmpeg na VPS (SEM GPU) ~2-5min de CPU, US$0. Total incremental ~**US$0,10-0,15/podcast**. MAIS BARATO que o de
+clipes (sem GPU de reframe, sem queima de legenda). Gargalo real = tempo humano de aprovar.
+
+**Arquivos que mudam/nascem (previsto):** `db.py` (`jobs.job_type`, `jobs.hooks_json`, `jobs.hook_choice`,
+`jobs.vinheta_id`; tabela `vinhetas` + CRUD; ajuste de `count_active_jobs`/`reap_stale_jobs` pra a pausa),
+`config.py` (`VINHETA_*`, `HOOK_*`, `PODCAST_ENABLED`, `HOOK_APPROVAL_TTL_DAYS`), `app.py` (rotas
+`/api/podcast/upload`, `/api/podcast/<job>/{hooks,hook,approve}`, CRUD `/api/vinhetas`, `_ensure_matched_1080p` +
+`_compose_podcast`), `processor.py` (bifurcacao por `job_type`, analise pos-callback, `run_podcast_compose`),
+NOVO `hooks.py` (cliente Anthropic + chunking). Front em FRONTEND §29.
+
+**Partes (executar e validar por etapa, como o editor):** Parte 0 = decisoes (Claude Flask vs N8N, tokens);
+**Parte 1 = validar ISOLADO a concat 16:9** (em andamento, abaixo); Parte 2 = `_ensure_matched_1080p` +
+`_compose_podcast` plugados; Parte 3 = pipeline de analise (upload -> Whisper -> 3 ganchos -> pausa); Parte 4 =
+aprovacao + montagem; Parte 5 = frontend.
+
+**Riscos:** (1) a pausa humana vs fila/reaper/cleanup (o maior, mitigado pela seção da PAUSA); (2) `concat-copy`
+exige params IDENTICOS (pix_fmt, profile, level, SAR, timebase de audio; mismatch quebra ou dessincroniza);
+(3) VFR no podcast (concat-copy sofre deriva de PTS; validar cedo, NAO se aplica ao arquivo de teste que e CFR);
+(4) qualidade do gancho (mitigado por map-reduce + gate humano); (5) storage do fonte retido na pausa (mitigado
+por TTL); (6) timeout do RunPod pra audio de 2h; (7) priming/padding do AAC nas EMENDAS (micro-gap ao concatenar
+AAC com -c copy; se dessincronizar, opcao e re-encodar SO o audio do conjunto, bem mais barato que o video).
+
+**PARTE 1 (validacao isolada do concat) EM ANDAMENTO (2026-07-01):** plano aprovado. Feito ate aqui = baixado o
+podcast REAL de teste do dono (Google Drive via `gdown` num venv isolado no volume) pra
+`/mnt/opussb-jobs/_podcast_concat_test/podcast_teste.mp4` (11.203.661.228 bytes = 11GB, integro: ftyp mp42, sem
+.part). **ffprobe do arquivo real:** video h264 **profile High, level 4.2**, **1920x1080**, **SAR 1:1**, DAR
+16:9, **pix_fmt yuv420p**, **r_frame_rate == avg_frame_rate == 30/1 (CFR confirmado, NAO VFR; nb_frames 126695 =
+dur x 30 exato)**, time_base 1/30000 (timescale 30000), duracao **4223.17s (~1h10m)**, ~20,9 Mbps; audio **aac
+LC, 48000 Hz, estereo**; SO 2 streams (1 video + 1 audio, sem trilhas extras). **DESCOBERTA: o arquivo e 30fps,
+NAO 24fps** (o dono tinha dito "meus podcasts sao 24fps"); o plano ja casa o fps NATIVO do ffprobe, entao cobre
+os dois, mas a premissa "sempre 24" NAO vale (confirmar se as fontes variam). CFR = melhor cenario pro
+concat-copy. **O concat AINDA NAO FOI RODADO** (o dono mandou parar pra documentar; o script de montagem nao foi
+escrito ainda). Os artefatos (11GB + venv) seguem em `/mnt/opussb-jobs/_podcast_concat_test/` NO VOLUME DA VPS
+ATUAL (nao migram sozinhos, ver §40; re-baixar do Drive na VPS nova se precisar). Ao retomar: escrever o script
+de montagem (re-encode gancho + vinheta casando os params acima em 1920x1080, concat-copy do podcast,
+inspecionar as DUAS emendas, testar re-encode so-audio se dessincronizar, medir tempo, apagar os artefatos no
+fim). Vinheta de teste = `/opt/opussb/video/TELA FINAL CLUBCAST.mp4` (9:16, vira pillarbox; ok pra testar a
+montagem, ja que a vinheta e re-encodada pros params-alvo de qualquer jeito).
+
+## 40. Migracao de VPS (planejada, 2026-07-01): runbook. O S3 FICA, so a VPS muda
+
+O dono vai TROCAR a VPS. **O bucket S3 da Hetzner (Object Storage, `fsn1`, `opussb-storage`) e MANTIDO** (e
+externo a VPS; sobrevive a migracao), assim como RunPod, Anthropic e a imagem GPU no Docker Hub. So a maquina
+muda. Este runbook lista o que TRANSFERIR, o que RE-INSTALAR e o CUTOVER. Confirmar cada passo contra o estado
+real na hora; os detalhes de infra estao nas memorias `production-domain`, `networking-access-model`,
+`github-backup`, `n8n-automation`, `gpu-image-build-disk`, que precisarao ser ATUALIZADAS pos-migracao.
+
+**A) TRANSFERIR pra VPS nova (estado que NAO esta no S3 nem no git):**
+- **Codigo:** `git clone git@github.com:kleniobraz/opussb.git` (repo privado, deploy key SSH). Gerar uma deploy
+  key NOVA na VPS nova e adiciona-la no GitHub (a chave velha morre com a VPS velha). Ver `github-backup`.
+- **`.env` de producao** (`/opt/opussb/.env`, ~1,7KB, FORA do git): TODOS os segredos (S3, RunPod, Anthropic, N8N
+  webhook, Flask secret, Zoho). Copiar por canal seguro (scp direto entre as VPS).
+- **Banco `opussb.db`** (`/opt/opussb/opussb.db`, ~1,8MB, default DB_PATH): usuarios, jobs, projetos,
+  clip_captions, end_screens, etc. CRITICO. Copiar com o Flask PARADO (checkpoint do WAL antes; regra de restart).
+- **`/root/.opussb_n8n_api_key`** (600, chave da API do N8N).
+- **N8N (Docker):** o workflow (orquestra RunPod + Claude) e o dado mais delicado. Migrar o volume do container
+  N8N, ou exportar/importar o workflow (ver `N8N_WORKFLOW.md` + `n8n-automation`, editavel por API). Conferir os
+  nomes EXATOS dos nos (regra 3) e o callback FIXO de producao.
+- **Assets locais:** `/opt/opussb/video/TELA FINAL CLUBCAST.mp4` (redundante com o S3 em
+  `assets/end_screens/clubcast.mp4`, mas o local e a fonte). Backups em `/opt/opussb_backups/` (opcional).
+- NAO precisa migrar os objetos do S3 (ficam onde estao) NEM os artefatos de teste do podcast
+  (`/mnt/opussb-jobs/_podcast_concat_test/`, 11GB, descartaveis).
+
+**B) RE-INSTALAR na VPS nova (infra que nao vem do git):**
+- **Layout de disco:** replicar raiz pequena + VOLUME grande montado em `/mnt/opussb-jobs` (o `JOB_DIR` de prod;
+  o default do config e `/opt/opussb/jobs`, mas o `.env` aponta pro volume). O volume tambem guarda o estado do
+  BuildKit da imagem GPU (a raiz nao cabe a CUDA ~11G; ver `gpu-image-build-disk`).
+- **Pacotes:** ffmpeg (hoje 4.4.2), Python 3.10 + venv (`/opt/opussb/venv`, recriar do `requirements`), Node 20
+  via nvm (pro `frontend/`, `next build`), gunicorn, nginx, certbot, Docker (pro N8N), yt-dlp.
+- **systemd:** `opussb.service` (Gunicorn, 1 worker/4 threads gthread, timeout 3600, bind DUPLO 127.0.0.1:5001 +
+  172.17.0.1:5001) e `opussb-web.service` (`next start` em 127.0.0.1:3000). Copiar os unit files.
+- **Docker + bridge:** instalar Docker ANTES de subir o Flask, senao o gateway `172.17.0.1` nao existe e o bind
+  duplo falha (o N8N alcanca o Flask por `172.17.0.1:5001` direto). Subir o container do N8N. NAO reiniciar o
+  dockerd a toa depois (derruba o N8N).
+- **Nginx + HTTPS:** copiar o server block (proxy `/` -> Next 3000, `/api`+`/health` -> Flask 5001,
+  `client_max_body_size 15G`, `proxy_request_buffering off`, 404 pra `/api/callback` e `/api/internal`).
+  Re-emitir os certs Let's Encrypt (certbot) pra `sbclips.space` E `n8n.sbclips.space` DEPOIS que o DNS apontar
+  pra VPS nova.
+- **Firewall:** so 80/443 (e SSH) abertos ao mundo; 5678 (editor N8N) e as portas internas FECHADAS.
+
+**C) CUTOVER (DNS):** na Hostinger, apontar os registros A de `sbclips.space` e `n8n.sbclips.space` pro IP NOVO.
+So depois disso o certbot emite os certs. Validar: `/health`, login, um clipe editavel, o editor N8N. Manter a
+VPS velha de pe ate a nova estar 100% (rollback = reverter o DNS).
+
+**D) OPORTUNIDADE (decisao do dono):** hoje a VPS e Hetzner ASHBURN (US-East) e o S3 e `fsn1` (Falkenstein, DE),
+ou seja, CROSS-REGION (§37). Se a VPS nova ficar na EUROPA (perto do S3), a latencia app<->S3 despenca E o upload
+do fonte de 2h do pipeline de podcast (risco 5 da §39) fica barato; PORÉM Ashburn foi escolhida por ser boa pro
+Brasil (~120-150ms). Trade-off de latencia (usuario BR vs S3) a decidir junto com a regiao da VPS nova.
+Sinalizar impacto de caixa se o porte/plano da VPS mudar (regra 7).
+
+## 41. Estado atual e proximos passos (2026-07-01) [SUPERSEDE §36]
+
+Producao saudavel (`active_jobs=0`, `db:true`, opussb + opussb-web ativos, https://sbclips.space). **Nenhum
+deploy de codigo nesta sessao** (so docs + design). O staging (5002/3001) esta PARADO.
+
+**GIT:** `origin/master` == local. Nesta sessao: push do commit de docs `f0256cf` (BACKEND §38 / FRONTEND §28,
+autorizado) e do handoff de design do editor `055cf59` (mockup HTML + assets). Estas atualizacoes de doc
+(§39-41 + FRONTEND §29 + STAGING + memorias) vao pro proximo commit de docs.
+
+**PROXIMOS PASSOS:**
+1. **Migracao de VPS (§40):** proxima grande frente operacional. O S3 fica; so a maquina muda. Seguir o runbook.
+2. **Pipeline de Podcast pra YouTube (§39):** design aprovado. Parte 1 (concat 16:9) em validacao: retomar
+   escrevendo o script de montagem e rodando com o `podcast_teste.mp4` (30fps CFR). Decidir a Parte 0 (Claude no
+   Flask vs N8N; estrategia de tokens) antes da infra.
+3. Pendencias antigas ainda de pe: PARTE 5 do editor (karaoke por PALAVRA, o dado `words` ja flui, FRONTEND §28);
+   validar tela final num clipe REAL da Carbone; multi-apresentador (split); `reprocess`; ultralytics RCE;
+   remover a SPA `static/` legada.

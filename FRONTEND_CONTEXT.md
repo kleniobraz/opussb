@@ -46,7 +46,11 @@ de API) e a memória do projeto (`frontend-stack-decision`).
   "timeline-first" (roteiro corrido) + layout estilo Premiere** + Ctrl+S + pop-up de sair-sem-salvar +
   música no preview e no export sem legenda + atalho de zoom `-`/`+` + fix de z-index dos diálogos (**§28**;
   backend em BACKEND §38). Só a **Parte 5 (karaokê por PALAVRA)** ficou pendente (o dado `words` já flui).
-- **Git:** `origin/master` em `4c87293` (deploy 2026-06-30, §28; código todo pushado). Working tree tem só docs + `.gitignore` (do dono).
+- **Onda 2026-07-01 (docs/design, SEM deploy de código):** DESIGN aprovado do **pipeline de Podcast completo
+  pra YouTube (16:9)**, paralelo ao de clipes (§29 abaixo / BACKEND §39); e **migração de VPS** planejada (o S3
+  da Hetzner fica, só a máquina muda; BACKEND §40). Staging parado.
+- **Git:** `origin/master` em `055cf59` (docs; o código de produção segue em `4c87293`, deploy 2026-06-30 §28).
+  Docs de contexto atualizadas 2026-07-01 (FRONTEND §29 + BACKEND §39-41).
 - **Falta (pendente):** validar a tela final num **clipe real da Carbone**; o **editor de crop por keyframe**
   (§26 / BACKEND §33, staging); o **editor estilo OpusClip texto-corrido** (§22, staging); remover a SPA
   `static/`; popstate no editor (§7/§9). Estado completo + git em **BACKEND §34**.
@@ -812,3 +816,18 @@ redesenhar o canvas por frame) + playhead com diamante.
 `tsc --noEmit` + `next build` limpos. **EM PRODUCAO** (`4c87293`; merge ff staging->master, `next build` +
 restart com `active_jobs=0` + backup `*-20260630-211141`, rollback ref `964d265`). Esta secao IMPLEMENTA o
 plano da §22 e SUPERSEDE o arranjo de 3 colunas que tinha sido tentado antes.
+
+## 29. Pipeline de Podcast pra YouTube (16:9): implicacoes de front (DESIGN, 2026-07-01) [backend BACKEND §39]
+
+Feature nova, pipeline PARALELO ao de clipes (nao mexe no editor 9:16). Backend detalhado em BACKEND §39
+(arquitetura, estados, concat, custo). O front ainda NAO comecou (e a Parte 5 do plano); o que esta previsto:
+
+- **Upload de podcast + escolher vinheta:** variante do `UploadConsole` (o upload com progresso ja existe), com
+  um seletor de vinheta (biblioteca dinamica, molde da de telas finais, §24).
+- **Tela de aprovar gancho:** apos a transcricao o job entra em `aguardando_aprovacao`; o front mostra as 3
+  OPCOES de gancho (inicio/fim + razao) e deixa escolher 1 e AJUSTAR in/out REUSANDO os handles de trim do
+  `editor-timeline.tsx` (§15/§28). Aprovar dispara a montagem.
+- **Acompanhamento:** `useJobStatus` (polling 5s) estendido pros estados novos (`analisando_gancho`,
+  `aguardando_aprovacao`, `montando`).
+- **Reusa:** `UploadConsole`, os handles de trim, `useJobStatus`, o CRUD da biblioteca de telas finais, e
+  `lib/api.ts` + `types.ts`. NAO toca o editor de clipe 9:16.

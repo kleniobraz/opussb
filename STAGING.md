@@ -63,3 +63,11 @@ frente (ex.: multi-apresentador).
   e namespaceado por ambiente (staging usaria `...-staging`) pra as duas regras coexistirem no mesmo bucket.
 - **Build da imagem GPU:** rodar pelo BuildKit com estado no volume sdb (o disco de sistema nao cabe a
   CUDA ~11G). Ver a memoria `gpu-image-build-disk` / BACKEND_CONTEXT §35.
+
+## Estado (2026-07-01)
+
+- **Staging PARADO:** as portas 5002 (Flask) e 3001 (next dev) NAO estao escutando. Subir sob demanda pela
+  seção "Rodar o staging" acima quando a proxima frente em staging comecar.
+- **Migracao de VPS (BACKEND_CONTEXT §40):** nada aqui e precioso. O worktree `/opt/opussb-staging`, o `.env` de
+  staging e `/mnt/opussb-jobs-staging` sao recriaveis do zero na VPS nova (os dados de teste ficam sob o prefixo
+  S3 `staging/`, e o S3 e MANTIDO na migracao). Nao ha nada a transferir do staging.
