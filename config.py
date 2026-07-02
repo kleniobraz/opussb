@@ -64,7 +64,7 @@ BURN_QUEUE_TIMEOUT: float = float(os.environ.get("BURN_QUEUE_TIMEOUT", "120"))
 # (deixa >=1 núcleo livre) E roda o ffmpeg com baixa prioridade (nice), pra ele ceder CPU às
 # requisições web. O semáforo (BURN_CONCURRENCY) já evita N queimas juntas; isto evita que UMA
 # queima monopolize a CPU.
-BURN_FFMPEG_THREADS: int = int(os.environ.get("BURN_FFMPEG_THREADS", "2"))   # de 3 vCPU, deixa 1 pro web
+BURN_FFMPEG_THREADS: int = int(os.environ.get("BURN_FFMPEG_THREADS", "2"))   # default herdado da Hetzner (3 vCPU); na VPS atual (4 vCPU) sobra ~1 nucleo na queima — ver BACKEND §42
 BURN_NICE: int = int(os.environ.get("BURN_NICE", "15"))                       # 0-19; maior = menor prioridade
 
 # Poster (thumbnail) por clipe: 1 frame extraido sob demanda da base (seek por range, ~2s,

@@ -46,8 +46,10 @@ Trabalha-se **direto na VPS de produção** em `/opt/opussb`.
 
 ## 2. Infraestrutura
 
-- **VPS**: Hetzner CPX21, 3 vCPU, 4GB RAM, swap 4GB. IP público `87.99.159.235`.
-  Volume separado de 79GB em `/mnt/opussb-jobs` (é o `JOB_DIR`, trabalho em disco).
+- **VPS**: Hostinger (Campinas/SP, Brasil, AS47583), 4 vCPU, 16GB RAM, **sem swap** (a Hetzner
+  tinha 4GB de swap). IP público `187.127.43.75`. Migrada da Hetzner em 2026-07-01→02 (§40/§42).
+  Disco único de 200GB; `/mnt/opussb-jobs` é PASTA no disco raiz (é o `JOB_DIR`, trabalho em
+  disco), NÃO volume dedicado.
 - **App**: Flask + Gunicorn (`/opt/opussb/venv/bin/gunicorn`), **1 worker / 4 threads
   (gthread)**, `--timeout 3600`. systemd unit `opussb.service`
   (`WorkingDirectory=/opt/opussb`, `EnvironmentFile=/opt/opussb/.env`,
@@ -421,7 +423,8 @@ aberto (não regrediu). E2e ao vivo na produção com usuário TEST e cleanup to
 
 ### Domínio e HTTPS (a frase "sem TLS" da §7 está OBSOLETA)
 - Produção atende em **https://sbclips.space** (e www). Domínio comprado na Hostinger; DNS
-  no hPanel (registro A `@` para `87.99.159.235`; `www` é CNAME pra raiz).
+  no hPanel (registro A `@` para `187.127.43.75` — VPS Hostinger, cutover 2026-07-01; `www` é
+  CNAME pra raiz).
 - Certificado **Let's Encrypt** via `certbot --nginx`. Cert em
   `/etc/letsencrypt/live/sbclips.space/`. Redirect http para https automático. `certbot.timer`
   ativo (renova sozinho; `certbot renew --dry-run` passou).
@@ -582,7 +585,7 @@ servidor e cai no MESMO pipeline do upload.
   unless-stopped). Stack completa do YouTube: cookies + Deno (n-sig) + bgutil (PO token) + cópia
   descartável dos cookies.
 - **Realidade operacional (manutenção):** baixar do YouTube é alvo móvel. (1) O IP de datacenter
-  (Hetzner) leva "confirme que não é um robô" de forma INTERMITENTE mesmo com cookies+Deno+PO token; a
+  da VPS (observado na Hetzner; a Hostinger também é datacenter) leva "confirme que não é um robô" de forma INTERMITENTE mesmo com cookies+Deno+PO token; a
   maioria passa. Quando falha, `_run_ytdlp` **retenta automaticamente** (3x, `_YT_RETRIES`, só no bot-block,
   com cópia nova de cookies a cada tentativa) porque é intermitente. Blindagem total só com proxy
   residencial (decisão adiada). (2)
@@ -1312,9 +1315,12 @@ frame), NAO pelo NVENC (segundos) -> **a GPU quase nao acelera o re-render vs CP
 - VPS com GPU propria: REJEITADO (US$180-360/mes fixos >> US$30-45 RunPod no volume atual).
 
 **Upload (investigado, sem mudanca):** o video sobe ATRAVES da VPS (`POST /api/upload` -> `request.files` ->
-disco `JOB_DIR`), nao direto pro S3. A VPS NAO e gargalo: entrada medida **3-5 Gbit/s**, nginx faz streaming
-(`proxy_request_buffering off`, limite 15G, timeout 1h), disco 177 MB/s. O limite e o UPLOAD da internet do
-dono + a distancia. VPS = **Hetzner Ashburn, Virginia (US-East)**, nao Europa (bom pro Brasil, ~120-150ms).
+disco `JOB_DIR`), nao direto pro S3. A VPS NAO e gargalo: nginx faz streaming
+(`proxy_request_buffering off`, limite 15G, timeout 1h); disco da Hostinger medido em **1,8 GB/s** de
+escrita direta (2026-07-02; a "entrada 3-5 Gbit/s" e o "disco 177 MB/s" eram medicoes da VPS Hetzner).
+O limite e o UPLOAD da internet do dono + a distancia. VPS agora = **Hostinger Campinas/SP (Brasil)** —
+otima pro usuario BR; o lado longe passou a ser o S3 `fsn1` (Alemanha): RTT VPS->S3 ~183ms medido em
+2026-07-02 (ver §42).
 
 ## 38. Editor timeline-first + layout Premiere: toques de backend (2026-06-30) [front em FRONTEND §28]
 
@@ -1439,7 +1445,7 @@ inspecionar as DUAS emendas, testar re-encode so-audio se dessincronizar, medir 
 fim). Vinheta de teste = `/opt/opussb/video/TELA FINAL CLUBCAST.mp4` (9:16, vira pillarbox; ok pra testar a
 montagem, ja que a vinheta e re-encodada pros params-alvo de qualquer jeito).
 
-## 40. Migracao de VPS (planejada, 2026-07-01): runbook. O S3 FICA, so a VPS muda
+## 40. Migracao de VPS (planejada, 2026-07-01): runbook. O S3 FICA, so a VPS muda [EXECUTADA em 2026-07-01→02; resultado e desvios na §42]
 
 O dono vai TROCAR a VPS. **O bucket S3 da Hetzner (Object Storage, `fsn1`, `opussb-storage`) e MANTIDO** (e
 externo a VPS; sobrevive a migracao), assim como RunPod, Anthropic e a imagem GPU no Docker Hub. So a maquina
@@ -1507,3 +1513,43 @@ autorizado) e do handoff de design do editor `055cf59` (mockup HTML + assets). E
 3. Pendencias antigas ainda de pe: PARTE 5 do editor (karaoke por PALAVRA, o dado `words` ja flui, FRONTEND §28);
    validar tela final num clipe REAL da Carbone; multi-apresentador (split); `reprocess`; ultralytics RCE;
    remover a SPA `static/` legada.
+
+## 42. Migracao pra Hostinger CONCLUIDA + estado atual (2026-07-02) [SUPERSEDE §41; executa o runbook §40]
+
+Migracao executada em 2026-07-01→02, validando cada fase pelo IP antes do cutover de DNS. Producao saudavel
+na VPS nova (`/health` db:true, opussb + opussb-web + nginx + docker ativos, https://sbclips.space no ar).
+A Hetzner deixou de ser fallback (decisao do dono); rollback por DNS nao existe mais.
+
+**Infra nova (verificada NA MAQUINA em 2026-07-02):**
+- **Hostinger, Campinas/SP (Brasil, AS47583). 4 vCPU, 16GB RAM, SEM swap** (a Hetzner tinha 4GB), **disco
+  unico de 200GB** (raiz ~194G, escrita direta medida **1,8 GB/s** vs 177 MB/s da Hetzner). IP `187.127.43.75`.
+- **`/mnt/opussb-jobs` e PASTA no disco raiz, NAO volume dedicado** (desvio deliberado do §40-B: a raiz de
+  200G comporta; revisitar se o BuildKit da imagem GPU (~11G) + jobs grandes apertarem).
+- **N8N pinado em `docker.n8n.io/n8nio/n8n:2.25.7`** (mesma versao da Hetzner; volume `n8n_data` restaurado
+  com a encryption key, sem migration de schema). `bgutil-provider` em pe. Ambos so em 127.0.0.1.
+- **Certs Let's Encrypt re-emitidos** (sbclips.space+www e n8n.sbclips.space, expiram 2026-09-29);
+  `certbot.timer` ativo com `renew_hook = systemctl reload nginx`. Zoho SSO no mesmo redirect URI.
+- **Cross-region agora e Brasil<->Alemanha:** RTT VPS->S3 (`fsn1`) **~183ms** medido (era ~90-100ms de
+  Ashburn). Na queima de legenda o S3 e so ~17% do tempo (download 24,7MB/s apesar do RTT); o gargalo e o
+  ffmpeg (~83%), limitado por `BURN_FFMPEG_THREADS=2` (default, sem override no `.env`; calibrado pra 3 vCPU
+  — nesta box de 4 sobra ~1 nucleo ocioso na queima: user 74%/idle 25%/iowait 0, encode 2,1x tempo-real).
+  Proposta de subir pra 3 foi discutida e NAO aplicada (decisao pendente). `BURN_CONCURRENCY=1` mantido;
+  `S3_KEY_PREFIX` de producao = vazio (o prefixo `teste/` da validacao foi revertido e os artefatos apagados).
+
+**LACUNAS da migracao (achadas na auditoria de 2026-07-02 — itens do §40-A/B que NAO vieram):**
+1. **Firewall ufw INATIVO** (o §40-B pedia so 80/443/SSH abertos). Mitigacao atual: N8N/bgutil so escutam em
+   127.0.0.1 e o Flask em 127.0.0.1+172.17.0.1. Ativar o ufw e pendencia de hardening.
+2. **`/root/.opussb_n8n_api_key` NAO foi transferida** — edicao do workflow N8N via API REST esta INOPERANTE
+   ate copiar/re-gerar a key (o editor web https://n8n.sbclips.space funciona normal).
+3. **Deploy key SSH do GitHub** — RESOLVIDA em 2026-07-02: chave nova `/root/.ssh/opussb_deploy` (ed25519,
+   write access), remote de volta pra SSH (`git@github.com:kleniobraz/opussb.git`), known_hosts semeado da
+   api.github.com/meta; `git ls-remote` ok. (Na migracao a chave NAO tinha sido gerada e o remote ficou em
+   HTTPS sem credencial.)
+4. **`/opt/opussb/video/TELA FINAL CLUBCAST.mp4` (fonte local) NAO veio** — a copia do S3
+   (`assets/end_screens/clubcast.mp4`) EXISTE (verificado) e e a que o app usa; repor a fonte local depois.
+5. `/opt/opussb_backups/` nao existe na VPS nova (era opcional; o historico ficou na Hetzner).
+
+**PROXIMOS PASSOS** (herda a §41, tirando a migracao que ja foi): 1. resolver as lacunas acima (firewall,
+n8n api key, asset local); 2. decidir BURN_FFMPEG_THREADS 2->3 (§37/§42); 3. pipeline de Podcast
+pra YouTube (§39); 4. karaoke por PALAVRA (FRONTEND §28); 5. pendencias antigas: tela final num clipe REAL da
+Carbone; multi-apresentador (split); `reprocess`; ultralytics RCE; remover a SPA `static/` legada.

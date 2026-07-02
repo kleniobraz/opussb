@@ -49,6 +49,10 @@ de API) e a memória do projeto (`frontend-stack-decision`).
 - **Onda 2026-07-01 (docs/design, SEM deploy de código):** DESIGN aprovado do **pipeline de Podcast completo
   pra YouTube (16:9)**, paralelo ao de clipes (§29 abaixo / BACKEND §39); e **migração de VPS** planejada (o S3
   da Hetzner fica, só a máquina muda; BACKEND §40). Staging parado.
+- **Onda 2026-07-01→02 (infra, SEM deploy de código): migração de VPS CONCLUÍDA** — produção agora
+  na **Hostinger, Campinas/SP (4 vCPU / 16GB / 200GB)**, IP `187.127.43.75`; DNS + certs Let's
+  Encrypt re-emitidos, N8N 2.25.7 local. Front: mesmo código, `next build` refeito na VPS nova,
+  unit `opussb-web` recriado igual (root + nvm). Detalhes e lacunas pós-migração: BACKEND §42.
 - **Git:** `origin/master` em `055cf59` (docs; o código de produção segue em `4c87293`, deploy 2026-06-30 §28).
   Docs de contexto atualizadas 2026-07-01 (FRONTEND §29 + BACKEND §39-41).
 - **Falta (pendente):** validar a tela final num **clipe real da Carbone**; o **editor de crop por keyframe**

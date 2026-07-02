@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# setup_vps.sh — Run as root on the target VPS (Ubuntu 22.04, root@87.99.159.235).
+# setup_vps.sh — Run as root on the target VPS (Ubuntu 22.04, root@187.127.43.75).
 # Make executable before transferring: chmod +x setup_vps.sh
 # Usage: bash setup_vps.sh
 
