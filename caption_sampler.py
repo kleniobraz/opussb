@@ -26,6 +26,8 @@ Conceitos:
 """
 from __future__ import annotations
 
+import heapq
+
 import numpy as np
 
 # ─── Varredura: perfis por linha e diffs de quadro ────────────────────────────
@@ -234,25 +236,30 @@ def segment_states(band_stack: np.ndarray, d_full: np.ndarray, *,
     last_scene = -10**9
     last_caption = -1
 
-    def close_block():
+    def close_block(last_idx: int):
         nonlocal last_caption
-        if anchor == last_caption:
+        # Bloco que acumulou emite o ÂNCORA (último estado assentado da frase; frames
+        # depois dele podem ser fade-out). Bloco sem acúmulo (karaokê) emite o último
+        # frame ESTÁVEL antes do evento: o âncora seria o 1º frame do estado, que em
+        # animação de pop pega a palavra em meio-de-animação.
+        emit = anchor if accum >= 1 else max(anchor, last_idx)
+        if emit == last_caption:
             return
-        m = ink_mask(band_stack[anchor], ink_delta)
+        m = ink_mask(band_stack[emit], ink_delta)
         if int(m.sum()) >= min_ink:
             # "multi" (frase completa, protegida no corte de orçamento) decide pelo
             # CONTEÚDO do estado final, não só pela história do bloco: legenda
             # centralizada re-centra a cada palavra e pode fatiar o acúmulo em blocos.
             multi = accum >= 1 or word_groups(m) >= 3 or x_coverage(m) >= 0.55
-            states.append({"index": anchor, "kind": "caption",
+            states.append({"index": emit, "kind": "caption",
                            "words": "multi" if multi else "single"})
-            last_caption = anchor
+            last_caption = emit
 
     anchor_arr = band_stack[0].astype(np.int16)
     for k in range(T - 1):
         cur = k + 1
         if float(d_full[k]) > scene_threshold:
-            close_block()
+            close_block(cur - 1)
             if cur - last_scene >= min_scene_gap:
                 states.append({"index": cur, "kind": "scene", "words": None})
                 last_scene = cur
@@ -272,11 +279,11 @@ def segment_states(band_stack: np.ndarray, d_full: np.ndarray, *,
                 anchor = cur
                 anchor_arr = band_stack[cur].astype(np.int16)
             else:
-                close_block()
+                close_block(cur - 1)
                 anchor = cur
                 anchor_arr = band_stack[cur].astype(np.int16)
                 accum = 0
-    close_block()
+    close_block(T - 1)
     states.sort(key=lambda s: (s["index"], 0 if s["kind"] == "caption" else 1))
     return states
 
@@ -328,8 +335,11 @@ def apply_budget(states: list[dict], img_costs: list[float], *, base_cost: float
       P3: legendas de 1 palavra (karaokê) — subamostradas uniformemente no tempo;
       P2: quadros de cena — preserva o primeiro e o último;
       P1: frases multi-palavra — só caem se nada mais sobrar, e uniformemente.
-    Determinístico. Devolve (índices mantidos, índices descartados), ambos em ordem,
-    pro chamador logar cada descarte."""
+    Determinístico e O(n log n) (heap com invalidação preguiçosa: vídeo patológico
+    gera milhares de estados e o corte não pode segurar o GIL por segundos).
+    Devolve (índices mantidos, índices descartados), ambos em ordem, pro chamador
+    logar cada descarte."""
+    max_images = max(1, int(max_images))  # misconfig de env não pode dividir por zero
     kept = set(range(len(states)))
 
     def over() -> bool:
@@ -337,36 +347,80 @@ def apply_budget(states: list[dict], img_costs: list[float], *, base_cost: float
                 or len(kept) > max_images)
 
     def thin(cls_pred, protect_ends: bool, min_keep: int):
-        while over():
-            cls = sorted(i for i in kept if cls_pred(states[i]))
-            if protect_ends and len(cls) > 2:
-                cls = cls[1:-1]
-            if len(cls) <= min_keep:
-                return
-            # descarta o item com o menor vão temporal até os vizinhos da própria
-            # classe (subamostragem uniforme, sem sortear)
-            def gap(j):
-                pos = cls.index(j)
-                left = states[cls[pos - 1]]["index"] if pos > 0 else None
-                right = states[cls[pos + 1]]["index"] if pos < len(cls) - 1 else None
-                g = 10**9
-                if left is not None:
-                    g = min(g, states[j]["index"] - left)
-                if right is not None:
-                    g = min(g, right - states[j]["index"])
-                return g
-            kept.discard(min(cls, key=gap))
+        if not over():
+            return
+        cls = sorted((i for i in kept if cls_pred(states[i])),
+                     key=lambda i: states[i]["index"])
+        if not cls:
+            return
+        protected = set(cls if len(cls) <= 2 else [cls[0], cls[-1]]) if protect_ends else set()
+        alive = set(cls)
+        prev: dict[int, int] = {}
+        nxt: dict[int, int] = {}
+        for a, b in zip(cls, cls[1:]):
+            nxt[a] = b
+            prev[b] = a
+
+        def gap(j: int) -> int:
+            g = 10**9
+            if j in prev:
+                g = min(g, states[j]["index"] - states[prev[j]]["index"])
+            if j in nxt:
+                g = min(g, states[nxt[j]]["index"] - states[j]["index"])
+            return g
+
+        heap = [(gap(j), j) for j in cls if j not in protected]
+        heapq.heapify(heap)
+        while over() and heap and (len(alive) - len(protected)) > min_keep:
+            g, j = heapq.heappop(heap)
+            if j not in alive or gap(j) != g:
+                continue  # entrada obsoleta (vizinho removido mudou o vão)
+            alive.discard(j)
+            kept.discard(j)
+            p, x = prev.pop(j, None), nxt.pop(j, None)
+            if p is not None and x is not None:
+                nxt[p], prev[x] = x, p
+            elif p is not None:
+                nxt.pop(p, None)
+            elif x is not None:
+                prev.pop(x, None)
+            for nb in (p, x):
+                if nb is not None and nb in alive and nb not in protected:
+                    heapq.heappush(heap, (gap(nb), nb))
 
     thin(lambda s: s["kind"] == "caption" and s["words"] == "single",
          protect_ends=False, min_keep=0)
     thin(lambda s: s["kind"] == "scene", protect_ends=True, min_keep=2)
     thin(lambda s: s["kind"] == "caption" and s["words"] == "multi",
          protect_ends=False, min_keep=1)
-    # trava final: teto de imagens é limite duro da API, nunca pode sobrar estourado
+    # Trava final: o teto de imagens é limite duro da API. Só engata quando os PISOS
+    # dos thins (cena>=2, multi>=1) somam mais que max_images. Reconstrói DO ZERO por
+    # prioridade (frases completas primeiro) a partir de TODOS os estados: os thins
+    # podem ter derrubado multi pra respeitar piso de cena, e aqui a prioridade manda.
     if len(kept) > max_images:
-        ordered = sorted(kept, key=lambda i: states[i]["index"])
-        step = len(ordered) / max_images
-        kept = {ordered[int(i * step)] for i in range(max_images)}
+        preds = (lambda s: s["kind"] == "caption" and s["words"] == "multi",
+                 lambda s: s["kind"] == "scene",
+                 lambda s: s["kind"] == "caption" and s["words"] == "single")
+        new_kept: set[int] = set()
+        for pred in preds:
+            slots = max_images - len(new_kept)
+            if slots <= 0:
+                break
+            group = sorted((i for i in range(len(states)) if pred(states[i])),
+                           key=lambda i: states[i]["index"])
+            if len(group) <= slots:
+                new_kept.update(group)
+            else:
+                step = len(group) / slots
+                new_kept.update(group[int(i * step)] for i in range(slots))
+        # reforça o teto de CUSTO no conjunto reconstruído (canto raro; determinístico)
+        for pred in reversed(preds):
+            grp = sorted((i for i in new_kept if pred(states[i])),
+                         key=lambda i: states[i]["index"])
+            while grp and len(new_kept) > 1 and \
+                    base_cost + sum(img_costs[i] for i in new_kept) > max_cost:
+                new_kept.discard(grp.pop(len(grp) // 2))
+        kept = new_kept
     kept_sorted = sorted(kept, key=lambda i: states[i]["index"])
     dropped = sorted(set(range(len(states))) - kept, key=lambda i: states[i]["index"])
     return kept_sorted, dropped

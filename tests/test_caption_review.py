@@ -84,22 +84,22 @@ needs_media = pytest.mark.skipif(not (_has_ffmpeg and os.path.exists(FONT_PATH))
 VW, VH, VFPS = 360, 640, 12
 
 
-def _encode(frames_dir, out_path):
+def _encode(frames_dir, out_path, fps=VFPS):
     subprocess.run(
-        ["ffmpeg", "-y", "-framerate", str(VFPS), "-i",
+        ["ffmpeg", "-y", "-framerate", str(fps), "-i",
          os.path.join(frames_dir, "f_%04d.png"), "-c:v", "libx264",
          "-preset", "ultrafast", "-pix_fmt", "yuv420p", out_path],
         check=True, capture_output=True, timeout=120,
     )
 
 
-def _make_video(tmp_path, spec_fn, duration):
+def _make_video(tmp_path, spec_fn, duration, fps=VFPS):
     """spec_fn(t) -> (texto, y_frac, bg). Gera PNGs com PIL e codifica com ffmpeg."""
     fdir = tmp_path / "vframes"
     fdir.mkdir()
     font = ImageFont.truetype(FONT_PATH, 26)
-    for i in range(int(duration * VFPS)):
-        text, y_frac, bg = spec_fn(i / VFPS)
+    for i in range(int(duration * fps)):
+        text, y_frac, bg = spec_fn(i / fps)
         im = Image.new("RGB", (VW, VH), (bg, bg, bg))
         d = ImageDraw.Draw(im)
         y = int(VH * y_frac)
@@ -109,7 +109,7 @@ def _make_video(tmp_path, spec_fn, duration):
             y += 30
         im.save(fdir / f"f_{i:04d}.png")
     out = str(tmp_path / "video.mp4")
-    _encode(str(fdir), out)
+    _encode(str(fdir), out, fps=fps)
     return out
 
 
@@ -159,6 +159,19 @@ def test_prepare_frames_sem_legenda_degrada_pra_quadro_cheio(tmp_path, caplog):
     assert frames and all(f["kind"] == "scene" for f in frames)
     assert any("degradado" in r.message for r in caplog.records), \
         "modo degradado tem que ser LOGADO"
+
+
+@needs_media
+def test_prepare_frames_fonte_fps_baixo_nao_quebra(tmp_path):
+    """Regressão do -ss além do fim: fonte a 2fps faz a varredura de 8fps estender o
+    último frame além do último pts, e a busca full-res tem que RECUAR no tempo em
+    vez de morrer com FileNotFoundError (medido no ffmpeg 4.4.2)."""
+    video = _make_video(tmp_path, lambda t: ("TESTE FIM DE VIDEO", 0.70, 20),
+                        duration=5.0, fps=2)
+    frames = caption_reviewer.prepare_frames(video, str(tmp_path))
+    assert frames, "fonte de fps baixo tem que produzir ao menos 1 imagem"
+    for f in frames:
+        assert os.path.exists(f["path"])
 
 
 def test_read_frames_marca_legenda_e_cena(tmp_path, monkeypatch):

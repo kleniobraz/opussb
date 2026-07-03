@@ -118,9 +118,10 @@ def test_regression_inteligencia_captura_o_estado_final():
     captions = [s for s in states if s["kind"] == "caption"]
     assert captions, "nenhum estado de legenda emitido"
 
-    # janela em que a frase COMPLETA (com 'inteligencia') está na tela
-    full_ini = int(0.4 * (len(words) - 1) * FPS)
-    full_fim = int(clear_at * FPS)
+    # janela em que a frase COMPLETA (com 'inteligencia') está na tela:
+    # [1º frame >= aparição da última palavra, 1º frame >= limpeza)
+    full_ini = int(np.ceil(0.4 * (len(words) - 1) * FPS))
+    full_fim = int(np.ceil(clear_at * FPS))
     finals = [s for s in captions if full_ini <= s["index"] < full_fim]
     assert finals, (f"estado final da frase não capturado (janela {full_ini}-{full_fim}, "
                     f"emitidos {[s['index'] for s in captions]})")
@@ -141,7 +142,9 @@ def test_karaoke_cobre_todas_as_palavras():
     captions = [s for s in states if s["kind"] == "caption"]
     assert len(captions) >= len(words), f"esperava >= {len(words)} estados, veio {len(captions)}"
     for i, w in enumerate(words):
-        ini, fim = int(i * step * FPS), int((i + 1) * step * FPS)
+        # frames da palavra w: [1º frame >= i*step, 1º frame >= (i+1)*step)
+        ini = int(np.ceil(i * step * FPS))
+        fim = int(np.ceil((i + 1) * step * FPS))
         assert any(ini <= s["index"] < max(fim, ini + 1) for s in captions), \
             f"palavra '{w}' (frames {ini}-{fim}) sem estado emitido"
     assert all(s["words"] == "single" for s in captions), "karaokê tem que ser blocos de 1 palavra"
@@ -158,8 +161,8 @@ def test_legenda_no_topo_e_detectada():
     y0f, y1f, _ = band
     assert y0f <= 0.22 <= y1f, f"banda ({y0f:.2f}-{y1f:.2f}) não cobre a legenda no topo (0.22)"
     states = _band_states(stack, band)
-    full_ini = int(0.4 * (len(words) - 1) * FPS)
-    full_fim = int(clear_at * FPS)
+    full_ini = int(np.ceil(0.4 * (len(words) - 1) * FPS))
+    full_fim = int(np.ceil(clear_at * FPS))
     assert any(s["kind"] == "caption" and full_ini <= s["index"] < full_fim for s in states)
 
 
@@ -200,12 +203,15 @@ def test_classify_acumula_e_reseta():
 # ─── Custo e orçamento ────────────────────────────────────────────────────────
 
 def test_estimate_cost_bate_com_a_conta_manual():
-    dims = [(1440, 500), (720, 1280)]
-    got = cs.estimate_cost(dims, overhead_in=1000, marker_tokens=20, read_out=500,
-                           review_in=3000, review_out=500, price_in=3.0, price_out=15.0)
-    img = (1440 * 500) // 750 + 1 + (720 * 1280) // 750 + 1
-    manual = ((img + 1000 + 20 * 2 + 3000) * 3.0 + (500 + 500) * 15.0) / 1e6
-    assert got == pytest.approx(manual)
+    # Literais calculados NA MÃO (não re-derivados da mesma fórmula do código):
+    # 1440x500 = 720000 px -> 961 tokens; 720x1280 = 921600 px -> 1229 tokens.
+    assert cs.image_tokens(1440, 500) == 961
+    assert cs.image_tokens(720, 1280) == 1229
+    got = cs.estimate_cost([(1440, 500), (720, 1280)], overhead_in=1000,
+                           marker_tokens=20, read_out=500, review_in=3000,
+                           review_out=500, price_in=3.0, price_out=15.0)
+    # in = 961+1229+1000+40+3000 = 6230 tok * $3/M; out = 1000 tok * $15/M
+    assert got == pytest.approx(0.03369)
 
 
 def _fake_states(n_single: int, n_multi: int, n_scene: int):
@@ -246,3 +252,21 @@ def test_apply_budget_respeita_teto_de_imagens():
     assert len(kept) <= 20
     multi = [i for i, s in enumerate(states) if s["words"] == "multi"]
     assert all(i in kept for i in multi), "teto de imagens não pode derrubar frases completas"
+
+
+def test_apply_budget_trap_final_prioriza_frases():
+    """Teto de imagens ABAIXO dos pisos dos thins (cena>=2, multi>=1): o reamostrador
+    final tem que encher as vagas com as frases multi primeiro, nunca com cena."""
+    states, costs = _fake_states(80, 3, 4)
+    kept, _ = cs.apply_budget(states, costs, base_cost=0.0,
+                              max_cost=99.0, max_images=2)
+    assert len(kept) <= 2
+    assert all(states[i]["words"] == "multi" for i in kept), \
+        f"trap final encheu vaga com não-frase: {[states[i] for i in kept]}"
+
+
+def test_apply_budget_max_images_zero_nao_divide_por_zero():
+    states, costs = _fake_states(5, 2, 2)
+    kept, _ = cs.apply_budget(states, costs, base_cost=0.0,
+                              max_cost=99.0, max_images=0)  # misconfig de env
+    assert len(kept) == 1  # clampa pra 1, nunca ZeroDivisionError

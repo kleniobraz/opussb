@@ -187,19 +187,36 @@ def _iter_gray(paths: list[str]):
 
 
 def _fetch_frame(video_path: str, t: float, dst: str) -> None:
-    """Passada 2: busca UM frame em qualidade cheia no timestamp escolhido."""
-    _run_ffmpeg(["-ss", f"{max(t, 0.0):.3f}", "-i", video_path,
-                 "-frames:v", "1", "-q:v", "3", dst], "busca de frame")
+    """Passada 2: busca UM frame em qualidade cheia no timestamp escolhido.
+
+    Armadilha real: com fonte de fps menor que a varredura, o filtro fps estende o
+    último frame além do último pts da fonte, e `-ss` depois do último frame sai com
+    rc=0 SEM criar arquivo (medido no ffmpeg 4.4.2). Recua no tempo até materializar."""
+    tried = []
+    for tt in (t, t - 0.5, t - 1.5, 0.0):
+        tt = max(0.0, tt)
+        if tt in tried:
+            continue
+        tried.append(tt)
+        _run_ffmpeg(["-ss", f"{tt:.3f}", "-i", video_path,
+                     "-frames:v", "1", "-q:v", "3", dst], "busca de frame")
+        if os.path.exists(dst):
+            return
+    raise RuntimeError(f"busca de frame não materializou nada em t={t:.2f}s (tentado {tried})")
 
 
 def _video_dims(video_path: str) -> tuple[int, int]:
+    """Dimensões do vídeo pro estimador de custo. Ignora rotação (display matrix):
+    isso enviesa só a ESTIMATIVA; o crop real usa o frame decodificado, correto."""
     r = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
          "stream=width,height", "-of", "csv=p=0", video_path],
         capture_output=True, text=True, timeout=30,
     )
-    w, h = r.stdout.strip().split(",")[:2]
-    return int(w), int(h)
+    parts = r.stdout.strip().split(",") if r.returncode == 0 else []
+    if len(parts) < 2 or not parts[0].isdigit() or not parts[1].isdigit():
+        raise RuntimeError(f"ffprobe não devolveu dimensões (rc={r.returncode}, out={r.stdout!r})")
+    return int(parts[0]), int(parts[1])
 
 
 def _crop_upscale(src: str, dst: str, y0f: float, y1f: float) -> None:
@@ -211,8 +228,9 @@ def _crop_upscale(src: str, dst: str, y0f: float, y1f: float) -> None:
     bw, bh = band.size
     scale = min(config.CAPTION_REVIEW_CROP_UPSCALE,
                 config.CAPTION_REVIEW_CROP_MAX_LONG_EDGE / max(bw, bh))
-    if scale > 1:
-        band = band.resize((round(bw * scale), round(bh * scale)), Image.LANCZOS)
+    if abs(scale - 1) > 1e-3:  # amplia texto pequeno E reduz fonte 4K acima do teto
+        band = band.resize((max(1, round(bw * scale)), max(1, round(bh * scale))),
+                           Image.LANCZOS)
     band.convert("RGB").save(dst, "JPEG", quality=90)
 
 
@@ -280,7 +298,9 @@ def prepare_frames(video_path: str, work_dir: str) -> list[dict]:
             bh = max(2, int(y1f * vh) - int(y0f * vh))
             scale = min(config.CAPTION_REVIEW_CROP_UPSCALE,
                         config.CAPTION_REVIEW_CROP_MAX_LONG_EDGE / max(vw, bh))
-            return ((round(vw * scale), round(bh * scale)) if scale > 1 else (vw, bh))
+            if abs(scale - 1) > 1e-3:  # mesmo comportamento do _crop_upscale
+                return (max(1, round(vw * scale)), max(1, round(bh * scale)))
+            return (vw, bh)
         scale = config.CAPTION_REVIEW_SEND_LONG_EDGE / max(vw, vh)
         return ((round(vw * scale), round(vh * scale)) if scale < 1 else (vw, vh))
 
@@ -295,6 +315,15 @@ def prepare_frames(video_path: str, work_dir: str) -> list[dict]:
         states, img_costs, base_cost=base,
         max_cost=config.CAPTION_REVIEW_MAX_COST_USD,
         max_images=config.CAPTION_REVIEW_MAX_IMAGES)
+    if not kept:
+        # Teto configurado abaixo do custo mínimo de 1 imagem: revisão sem imagem
+        # seria pior que estourar centavos. Manda o estado mais informativo e loga.
+        best = next((i for i, s in enumerate(states)
+                     if s["kind"] == "caption" and s["words"] == "multi"),
+                    next((i for i, s in enumerate(states) if s["kind"] == "caption"), 0))
+        kept, dropped = [best], [i for i in range(len(states)) if i != best]
+        log.warning("[caption_review] teto US$ %.2f abaixo do custo mínimo de 1 imagem; "
+                    "enviando 1 mesmo assim", config.CAPTION_REVIEW_MAX_COST_USD)
     if dropped:
         log.warning("[caption_review] orçamento (US$ %.2f / %d imgs): descartados %d de %d "
                     "estados: %s", config.CAPTION_REVIEW_MAX_COST_USD,
