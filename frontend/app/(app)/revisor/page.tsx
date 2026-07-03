@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import * as api from "@/lib/api";
+import { fmtBytes } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import { useAuth } from "@/providers/auth-provider";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -39,6 +41,32 @@ const TIPO_COLOR: Record<string, { bg: string; fg: string }> = {
 };
 
 // ─── Aba Revisar ───────────────────────────────────────────────────────────
+
+// Limites do backend (app.py caption_review_create + config.py): a validação de verdade
+// é do servidor; aqui só recusamos cedo o óbvio pra não subir 500MB à toa.
+const ACCEPT_EXT = ["mp4", "mov", "avi", "mkv", "webm"];
+const MAX_REVIEW_BYTES = 500 * 1024 * 1024; // CAPTION_REVIEW_MAX_BYTES
+
+function extOk(name: string) {
+  const m = /\.([a-z0-9]+)$/i.exec(name || "");
+  return !!m && ACCEPT_EXT.includes(m[1].toLowerCase());
+}
+
+// Mesmo glifo do dropzone do upload principal (upload-console.tsx).
+const DropIcon = () => (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M20 16.5A4.5 4.5 0 0 0 17.5 8h-1.3A7 7 0 1 0 4 14.9" />
+    <polyline points="9 13 12 10 15 13" />
+    <line x1="12" y1="10" x2="12" y2="20" />
+  </svg>
+);
 
 function FindingRow({ f }: { f: CaptionReviewFinding }) {
   const c = TIPO_COLOR[f.tipo] ?? TIPO_COLOR.outro;
@@ -107,8 +135,32 @@ function ReviewReport({ rd }: { rd: CaptionReview }) {
 function ReviewPanel() {
   const qc = useQueryClient();
   const [file, setFile] = useState<File | null>(null);
+  const [fileMeta, setFileMeta] = useState<{ text: string; error: boolean }>({ text: "", error: false });
+  const [drag, setDrag] = useState(false);
   const [reviewId, setReviewId] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Espelho do pickFile do upload principal, com o teto de 500MB da revisão.
+  function pickFile(f: File | null) {
+    if (fileRef.current) fileRef.current.value = "";
+    if (!f) {
+      setFile(null);
+      setFileMeta({ text: "", error: false });
+      return;
+    }
+    if (!extOk(f.name)) {
+      setFile(null);
+      setFileMeta({ text: "Formato não suportado. Use mp4, mov, avi, mkv ou webm.", error: true });
+      return;
+    }
+    if (f.size > MAX_REVIEW_BYTES) {
+      setFile(null);
+      setFileMeta({ text: `Arquivo acima de 500 MB (${fmtBytes(f.size)}).`, error: true });
+      return;
+    }
+    setFile(f);
+    setFileMeta({ text: fmtBytes(f.size), error: false });
+  }
 
   const history = useQuery({ queryKey: ["caption-reviews"], queryFn: api.captionReviewList });
 
@@ -137,10 +189,9 @@ function ReviewPanel() {
     mutationFn: (f: File) => api.captionReviewCreate(f),
     onSuccess: (r) => {
       setReviewId(r.review_id);
-      setFile(null);
-      if (fileRef.current) fileRef.current.value = "";
+      pickFile(null);
       qc.invalidateQueries({ queryKey: ["caption-reviews"] });
-      toast.success("Vídeo enviado — revisando…");
+      toast.success("Vídeo enviado, revisando…");
     },
     onError: (e) => toast.error((e as Error)?.message || "Falha ao enviar o vídeo"),
   });
@@ -149,25 +200,71 @@ function ReviewPanel() {
 
   return (
     <div>
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+      <label
+        className={cn("dropzone", drag && "is-dragover")}
+        htmlFor="review-video-file"
+        onDragEnter={(e) => {
+          e.preventDefault();
+          setDrag(true);
+        }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDrag(true);
+        }}
+        onDragLeave={() => setDrag(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDrag(false);
+          pickFile(e.dataTransfer.files?.[0] ?? null);
+        }}
+      >
+        <span className="dropzone-icon" aria-hidden="true">
+          <DropIcon />
+        </span>
+        <span className="dropzone-title">
+          {file ? file.name : "Arraste o Reels aqui ou clique para enviar"}
+        </span>
+        <span className="dropzone-hint">MP4, MOV, AVI, MKV ou WEBM · até 500 MB · até 5 min</span>
+        {fileMeta.text && (
+          <span className={cn("dropzone-meta", fileMeta.error && "meta-error")}>{fileMeta.text}</span>
+        )}
+        {file && (
+          <span className="dropzone-hint">
+            Clique para trocar ou{" "}
+            <button
+              type="button"
+              className="cursor-pointer underline hover:text-[var(--ink)]"
+              onClick={(e) => {
+                e.preventDefault();
+                pickFile(null);
+              }}
+            >
+              remova o arquivo
+            </button>
+          </span>
+        )}
         <input
           ref={fileRef}
           type="file"
-          accept="video/*"
-          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-          className="text-sm text-[var(--ink-soft)]"
+          id="review-video-file"
+          accept=".mp4,.mov,.avi,.mkv,.webm"
+          onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
         />
-        <Button
-          variant="gold"
-          disabled={!file || create.isPending || active}
-          onClick={() => file && create.mutate(file)}
-        >
-          {create.isPending ? "Enviando…" : "Revisar legenda"}
-        </Button>
-      </div>
-      <p className="editor-hint mt-2">
-        Suba um Reels (mp4/mov/…). A leitura do texto queimado é feita por IA (Sonnet 5) e revisada
-        contra o glossário. O relatório é um guia — confira e corrija no Premiere.
+      </label>
+
+      <Button
+        variant="gold"
+        size="brand"
+        className="mt-4 w-full sm:w-auto"
+        disabled={!file || create.isPending || active}
+        onClick={() => file && create.mutate(file)}
+      >
+        {create.isPending ? "Enviando…" : "Revisar legenda"}
+      </Button>
+
+      <p className="editor-hint mt-3">
+        A leitura do texto queimado é feita por IA (Sonnet 5) e revisada contra o glossário. O
+        relatório é um guia: confira e corrija no Premiere.
       </p>
 
       {reviewId && rd && (
