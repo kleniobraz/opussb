@@ -1514,7 +1514,7 @@ autorizado) e do handoff de design do editor `055cf59` (mockup HTML + assets). E
    validar tela final num clipe REAL da Carbone; multi-apresentador (split); `reprocess`; ultralytics RCE;
    remover a SPA `static/` legada.
 
-## 42. Migracao pra Hostinger CONCLUIDA + estado atual (2026-07-02) [SUPERSEDE §41; executa o runbook §40]
+## 42. Migracao pra Hostinger CONCLUIDA + estado atual (2026-07-02→03) [SUPERSEDE §41; executa o runbook §40]
 
 Migracao executada em 2026-07-01→02, validando cada fase pelo IP antes do cutover de DNS. Producao saudavel
 na VPS nova (`/health` db:true, opussb + opussb-web + nginx + docker ativos, https://sbclips.space no ar).
@@ -1531,25 +1531,43 @@ A Hetzner deixou de ser fallback (decisao do dono); rollback por DNS nao existe 
   `certbot.timer` ativo com `renew_hook = systemctl reload nginx`. Zoho SSO no mesmo redirect URI.
 - **Cross-region agora e Brasil<->Alemanha:** RTT VPS->S3 (`fsn1`) **~183ms** medido (era ~90-100ms de
   Ashburn). Na queima de legenda o S3 e so ~17% do tempo (download 24,7MB/s apesar do RTT); o gargalo e o
-  ffmpeg (~83%), limitado por `BURN_FFMPEG_THREADS=2` (default, sem override no `.env`; calibrado pra 3 vCPU
-  — nesta box de 4 sobra ~1 nucleo ocioso na queima: user 74%/idle 25%/iowait 0, encode 2,1x tempo-real).
-  Proposta de subir pra 3 foi discutida e NAO aplicada (decisao pendente). `BURN_CONCURRENCY=1` mantido;
+  ffmpeg (~83%). **`BURN_FFMPEG_THREADS` subiu de 2 pra 3 no `.env` (2026-07-03**, backup
+  `.env.bak-burn3-20260703-002147`): ganho MEDIDO no mesmo clipe :7 = ffmpeg 47,4s -> 44,0s (**so -7%**, NAO
+  os 25-40% estimados — o encoder nao consome o 3o thread; o limitador real e o decode + filtro `subtitles`
+  do libass, SINGLE-THREAD, que alimenta o x264). Site 100% responsivo durante a queima (`/health` publico
+  p50 7ms / p95 12ms / 0 falhas; idle 19%). Threads do encoder ESGOTOU como alavanca; ganho grande na queima
+  = outra classe de mudanca (`BURN_CONCURRENCY=2`, agora comprovadamente seguro pro web, ou render so na
+  exportacao — §37 opcao 3). `BURN_CONCURRENCY=1` mantido por ora;
   `S3_KEY_PREFIX` de producao = vazio (o prefixo `teste/` da validacao foi revertido e os artefatos apagados).
 
 **LACUNAS da migracao (achadas na auditoria de 2026-07-02 — itens do §40-A/B que NAO vieram):**
-1. **Firewall ufw INATIVO** (o §40-B pedia so 80/443/SSH abertos). Mitigacao atual: N8N/bgutil so escutam em
-   127.0.0.1 e o Flask em 127.0.0.1+172.17.0.1. Ativar o ufw e pendencia de hardening.
-2. **`/root/.opussb_n8n_api_key` NAO foi transferida** — edicao do workflow N8N via API REST esta INOPERANTE
-   ate copiar/re-gerar a key (o editor web https://n8n.sbclips.space funciona normal).
+1. **Firewall ufw** — RESOLVIDA em 2026-07-03: ufw ativo + enabled no boot, `deny incoming`; allow SO
+   22/tcp, 80/tcp, 443/tcp e **`5001/tcp on docker0`** (regra ESSENCIAL descoberta na ativacao: o callback
+   do N8N pro Flask em `172.17.0.1:5001` entra pela chain INPUT via docker0 — sem ela o pipeline de jobs
+   quebraria silencioso). Ativado com anti-lockout (timer systemd de 5min, cancelado apos validacao);
+   validado: SSH novo, 443/80 publicos, n8n->gateway:5001, /health durante queima.
+2. **`/root/.opussb_n8n_api_key` NAO foi transferida** — edicao do workflow N8N via API REST INOPERANTE.
+   ADIADA conscientemente (2026-07-03): o editor web https://n8n.sbclips.space cobre a operacao. Re-gerar a
+   key se a automacao por API voltar a ser necessaria (ou exportar o workflow pelo editor web; ver a frente
+   nova de REMOVER o N8N abaixo, que muda o calculo desta lacuna).
 3. **Deploy key SSH do GitHub** — RESOLVIDA em 2026-07-02: chave nova `/root/.ssh/opussb_deploy` (ed25519,
    write access), remote de volta pra SSH (`git@github.com:kleniobraz/opussb.git`), known_hosts semeado da
    api.github.com/meta; `git ls-remote` ok. (Na migracao a chave NAO tinha sido gerada e o remote ficou em
    HTTPS sem credencial.)
-4. **`/opt/opussb/video/TELA FINAL CLUBCAST.mp4` (fonte local) NAO veio** — a copia do S3
-   (`assets/end_screens/clubcast.mp4`) EXISTE (verificado) e e a que o app usa; repor a fonte local depois.
+4. **`/opt/opussb/video/TELA FINAL CLUBCAST.mp4` (fonte local) NAO veio** — ADIADA conscientemente
+   (2026-07-03): a copia do S3 (`assets/end_screens/clubcast.mp4`) EXISTE (verificado) e e a que o app usa;
+   repor a fonte local quando for conveniente.
 5. `/opt/opussb_backups/` nao existe na VPS nova (era opcional; o historico ficou na Hetzner).
 
-**PROXIMOS PASSOS** (herda a §41, tirando a migracao que ja foi): 1. resolver as lacunas acima (firewall,
-n8n api key, asset local); 2. decidir BURN_FFMPEG_THREADS 2->3 (§37/§42); 3. pipeline de Podcast
-pra YouTube (§39); 4. karaoke por PALAVRA (FRONTEND §28); 5. pendencias antigas: tela final num clipe REAL da
-Carbone; multi-apresentador (split); `reprocess`; ultralytics RCE; remover a SPA `static/` legada.
+**FRENTE NOVA (2026-07-03, feedback do CTO Lucas): REMOVER o N8N do pipeline** — mover a orquestracao
+(trigger -> RunPod Whisper -> scoring Claude -> callback) pro proprio Flask, eliminando o container N8N e sua
+manutencao (encryption key, versao pinada, workflow editavel por API). E a PROXIMA GRANDE FRENTE.
+**PRE-REQUISITO antes de qualquer codigo: EXPORTAR o workflow do N8N** (JSON completo, pelo editor web ja que
+a API esta sem key — lacuna 2) e guarda-lo como backup/especificacao: ele e a fonte viva da orquestracao
+(nomes de nos, corpo das chamadas RunPod/Claude, formato do callback; regra 3 e N8N_WORKFLOW.md).
+
+**PROXIMOS PASSOS**: 1. **exportar o workflow do N8N e iniciar a frente de remocao do N8N** (acima);
+2. lacunas ADIADAS (n8n api key, asset local) quando voltarem a doer; 3. pipeline de Podcast
+pra YouTube (§39; a Parte 0 "Claude no Flask vs N8N" converge com a frente nova); 4. karaoke por PALAVRA
+(FRONTEND §28); 5. pendencias antigas: tela final num clipe REAL da Carbone; multi-apresentador (split);
+`reprocess`; ultralytics RCE; remover a SPA `static/` legada.
