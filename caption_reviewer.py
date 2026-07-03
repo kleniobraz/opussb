@@ -1,11 +1,23 @@
 """caption_reviewer.py — pipeline do Revisor de legendas (roda em daemon thread).
 
-Passos: extrai frames (ffmpeg) -> deduplica por diferença visual (método validado no
-teste de viabilidade) -> Sonnet 5 (visão) LÊ o texto queimado e reconstrói a legenda
-animada palavra-a-palavra -> Sonnet 5 (texto) REVISA contra o glossário + ortografia/
-gramática/pontuação/maiúsculas -> grava relatório + tokens/custo na linha e limpa a mídia.
+Arquitetura: DETECÇÃO separada de LEITURA. A detecção (caption_sampler) roda local
+na CPU, de graça, sobre uma varredura densa do vídeo: acha a faixa da legenda
+dinamicamente, segmenta em blocos de frase e escolhe o estado FINAL de cada bloco
+(a frase completa na tela). A leitura (Sonnet, cara) recebe só os frames escolhidos:
+estados de legenda como recorte AMPLIADO da faixa, cortes de cena como quadro
+inteiro. Teto de custo em US$ por revisão, corte por prioridade, descarte logado.
+
+Passos: varredura (ffmpeg thumbs) -> detecção (caption_sampler) -> busca dos frames
+escolhidos (ffmpeg) -> crop-e-amplia -> Sonnet 5 (visão) LÊ o texto queimado ->
+Sonnet 5 (texto) REVISA contra o glossário + ortografia/gramática/pontuação/
+maiúsculas -> grava relatório + tokens/custo na linha e limpa a mídia.
 
 A mídia é efêmera: vídeo + frames vivem em JOB_DIR/<review_id>/ e são apagados no fim.
+
+REFINO FUTURO (registrado, não construído — puxar SÓ se o recall medido pós-deploy
+ainda deixar escapar erro real): (1) pré-tratamento da faixa da legenda estilo OCR
+(contraste/binarização); (2) leitura cruzada do mesmo bloco em 2-3 frames com voto
+de maioria. Decisão do dono em 2026-07-03: não construir refino antes de medir.
 """
 from __future__ import annotations
 
@@ -20,6 +32,7 @@ import numpy as np
 from PIL import Image
 
 import anthropic_client
+import caption_sampler
 import config
 import db
 
@@ -43,6 +56,11 @@ _READ_SYSTEM = (
     "crescem ou são destacadas; às vezes há uma 'sombra'/prévia menor da mesma palavra). "
     "Frames consecutivos se sobrepõem. Reconstrua a fala como um texto CONTÍNUO, sem "
     "duplicar os fragmentos que se sobrepõem entre frames.\n\n"
+    "As imagens vêm em DOIS tipos, indicados no marcador de cada uma:\n"
+    "- LEGENDA: recorte AMPLIADO da faixa onde a legenda da fala vive. Cada recorte é o "
+    "estado final de uma frase (a frase completa na tela, antes de trocar). Estão em "
+    "ordem cronológica.\n"
+    "- CENA: o quadro inteiro (contexto, nomes, cargos, lower-thirds, marcas, slides).\n\n"
     "Separe o que você lê em duas coisas:\n"
     "- legenda_fala: a legenda da fala reconstruída (texto corrido).\n"
     "- graficos: qualquer OUTRO texto na tela — nomes, cargos/títulos, lower-thirds, "
@@ -54,9 +72,10 @@ _READ_SYSTEM = (
 )
 
 _READ_INSTR = (
-    "Acima estão {n} frames de UM vídeo vertical, em ordem cronológica. Leia todo o texto "
-    "queimado e devolva a legenda da fala reconstruída (legenda_fala) e a lista de textos "
-    "gráficos (graficos), seguindo as regras do sistema. Não corrija nada — só leia."
+    "Acima estão {n} imagens de UM vídeo vertical, em ordem cronológica (recortes de "
+    "LEGENDA e quadros de CENA, conforme os marcadores). Leia todo o texto queimado e "
+    "devolva a legenda da fala reconstruída (legenda_fala) e a lista de textos gráficos "
+    "(graficos), seguindo as regras do sistema. Não corrija nada — só leia."
 )
 
 _READ_SCHEMA = {
@@ -132,61 +151,59 @@ _REVIEW_SCHEMA = {
 }
 
 
-# ─── Extração + dedup de frames (método validado no teste de viabilidade) ─────
+# ─── Orquestração da amostragem (detecção pura em caption_sampler) ────────────
 
-def extract_frames(video_path: str, frames_dir: str) -> list[str]:
-    """Extrai frames a CAPTION_REVIEW_FPS. Retorna os caminhos ordenados."""
-    os.makedirs(frames_dir, exist_ok=True)
-    r = subprocess.run(
-        ["ffmpeg", "-y", "-i", video_path, "-vf", f"fps={config.CAPTION_REVIEW_FPS}",
-         "-q:v", "3", os.path.join(frames_dir, "f_%05d.jpg")],
-        capture_output=True, text=True, timeout=config.CAPTION_REVIEW_TIMEOUT,
-    )
+# Constantes do ESTIMADOR de custo (medidas em produção no e2e de 2026-07-03:
+# read_in=2167 com 1 frame de 1229 tokens -> overhead ~940; review_in=1770 num vídeo
+# curto). Margens folgadas de propósito: estimar pra cima nunca corta cobertura à toa
+# além do necessário, estimar pra baixo furaria o teto.
+_EST_OVERHEAD_IN = 1100     # system + instrução da chamada de leitura
+_EST_MARKER_TOKENS = 22     # marcador "=== LEGENDA t=Xs ===" por imagem
+_EST_READ_OUT = 700         # saída da leitura (medido 52-500)
+_EST_REVIEW_IN = 3000       # entrada da revisão (glossário + texto lido)
+_EST_REVIEW_OUT = 600       # saída da revisão
+
+
+def _run_ffmpeg(args: list[str], what: str) -> None:
+    r = subprocess.run(["ffmpeg", "-y", *args], capture_output=True, text=True,
+                       timeout=config.CAPTION_REVIEW_TIMEOUT)
     if r.returncode != 0:
-        raise RuntimeError(f"ffmpeg (frames) falhou: {r.stderr[-400:]}")
-    return sorted(os.path.join(frames_dir, f) for f in os.listdir(frames_dir) if f.endswith(".jpg"))
+        raise RuntimeError(f"ffmpeg ({what}) falhou: {r.stderr[-400:]}")
 
 
-def _signatures(path: str):
-    """Assinaturas cinza reduzidas: frame cheio + faixa da legenda (y 55%-92%)."""
-    im = Image.open(path).convert("L")
+def _scan_thumbs(video_path: str, scan_dir: str) -> list[str]:
+    """Passada 1: thumbnails em cinza a SCAN_FPS pra detecção local (barata)."""
+    os.makedirs(scan_dir, exist_ok=True)
+    vf = (f"fps={config.CAPTION_REVIEW_SCAN_FPS},"
+          f"scale={config.CAPTION_REVIEW_SCAN_WIDTH}:-2,format=gray")
+    _run_ffmpeg(["-i", video_path, "-vf", vf, "-q:v", "5",
+                 os.path.join(scan_dir, "s_%05d.jpg")], "varredura")
+    return sorted(os.path.join(scan_dir, f) for f in os.listdir(scan_dir) if f.endswith(".jpg"))
+
+
+def _iter_gray(paths: list[str]):
+    for p in paths:
+        yield np.asarray(Image.open(p).convert("L"), dtype=np.uint8)
+
+
+def _fetch_frame(video_path: str, t: float, dst: str) -> None:
+    """Passada 2: busca UM frame em qualidade cheia no timestamp escolhido."""
+    _run_ffmpeg(["-ss", f"{max(t, 0.0):.3f}", "-i", video_path,
+                 "-frames:v", "1", "-q:v", "3", dst], "busca de frame")
+
+
+def _crop_upscale(src: str, dst: str, y0f: float, y1f: float) -> None:
+    """Recorte-e-amplia: corta a faixa da legenda do frame cheio e AMPLIA (texto
+    grande lê melhor). LANCZOS, teto na borda longa."""
+    im = Image.open(src)
     w, h = im.size
-    full = np.asarray(im.resize((36, 64)), dtype=np.float32)
-    band = im.crop((0, int(h * 0.55), w, int(h * 0.92))).resize((72, 28))
-    return full, np.asarray(band, dtype=np.float32)
-
-
-def dedup_frames(paths: list[str], threshold: float | None = None) -> list[int]:
-    """Índices dos frames a MANTER: guarda um frame quando ele difere do último
-    mantido acima do threshold, olhando frame cheio E faixa da legenda (pega tanto
-    troca de cena quanto mudança só na legenda). Determinístico."""
-    if threshold is None:
-        threshold = config.CAPTION_REVIEW_DEDUP_THRESHOLD
-    kept: list[int] = []
-    last = None
-    for i, p in enumerate(paths):
-        fu, ba = _signatures(p)
-        if last is None:
-            diff = 1.0
-        else:
-            d_full = float(np.abs(fu - last[0]).mean()) / 255.0
-            d_band = float(np.abs(ba - last[1]).mean()) / 255.0
-            diff = max(d_full, d_band)
-        if diff > threshold:
-            kept.append(i)
-            last = (fu, ba)
-    return kept
-
-
-def _cap_frames(indices: list[int], max_frames: int) -> list[int]:
-    """Reamostra uniformemente se passar do teto, LOGANDO o descarte (nunca em silêncio)."""
-    if len(indices) <= max_frames:
-        return indices
-    step = len(indices) / max_frames
-    picked = [indices[int(i * step)] for i in range(max_frames)]
-    log.warning("[caption_review] %d frames deduplicados > teto %d; reamostrado p/ %d (descartados %d)",
-                len(indices), max_frames, len(picked), len(indices) - len(picked))
-    return picked
+    band = im.crop((0, int(y0f * h), w, int(y1f * h)))
+    bw, bh = band.size
+    scale = min(config.CAPTION_REVIEW_CROP_UPSCALE,
+                config.CAPTION_REVIEW_CROP_MAX_LONG_EDGE / max(bw, bh))
+    if scale > 1:
+        band = band.resize((round(bw * scale), round(bh * scale)), Image.LANCZOS)
+    band.convert("RGB").save(dst, "JPEG", quality=90)
 
 
 def _resize_for_send(src: str, dst: str, long_edge: int) -> None:
@@ -199,20 +216,93 @@ def _resize_for_send(src: str, dst: str, long_edge: int) -> None:
 
 
 def prepare_frames(video_path: str, work_dir: str) -> list[dict]:
-    """Extrai + deduplica + redimensiona. Retorna [{path, t}] pronto pro envio."""
-    frames_dir = os.path.join(work_dir, "frames")
+    """Varredura -> detecção -> busca -> crop-e-amplia -> orçamento.
+    Retorna [{path, t, kind}] pronto pro envio ('caption' = recorte da faixa,
+    'scene' = quadro inteiro)."""
+    scan_dir = os.path.join(work_dir, "scan")
     send_dir = os.path.join(work_dir, "send")
     os.makedirs(send_dir, exist_ok=True)
-    raw = extract_frames(video_path, frames_dir)
-    if not raw:
+    fps = config.CAPTION_REVIEW_SCAN_FPS
+
+    thumbs = _scan_thumbs(video_path, scan_dir)
+    if not thumbs:
         raise RuntimeError("nenhum frame extraído do vídeo")
-    kept = _cap_frames(dedup_frames(raw), config.CAPTION_REVIEW_MAX_FRAMES)
-    out = []
-    for idx, i in enumerate(kept, 1):
-        dst = os.path.join(send_dir, f"send_{idx:03d}.jpg")
-        _resize_for_send(raw[i], dst, config.CAPTION_REVIEW_SEND_LONG_EDGE)
-        out.append({"path": dst, "t": round(i / config.CAPTION_REVIEW_FPS, 2)})
-    return out
+    row_diffs, d_full, edges, n = caption_sampler.scan_profile(_iter_gray(thumbs))
+
+    band = None
+    if n >= 8:
+        band = caption_sampler.detect_band(
+            row_diffs, edges, d_full=d_full,
+            scene_threshold=config.CAPTION_REVIEW_SCENE_THRESHOLD,
+            score_floor=config.CAPTION_REVIEW_BAND_SCORE_FLOOR)
+
+    if band is not None:
+        y0f, y1f, score = band
+        log.info("[caption_review] banda da legenda: y=%.0f%%-%.0f%% (score %.1f)",
+                 y0f * 100, y1f * 100, score)
+        # segunda leitura dos thumbs, só a fatia da banda (RAM pequena)
+        first = np.asarray(Image.open(thumbs[0]).convert("L"))
+        th = first.shape[0]
+        band_stack = np.stack([a[int(y0f * th):max(int(y0f * th) + 2, int(y1f * th))]
+                               for a in _iter_gray(thumbs)])
+        states = caption_sampler.segment_states(
+            band_stack, d_full,
+            band_threshold=config.CAPTION_REVIEW_BAND_DIFF_THRESHOLD,
+            scene_threshold=config.CAPTION_REVIEW_SCENE_THRESHOLD,
+            min_scene_gap=max(1, int(0.5 * fps)))
+    else:
+        log.warning("[caption_review] banda da legenda NÃO detectada; modo degradado "
+                    "(frames cheios + reforço uniforme)")
+        states = caption_sampler.degrade_states(
+            d_full, scene_threshold=config.CAPTION_REVIEW_SCENE_THRESHOLD,
+            reinforce_every=max(1, int(config.CAPTION_REVIEW_DEGRADE_INTERVAL * fps)),
+            min_gap=max(1, int(0.5 * fps)))
+
+    if not states:  # vídeo estático sem texto: garante ao menos 1 quadro de contexto
+        states = [{"index": n - 1, "kind": "scene", "words": None}]
+
+    # Busca em qualidade cheia + materialização (crop ampliado ou quadro 1280)
+    out: list[dict] = []
+    for i, st in enumerate(states, 1):
+        t = round(st["index"] / fps, 2)
+        raw = os.path.join(send_dir, f"raw_{i:03d}.jpg")
+        dst = os.path.join(send_dir, f"send_{i:03d}.jpg")
+        _fetch_frame(video_path, t, raw)
+        if st["kind"] == "caption":
+            _crop_upscale(raw, dst, y0f, y1f)
+        else:
+            _resize_for_send(raw, dst, config.CAPTION_REVIEW_SEND_LONG_EDGE)
+        os.remove(raw)
+        with Image.open(dst) as im:
+            w, h = im.size
+        out.append({"path": dst, "t": t, "kind": st["kind"], "words": st["words"],
+                    "_dims": (w, h), "_state": st})
+
+    # Orçamento: teto em US$ + teto de imagens da API, corte por prioridade, logado.
+    price_in, price_out = config.CLAUDE_PRICING.get(config.CAPTION_REVIEW_MODEL, (3.0, 15.0))
+    base = caption_sampler.estimate_cost(
+        [], overhead_in=_EST_OVERHEAD_IN, marker_tokens=_EST_MARKER_TOKENS,
+        read_out=_EST_READ_OUT, review_in=_EST_REVIEW_IN, review_out=_EST_REVIEW_OUT,
+        price_in=price_in, price_out=price_out)
+    img_costs = [(caption_sampler.image_tokens(*o["_dims"]) + _EST_MARKER_TOKENS)
+                 * price_in / 1e6 for o in out]
+    kept, dropped = caption_sampler.apply_budget(
+        [o["_state"] for o in out], img_costs, base_cost=base,
+        max_cost=config.CAPTION_REVIEW_MAX_COST_USD,
+        max_images=config.CAPTION_REVIEW_MAX_IMAGES)
+    if dropped:
+        log.warning("[caption_review] orçamento (US$ %.2f / %d imgs): descartados %d de %d "
+                    "estados: %s", config.CAPTION_REVIEW_MAX_COST_USD,
+                    config.CAPTION_REVIEW_MAX_IMAGES, len(dropped), len(out),
+                    ", ".join(f"{out[i]['kind']}@{out[i]['t']}s" for i in dropped))
+        for i in dropped:
+            os.remove(out[i]["path"])
+    est = base + sum(img_costs[i] for i in kept)
+    log.info("[caption_review] %d imagens selecionadas (%d legenda, %d cena), custo "
+             "estimado US$ %.4f", len(kept),
+             sum(1 for i in kept if out[i]["kind"] == "caption"),
+             sum(1 for i in kept if out[i]["kind"] == "scene"), est)
+    return [{k: v for k, v in out[i].items() if not k.startswith("_")} for i in kept]
 
 
 # ─── Chamadas ao Claude ───────────────────────────────────────────────────────
@@ -221,7 +311,8 @@ def read_frames(frames: list[dict]) -> dict:
     """READ call (Sonnet visão): lê o texto queimado e reconstrói a legenda."""
     content = []
     for i, fr in enumerate(frames, 1):
-        content.append(anthropic_client.text_block(f"=== FRAME {i} (t={fr['t']}s) ==="))
+        kind = "LEGENDA" if fr.get("kind") == "caption" else "CENA"
+        content.append(anthropic_client.text_block(f"=== {kind} {i} (t={fr['t']}s) ==="))
         content.append(anthropic_client.image_block(fr["path"]))
     content.append(anthropic_client.text_block(_READ_INSTR.format(n=len(frames))))
     return anthropic_client.call(
@@ -272,7 +363,8 @@ def run_review(review_id: str, video_path: str) -> None:
         with _sem:
             db.update_caption_review(review_id, status="extracting", progress=15)
             frames = prepare_frames(video_path, work_dir)
-            log.info("[caption_review %s] %d frames após dedup", review_id, len(frames))
+            log.info("[caption_review %s] %d imagens após amostragem por mudança de legenda",
+                     review_id, len(frames))
 
             db.update_caption_review(review_id, status="reading", progress=40,
                                      frames_count=len(frames))

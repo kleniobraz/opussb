@@ -192,21 +192,52 @@ MAINTENANCE_ALLOWLIST_CONF: str = os.environ.get(
 # texto cortado). thinking desligado bate o custo medido (~$0,09-0,15/revisão).
 CAPTION_REVIEW_MODEL: str = os.environ.get("CAPTION_REVIEW_MODEL", "claude-sonnet-5")
 CAPTION_REVIEW_THINKING: str = os.environ.get("CAPTION_REVIEW_THINKING", "disabled")  # disabled|adaptive
-# Amostragem de frames: extrai a CAPTION_REVIEW_FPS e deduplica por diferença visual
-# (frame cheio + faixa da legenda), mantendo só quando muda acima do threshold. Método
-# validado no teste (2fps + thresh 0.09 -> ~30 frames num Reels de 39s).
-CAPTION_REVIEW_FPS: float = float(os.environ.get("CAPTION_REVIEW_FPS", "2"))
-CAPTION_REVIEW_DEDUP_THRESHOLD: float = float(os.environ.get("CAPTION_REVIEW_DEDUP_THRESHOLD", "0.09"))
-# Teto de frames enviados por revisão (controla custo). Se o dedup passar disso, os
-# frames são reamostrados uniformemente e o descarte é LOGADO (nunca truncado em silêncio).
-CAPTION_REVIEW_MAX_FRAMES: int = int(os.environ.get("CAPTION_REVIEW_MAX_FRAMES", "60"))
-# Borda longa (px) do frame enviado ao Claude. 1280 mantém legenda e lower-third legíveis
-# (validado) e segura o custo de tokens de imagem.
+# Amostragem por MUDANÇA DE LEGENDA (caption_sampler.py). Histórico: a 1ª versão
+# extraía a 2fps e deduplicava por diff visual com threshold 0.09; a validação da
+# época media VOLUME de frames (~30 num Reels de 39s), não cobertura de estados, e
+# 0.09 é 4-14x insensível a troca de legenda (palavra nova = diff 0.006-0.02) — na
+# prática era um detector de corte de cena e frases inteiras nunca eram lidas (caso
+# "inteligencia"). A versão atual varre denso e barato na CPU (thumbnails em cinza a
+# SCAN_FPS), detecta a faixa da legenda dinamicamente (vídeos de fora, posição
+# imprevisível), segmenta em blocos de frase (acumula vs reseta) e lê o estado FINAL
+# de cada bloco. Cobertura de estados validada por teste sintético (3 estilos de
+# legenda) + regression permanente do caso "inteligencia" em tests/test_caption_sampler.py.
+CAPTION_REVIEW_SCAN_FPS: float = float(os.environ.get("CAPTION_REVIEW_SCAN_FPS", "8"))
+# Largura (px) dos thumbnails da varredura; altura segue a proporção. 180 é o bastante
+# pra estatística de banda/blocos e mantém a varredura leve (RAM/CPU).
+CAPTION_REVIEW_SCAN_WIDTH: int = int(os.environ.get("CAPTION_REVIEW_SCAN_WIDTH", "180"))
+# Sensibilidade a mudança DENTRO da faixa da legenda (diff médio normalizado contra o
+# âncora do bloco). Palavra nova mede 0.006-0.02; 0.008 pega sem disparar em ruído.
+CAPTION_REVIEW_BAND_DIFF_THRESHOLD: float = float(os.environ.get("CAPTION_REVIEW_BAND_DIFF_THRESHOLD", "0.008"))
+# Detector de corte de cena (diff do quadro inteiro). É o antigo DEDUP_THRESHOLD
+# renomeado pro que ele sempre foi: cena troca mede ~0.68, legenda ~0.02.
+CAPTION_REVIEW_SCENE_THRESHOLD: float = float(os.environ.get("CAPTION_REVIEW_SCENE_THRESHOLD", "0.09"))
+# Piso de confiança da banda dinâmica (score de burstiness). Abaixo disso: modo
+# degradado (frames cheios + reforço uniforme), sempre LOGADO.
+CAPTION_REVIEW_BAND_SCORE_FLOOR: float = float(os.environ.get("CAPTION_REVIEW_BAND_SCORE_FLOOR", "4.0"))
+# Intervalo (s) do reforço uniforme no modo degradado.
+CAPTION_REVIEW_DEGRADE_INTERVAL: float = float(os.environ.get("CAPTION_REVIEW_DEGRADE_INTERVAL", "2.0"))
+# Recorte-e-amplia: o estado de legenda vai pro Claude como crop da faixa AMPLIADO
+# (texto grande lê melhor e custa menos token que o quadro inteiro). Fator de ampliação
+# e teto da borda longa (limite útil de resolução da API).
+CAPTION_REVIEW_CROP_UPSCALE: float = float(os.environ.get("CAPTION_REVIEW_CROP_UPSCALE", "2.0"))
+CAPTION_REVIEW_CROP_MAX_LONG_EDGE: int = int(os.environ.get("CAPTION_REVIEW_CROP_MAX_LONG_EDGE", "1568"))
+# Teto de CUSTO por revisão em US$ (substitui o antigo teto de 60 frames): o dono
+# priorizou qualidade sobre custo; 0.80 cobre o pior caso de 5min sem cortar cobertura
+# no caso típico (~$0.10-0.16). O corte é por prioridade (frases completas caem por
+# último) e todo descarte é LOGADO (nunca truncado em silêncio). Estimado na MESMA
+# tabela CLAUDE_PRICING do custo logado.
+CAPTION_REVIEW_MAX_COST_USD: float = float(os.environ.get("CAPTION_REVIEW_MAX_COST_USD", "0.80"))
+# Teto duro de imagens por chamada (limite da Messages API). Com $0.80 de teto, é ele
+# que morde primeiro em vídeos extremos.
+CAPTION_REVIEW_MAX_IMAGES: int = int(os.environ.get("CAPTION_REVIEW_MAX_IMAGES", "100"))
+# Borda longa (px) dos quadros de CENA enviados inteiros (contexto + textos gráficos).
+# 1280 mantém legenda e lower-third legíveis (validado) e segura o custo.
 CAPTION_REVIEW_SEND_LONG_EDGE: int = int(os.environ.get("CAPTION_REVIEW_SEND_LONG_EDGE", "1280"))
 # Reels são curtos; teto de duração protege custo e disco. Acima disso, recusa no upload.
 CAPTION_REVIEW_MAX_DURATION: int = int(os.environ.get("CAPTION_REVIEW_MAX_DURATION", "300"))
 CAPTION_REVIEW_MAX_BYTES: int = int(os.environ.get("CAPTION_REVIEW_MAX_BYTES", str(500 * 1024 * 1024)))
-# Teto do ffmpeg de extração de frames (s).
+# Teto (s) POR INVOCAÇÃO de ffmpeg (varredura densa e busca de frame cheio).
 CAPTION_REVIEW_TIMEOUT: int = int(os.environ.get("CAPTION_REVIEW_TIMEOUT", "180"))
 # Lane PRÓPRIA de concorrência, INDEPENDENTE de MAX_CONCURRENT_JOBS: uma revisão nunca
 # trava a geração de clipes (produto principal) e vice-versa. Também é o teto de revisões
