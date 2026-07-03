@@ -4,9 +4,12 @@
 import type {
   AdminCredits,
   AdminUser,
+  CaptionReview,
+  CaptionReviewSummary,
   Captions,
   CaptionStyle,
   Clip,
+  GlossaryTerm,
   CropKeyframe,
   CropKeyframes,
   EndScreenOption,
@@ -325,3 +328,35 @@ export const adminMaintenance = () =>
   );
 export const adminSetMaintenance = (on: boolean) =>
   postJson<{ ok?: boolean; on: boolean }>("/api/admin/maintenance", { on });
+
+// ── Revisor de legendas ────────────────────────────────────────────────────
+// Glossário: list/create/update p/ qualquer usuário ativo; delete só admin (403 no back).
+export const glossaryList = () => getJson<{ terms: GlossaryTerm[] }>("/api/glossary");
+export const glossaryCreate = (t: { term: string; category?: string; notes?: string }) =>
+  postJson<{ ok?: boolean; term: GlossaryTerm }>("/api/glossary", t);
+export const glossaryUpdate = (
+  id: string,
+  t: { term: string; category?: string; notes?: string },
+) =>
+  request("/api/glossary/" + encodeURIComponent(id), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(t),
+  }).then((r) => asJson<{ ok?: boolean; term: GlossaryTerm }>(r));
+export const glossaryDelete = (id: string) =>
+  request("/api/glossary/" + encodeURIComponent(id), { method: "DELETE" }).then((r) =>
+    asJson<{ ok?: boolean }>(r),
+  );
+
+// Revisão: sobe o vídeo (FormData), depois faz polling do status até done/error.
+export function captionReviewCreate(file: File): Promise<{ review_id: string }> {
+  const fd = new FormData();
+  fd.append("video", file);
+  return request("/api/caption-review", { method: "POST", body: fd }).then((r) =>
+    asJson<{ review_id: string }>(r),
+  );
+}
+export const captionReviewStatus = (id: string) =>
+  getJson<CaptionReview>("/api/caption-review/" + encodeURIComponent(id));
+export const captionReviewList = () =>
+  getJson<{ reviews: CaptionReviewSummary[] }>("/api/caption-review");

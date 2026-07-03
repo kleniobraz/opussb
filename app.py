@@ -8,6 +8,7 @@ import unicodedata
 import uuid
 import json
 import base64
+import sqlite3
 import secrets
 import logging
 import ipaddress
@@ -29,6 +30,7 @@ import db
 import s3_client
 import processor
 import captions
+import caption_reviewer
 
 # Logging pra stderr: print() no worker do gunicorn fica com buffer e some do
 # journalctl. Um handler próprio no logger "opussb" (sem propagar) garante log
@@ -61,6 +63,10 @@ app.config.update(
 # com 4 threads, então um lock de processo fecha a race de uploads simultâneos.
 _upload_lock = threading.Lock()
 
+# Serializa a admissão de revisões de legenda (check de vaga + reserva). Lane PRÓPRIA,
+# separada do _upload_lock: uma revisão nunca disputa o slot da geração de clipes.
+_review_lock = threading.Lock()
+
 # Limita probes simultâneos do yt-dlp (cada um é um subprocess de até 45s). Com 1 worker /
 # 4 threads, sem isto um usuário poderia prender as 4 threads em probes e travar TODAS as
 # rotas (login, status, /health). 2 deixa metade das threads livres pro resto do app.
@@ -74,6 +80,26 @@ db.init_clip_captions()
 db.init_clip_music()
 db.init_sessions()
 db.init_end_screens()
+db.init_glossary()
+db.init_caption_reviews()
+
+# Semeia o glossário do revisor de legendas (nomes canônicos de marcas/produtos/pessoas). A partir
+# daqui a fonte de verdade é a tabela glossary (o usuário adiciona/edita pelo sistema); ensure só
+# semeia se o termo ainda não existir. id = slug ascii estável do termo (idempotente no boot).
+_GLOSSARY_SEED = [
+    ("ONEVO Energia", "marca"), ("Carbone Educação", "marca"), ("Weevo", "marca"),
+    ("SeuBoné", "marca"), ("SeuBoné Personalizados", "produto"), ("Carbone Academy", "produto"),
+    ("Carbone Club", "produto"), ("Carbone Class", "produto"), ("Academy Class", "produto"),
+    ("Club Class", "produto"), ("MasterClass", "produto"), ("Igor Freire", "pessoa"),
+    ("Raí Firmo", "pessoa"), ("Tuanne Mariz", "pessoa"),
+]
+for _term, _cat in _GLOSSARY_SEED:
+    try:
+        _slug = re.sub(r"[^a-z0-9]+", "-",
+                       unicodedata.normalize("NFKD", _term).encode("ascii", "ignore").decode().lower()).strip("-")
+        db.ensure_glossary(_slug, _term, _cat)
+    except Exception as e:
+        log.warning("falha ao semear termo do glossário %s (%s)", _term, e)
 
 # Semeia a biblioteca de telas finais (config.END_SCREENS) no DB se ainda nao existir. A partir
 # daqui a fonte de verdade e o DB (o usuario sobe/troca/exclui pelo sistema); o config so semeia.
@@ -2462,6 +2488,171 @@ def end_screen_delete(es_id):
     except Exception as e:
         log.warning("[endscreen] falha ao limpar matched de %s: %s", es_id, e)
     return jsonify({"ok": True})
+
+
+# ─── Glossário do revisor de legendas ─────────────────────────────────────────
+# Biblioteca compartilhada de nomes canônicos (marcas/produtos/pessoas). Qualquer usuário
+# ativo adiciona/edita; só admin exclui. O glossário entra no prompt de revisão.
+
+@app.route("/api/glossary", methods=["GET"])
+@login_required
+def glossary_list():
+    return jsonify({"terms": db.list_glossary()})
+
+
+@app.route("/api/glossary", methods=["POST"])
+@login_required
+def glossary_create():
+    data = request.get_json(silent=True) or {}
+    term = (data.get("term") or "").strip()
+    if not term:
+        return jsonify({"error": "Informe o termo."}), 400
+    if len(term) > 120:
+        return jsonify({"error": "Termo longo demais (máx. 120)."}), 400
+    category = (data.get("category") or "").strip()[:40] or None
+    notes = (data.get("notes") or "").strip()[:500] or None
+    term_id = uuid.uuid4().hex[:12]
+    try:
+        db.add_glossary(term_id, term, category, notes, created_by=session["user"])
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "Esse termo já existe no glossário."}), 409
+    return jsonify({"ok": True, "term": db.get_glossary(term_id)}), 201
+
+
+@app.route("/api/glossary/<term_id>", methods=["PUT"])
+@login_required
+def glossary_update(term_id):
+    existing = db.get_glossary(term_id)
+    if not existing:
+        return jsonify({"error": "Termo não encontrado."}), 404
+    data = request.get_json(silent=True) or {}
+    term = (data.get("term") or "").strip()
+    if not term:
+        return jsonify({"error": "Informe o termo."}), 400
+    if len(term) > 120:
+        return jsonify({"error": "Termo longo demais (máx. 120)."}), 400
+    category = (data.get("category") or "").strip()[:40] or None
+    notes = (data.get("notes") or "").strip()[:500] or None
+    try:
+        db.add_glossary(term_id, term, category, notes, created_by=existing.get("created_by"))
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "Já existe outro termo com esse nome."}), 409
+    return jsonify({"ok": True, "term": db.get_glossary(term_id)})
+
+
+@app.route("/api/glossary/<term_id>", methods=["DELETE"])
+@admin_required
+def glossary_delete(term_id):
+    """Exclusão restrita a admin (o resto do CRUD é liberado a usuário ativo)."""
+    db.delete_glossary(term_id)
+    log.info("[glossary] termo %s excluído por %s", term_id, session.get("user"))
+    return jsonify({"ok": True})
+
+
+# ─── Revisor de legendas (upload -> frames -> leitura -> revisão -> relatório) ─
+# Job assíncrono em lane própria (CAPTION_REVIEW_CONCURRENCY), independente da fila de
+# clipes. Mídia efêmera: o pipeline apaga JOB_DIR/<id>/ no fim.
+
+def _probe_duration(path: str) -> float | None:
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, timeout=30)
+        return float(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+        return None
+
+
+@app.route("/api/caption-review", methods=["POST"])
+@login_required
+def caption_review_create():
+    user = db.get_user(session["user"])
+    if not user:
+        session.clear()
+        return jsonify({"error": "Sessão inválida.", "auth": False}), 401
+    if user["must_change_password"]:
+        return jsonify({"error": "Troque a senha do primeiro acesso antes de revisar."}), 403
+
+    file = request.files.get("video")
+    if not file or not file.filename or not _allowed(file.filename):
+        return jsonify({"error": "Arquivo inválido. Use mp4, mov, avi, mkv ou webm."}), 400
+
+    review_id = uuid.uuid4().hex
+    job_dir = os.path.join(config.JOB_DIR, review_id)
+    ext = os.path.splitext(file.filename)[1].lower()
+    local_path = os.path.join(job_dir, f"original{ext}")
+    try:
+        os.makedirs(job_dir, exist_ok=True)
+        file.save(local_path)
+    except Exception as e:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        log.warning("[caption_review] falha ao salvar upload: %s", e)
+        return jsonify({"error": "Falha ao salvar o vídeo."}), 500
+
+    # Valida tamanho + duração ANTES de reservar a vaga (não segura slot com lixo).
+    size = os.path.getsize(local_path)
+    if size < 1024 or size > config.CAPTION_REVIEW_MAX_BYTES:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        return jsonify({"error": "Arquivo vazio ou grande demais."}), 400
+    dur = _probe_duration(local_path)
+    if dur is None or dur <= 0:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        return jsonify({"error": "Não parece um vídeo válido."}), 400
+    if dur > config.CAPTION_REVIEW_MAX_DURATION:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        return jsonify({"error": f"Vídeo longo demais (máx. {config.CAPTION_REVIEW_MAX_DURATION}s)."}), 400
+
+    # Admissão atômica na lane de revisões (separada do _upload_lock dos clipes).
+    with _review_lock:
+        if db.count_active_caption_reviews() >= config.CAPTION_REVIEW_CONCURRENCY:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            return jsonify({
+                "error": "Já há revisões em andamento. Aguarde uma terminar antes de enviar outra :)"
+            }), 429
+        db.create_caption_review(review_id, file.filename, session["user"], duration=round(dur, 2))
+
+    threading.Thread(target=caption_reviewer.run_review, args=(review_id, local_path), daemon=True).start()
+    return jsonify({"review_id": review_id}), 202
+
+
+def _caption_review_payload(row: dict) -> dict:
+    """Monta a resposta de status/resultado a partir da linha do DB."""
+    resp = {
+        "id": row["id"], "status": row["status"], "progress": row["progress"],
+        "filename": row["filename"], "duration": row.get("duration"),
+        "frames_count": row.get("frames_count"), "cost_usd": row.get("cost_usd"),
+        "created_at": row.get("created_at"),
+    }
+    if row["status"] == "done":
+        resp["legenda_fala"] = row.get("legenda_fala") or ""
+        resp["graficos"] = json.loads(row.get("graficos_json") or "[]")
+        resp["findings"] = json.loads(row.get("report_json") or "[]")
+        resp["tokens"] = {
+            "read_in": row.get("read_in_tok"), "read_out": row.get("read_out_tok"),
+            "review_in": row.get("review_in_tok"), "review_out": row.get("review_out_tok"),
+        }
+    if row["status"] == "error":
+        resp["error"] = row.get("error")
+    return resp
+
+
+@app.route("/api/caption-review/<review_id>", methods=["GET"])
+@login_required
+def caption_review_status(review_id):
+    row = db.get_caption_review(review_id)
+    if not row:
+        return jsonify({"error": "Revisão não encontrada."}), 404
+    user = db.get_user(session["user"])
+    if row.get("user_email") != session["user"] and not (user and user.get("is_admin")):
+        return jsonify({"error": "Revisão não encontrada."}), 404
+    return jsonify(_caption_review_payload(row))
+
+
+@app.route("/api/caption-review", methods=["GET"])
+@login_required
+def caption_review_list():
+    return jsonify({"reviews": db.list_caption_reviews(session["user"])})
 
 
 # ─── Música de fundo do clipe (mixada na queima sob demanda) ──────────────────

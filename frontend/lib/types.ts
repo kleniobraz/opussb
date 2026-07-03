@@ -204,3 +204,68 @@ export interface UploadOptions {
   language?: string;
   captions?: boolean;
 }
+
+// ── Revisor de legendas ─────────────────────────────────────────────────────
+// Glossário editável de nomes canônicos (marcas/produtos/pessoas). Add/edit por
+// qualquer usuário ativo; DELETE só admin (regra no backend).
+export interface GlossaryTerm {
+  id: string;
+  term: string;
+  category?: string | null;
+  notes?: string | null;
+  created_by?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export type CaptionReviewStatus =
+  | "queued"
+  | "extracting"
+  | "reading"
+  | "reviewing"
+  | "done"
+  | "error";
+
+// Um achado da revisão (trecho lido + tipo do erro + sugestão).
+export interface CaptionReviewFinding {
+  trecho: string;
+  origem: "legenda" | "grafico" | string;
+  tipo: "ortografia" | "gramatica" | "marca" | "pontuacao" | "maiuscula" | "outro" | string;
+  sugestao: string;
+  explicacao: string;
+  confianca: number;
+}
+
+export interface CaptionReviewGraphic {
+  texto: string;
+  tipo?: string;
+}
+
+// Status/resultado de uma revisão (GET /api/caption-review/<id>).
+export interface CaptionReview {
+  id: string;
+  status: CaptionReviewStatus | string;
+  progress?: number;
+  filename?: string;
+  duration?: number | null;
+  frames_count?: number | null;
+  cost_usd?: number | null;
+  created_at?: string | null;
+  legenda_fala?: string;
+  graficos?: CaptionReviewGraphic[];
+  findings?: CaptionReviewFinding[];
+  tokens?: { read_in?: number; read_out?: number; review_in?: number; review_out?: number };
+  error?: string;
+}
+
+// Item do histórico (GET /api/caption-review).
+export interface CaptionReviewSummary {
+  id: string;
+  filename?: string;
+  status: string;
+  progress?: number;
+  frames_count?: number | null;
+  cost_usd?: number | null;
+  error?: string | null;
+  created_at?: string | null;
+}

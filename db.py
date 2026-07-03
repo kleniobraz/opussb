@@ -221,6 +221,159 @@ def delete_end_screen(es_id: str) -> None:
         conn.execute("DELETE FROM end_screens WHERE id = ?", (es_id,))
 
 
+# ─── Glossário do revisor de legendas ────────────────────────────────────────
+
+def init_glossary() -> None:
+    """Glossário editável de nomes canônicos (marcas/produtos/pessoas) usado pela revisão de
+    legendas. Biblioteca compartilhada: qualquer usuário ativo adiciona/edita; só admin exclui
+    (regra na rota). O índice UNIQUE em term (case-insensitive) barra duplicata acidental."""
+    with _conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS glossary (
+                id         TEXT PRIMARY KEY,
+                term       TEXT NOT NULL,
+                category   TEXT,
+                notes      TEXT,
+                created_by TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            )
+        """)
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_glossary_term ON glossary(term COLLATE NOCASE)"
+        )
+
+
+def list_glossary() -> list:
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT id, term, category, notes, created_by, created_at, updated_at "
+            "FROM glossary ORDER BY term COLLATE NOCASE"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_glossary(term_id: str) -> dict | None:
+    with _conn() as conn:
+        row = conn.execute("SELECT * FROM glossary WHERE id = ?", (term_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def add_glossary(term_id: str, term: str, category=None, notes=None, created_by=None) -> None:
+    """Insere/atualiza um termo (upsert por id). Pode levantar IntegrityError se `term`
+    colidir (case-insensitive) com outro id — a rota trata como 409."""
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO glossary (id, term, category, notes, created_by, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET term=excluded.term, category=excluded.category,
+                   notes=excluded.notes, updated_at=excluded.updated_at""",
+            (term_id, term, category, notes, created_by, _now(), _now()),
+        )
+
+
+def ensure_glossary(term_id: str, term: str, category=None, notes=None) -> None:
+    """Semeia um termo se ainda não existir (não sobrescreve edições do usuário)."""
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO glossary (id, term, category, notes, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING""",
+            (term_id, term, category, notes, _now(), _now()),
+        )
+
+
+def delete_glossary(term_id: str) -> None:
+    with _conn() as conn:
+        conn.execute("DELETE FROM glossary WHERE id = ?", (term_id,))
+
+
+# ─── Revisões de legenda (job assíncrono) ────────────────────────────────────
+
+def init_caption_reviews() -> None:
+    """Revisões de legenda: upload -> frames -> leitura (visão) -> revisão -> relatório. A
+    mídia é efêmera; a linha guarda status/progresso, o texto lido, o relatório e tokens/custo."""
+    with _conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS caption_reviews (
+                id             TEXT PRIMARY KEY,
+                user_email     TEXT,
+                filename       TEXT,
+                status         TEXT NOT NULL,
+                progress       INTEGER DEFAULT 0,
+                duration       REAL,
+                frames_count   INTEGER,
+                legenda_fala   TEXT,
+                graficos_json  TEXT,
+                report_json    TEXT,
+                read_in_tok    INTEGER,
+                read_out_tok   INTEGER,
+                review_in_tok  INTEGER,
+                review_out_tok INTEGER,
+                cost_usd       REAL,
+                error          TEXT,
+                created_at     TEXT,
+                updated_at     TEXT
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_caption_reviews_user ON caption_reviews(user_email, created_at)"
+        )
+
+
+def create_caption_review(review_id: str, filename: str, user_email: str, duration=None) -> None:
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO caption_reviews
+               (id, user_email, filename, status, progress, duration, created_at, updated_at)
+               VALUES (?, ?, ?, 'queued', 5, ?, ?, ?)""",
+            (review_id, user_email, filename, duration, _now(), _now()),
+        )
+
+
+def get_caption_review(review_id: str) -> dict | None:
+    with _conn() as conn:
+        row = conn.execute("SELECT * FROM caption_reviews WHERE id = ?", (review_id,)).fetchone()
+        return dict(row) if row else None
+
+
+# Whitelist das colunas atualizáveis: os nomes são interpolados no SQL (como update_job),
+# então só permitimos colunas conhecidas — nunca chaves vindas de fora.
+_CAPTION_REVIEW_UPDATABLE = {
+    "status", "progress", "duration", "frames_count", "legenda_fala", "graficos_json",
+    "report_json", "read_in_tok", "read_out_tok", "review_in_tok", "review_out_tok",
+    "cost_usd", "error",
+}
+
+
+def update_caption_review(review_id: str, **kwargs) -> None:
+    kwargs = {k: v for k, v in kwargs.items() if k in _CAPTION_REVIEW_UPDATABLE}
+    if not kwargs:
+        return
+    kwargs["updated_at"] = _now()
+    fields = ", ".join(f"{k} = ?" for k in kwargs)
+    values = list(kwargs.values()) + [review_id]
+    with _conn() as conn:
+        conn.execute(f"UPDATE caption_reviews SET {fields} WHERE id = ?", values)
+
+
+def list_caption_reviews(user_email: str, limit: int = 50) -> list:
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT id, filename, status, progress, frames_count, cost_usd, error, created_at "
+            "FROM caption_reviews WHERE user_email = ? ORDER BY created_at DESC LIMIT ?",
+            (user_email, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def count_active_caption_reviews() -> int:
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM caption_reviews WHERE status NOT IN ('done', 'error')"
+        ).fetchone()
+        return row[0]
+
+
 def init_sessions() -> None:
     """Sessões server-side (lista + revogação na página de Segurança). O cookie
     assinado guarda o id (uuid4); aqui fica a linha que o login_required valida a cada

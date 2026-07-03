@@ -16,6 +16,7 @@ function navItemsFor(isAdmin: boolean): NavItem[] {
   const base: NavItem[] = [
     { label: "Home", href: "/" },
     { label: "Projetos", href: "/projetos" },
+    { label: "Revisor de legenda", href: "/revisor" },
     { label: "Favoritos", href: "/favoritos" },
     { label: "Configurações", href: "/config" },
   ];

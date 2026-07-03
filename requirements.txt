@@ -6,6 +6,9 @@ ultralytics>=8.2
 opencv-python-headless>=4.10
 scipy>=1.13
 numpy>=1.26
+# Revisor de legendas: cliente Claude (leitura por visão + revisão) e PIL pro dedup dos frames.
+anthropic>=0.40
+pillow>=10
 pytest>=8.2
 pytest-mock>=3.14
 gunicorn>=22.0

@@ -184,3 +184,42 @@ MAINTENANCE_FLAG: str = os.environ.get("MAINTENANCE_FLAG", "/var/lib/opussb/main
 MAINTENANCE_ALLOWLIST_CONF: str = os.environ.get(
     "MAINTENANCE_ALLOWLIST_CONF", "/etc/nginx/conf.d/00-sb-maintenance.conf"
 )
+
+
+# ─── Revisor de legendas (leitura por visão + revisão via Claude) ────────────
+# Sonnet 5 nas DUAS chamadas: o teste de viabilidade provou que o Haiku "corrige"
+# o erro silenciosamente (inutiliza a revisão); o Sonnet lê fiel (acentos, typos,
+# texto cortado). thinking desligado bate o custo medido (~$0,09-0,15/revisão).
+CAPTION_REVIEW_MODEL: str = os.environ.get("CAPTION_REVIEW_MODEL", "claude-sonnet-5")
+CAPTION_REVIEW_THINKING: str = os.environ.get("CAPTION_REVIEW_THINKING", "disabled")  # disabled|adaptive
+# Amostragem de frames: extrai a CAPTION_REVIEW_FPS e deduplica por diferença visual
+# (frame cheio + faixa da legenda), mantendo só quando muda acima do threshold. Método
+# validado no teste (2fps + thresh 0.09 -> ~30 frames num Reels de 39s).
+CAPTION_REVIEW_FPS: float = float(os.environ.get("CAPTION_REVIEW_FPS", "2"))
+CAPTION_REVIEW_DEDUP_THRESHOLD: float = float(os.environ.get("CAPTION_REVIEW_DEDUP_THRESHOLD", "0.09"))
+# Teto de frames enviados por revisão (controla custo). Se o dedup passar disso, os
+# frames são reamostrados uniformemente e o descarte é LOGADO (nunca truncado em silêncio).
+CAPTION_REVIEW_MAX_FRAMES: int = int(os.environ.get("CAPTION_REVIEW_MAX_FRAMES", "60"))
+# Borda longa (px) do frame enviado ao Claude. 1280 mantém legenda e lower-third legíveis
+# (validado) e segura o custo de tokens de imagem.
+CAPTION_REVIEW_SEND_LONG_EDGE: int = int(os.environ.get("CAPTION_REVIEW_SEND_LONG_EDGE", "1280"))
+# Reels são curtos; teto de duração protege custo e disco. Acima disso, recusa no upload.
+CAPTION_REVIEW_MAX_DURATION: int = int(os.environ.get("CAPTION_REVIEW_MAX_DURATION", "300"))
+CAPTION_REVIEW_MAX_BYTES: int = int(os.environ.get("CAPTION_REVIEW_MAX_BYTES", str(500 * 1024 * 1024)))
+# Teto do ffmpeg de extração de frames (s).
+CAPTION_REVIEW_TIMEOUT: int = int(os.environ.get("CAPTION_REVIEW_TIMEOUT", "180"))
+# Lane PRÓPRIA de concorrência, INDEPENDENTE de MAX_CONCURRENT_JOBS: uma revisão nunca
+# trava a geração de clipes (produto principal) e vice-versa. Também é o teto de revisões
+# ativas admitidas (acima disso o upload responde 429).
+CAPTION_REVIEW_CONCURRENCY: int = int(os.environ.get("CAPTION_REVIEW_CONCURRENCY", "2"))
+
+# Preço por 1M de tokens (input, output) por modelo, pro custo logado por revisão. Default
+# = preço CHEIO do Sonnet 5 ($3/$15); hoje vale o introdutório ($2/$10) até 2026-08-31,
+# então o gasto REAL é menor até lá. Env-tunável se a Anthropic mudar a tabela.
+_sonnet_in = float(os.environ.get("CLAUDE_PRICE_SONNET5_IN", "3.0"))
+_sonnet_out = float(os.environ.get("CLAUDE_PRICE_SONNET5_OUT", "15.0"))
+CLAUDE_PRICING: dict = {
+    "claude-sonnet-5": (_sonnet_in, _sonnet_out),
+    "claude-haiku-4-5": (1.0, 5.0),
+    "claude-opus-4-8": (5.0, 25.0),
+}
