@@ -754,6 +754,109 @@ def admin_delete():
     return jsonify({"ok": True})
 
 
+# ─── Modo manutenção (flag file lido pelo nginx) — só admin ──────────────────
+# A EXISTÊNCIA de config.MAINTENANCE_FLAG é o interruptor: o nginx testa o
+# arquivo a cada request (if -f) e serve a tela 503 pra quem está fora da
+# allowlist de IP; /api e /health nunca são bloqueados (BACKEND §43). O botão do
+# painel (estas rotas) e o break-glass por SSH (`maintenance on|off`) operam o
+# MESMO arquivo — criar/remover tem efeito imediato, sem reload do nginx.
+
+def _maintenance_allowlist() -> list[str]:
+    """IPs/CIDRs liberados durante a manutenção, lidos do geo do nginx (a fonte de
+    verdade). Uso INFORMATIVO (anti-lockout no painel): qualquer falha vira lista
+    vazia — o aviso some, o interruptor continua funcionando. errors='replace'
+    porque a conf é editável à mão e um byte não-UTF-8 num comentário não pode
+    derrubar o GET (e, com ele, a aba Sistema inteira)."""
+    entries = []
+    try:
+        with open(config.MAINTENANCE_ALLOWLIST_CONF, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                m = re.match(r"\s*([0-9a-fA-F.:]+(?:/\d{1,3})?)\s+1\s*;", line)
+                if m:
+                    entries.append(m.group(1))
+    except OSError as e:
+        log.warning("manutenção: não li a allowlist do nginx (%s)", e)
+    return entries
+
+
+def _ip_in_allowlist(ip, entries) -> bool:
+    """True se ip cai em alguma entrada (IP ou CIDR, v4/v6) da allowlist do nginx.
+    Robusto a entrada malformada e a mistura de famílias (v4 vs v6)."""
+    if not ip:
+        return False
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    for e in entries:
+        try:
+            if addr in ipaddress.ip_network(e, strict=False):
+                return True
+        except (ValueError, TypeError):
+            continue
+    return False
+
+
+def _write_maintenance_flag(flag: str) -> None:
+    """Cria/atualiza o flag. O conteúdo é só auditoria (quem/quando); o nginx olha
+    a EXISTÊNCIA. Se o flag já existe com dono root (ex.: `sudo touch` ou break-glass
+    SSH), open('w') daria EACCES — então remove (o unlink só exige escrita no
+    DIRETÓRIO /var/lib/opussb, que é do www-data) e recria como www-data. Deixa o
+    LIGAR idempotente e à prova de flag root-owned."""
+    line = f"ligada por {session['user']} em {datetime.now(timezone.utc).isoformat()}\n"
+    try:
+        with open(flag, "w", encoding="utf-8") as fh:
+            fh.write(line)
+    except PermissionError:
+        os.unlink(flag)
+        with open(flag, "w", encoding="utf-8") as fh:
+            fh.write(line)
+
+
+@app.route("/api/admin/maintenance")
+@admin_required
+def admin_maintenance_state():
+    """Estado do modo manutenção + contexto anti-lockout (IP do admin e se ele
+    está na allowlist do nginx). Estado = existência do flag, então mudanças
+    feitas por fora (break-glass SSH, outro admin) aparecem aqui na hora."""
+    ip = _client_ip()
+    allow = _maintenance_allowlist()
+    return jsonify({
+        "on": os.path.exists(config.MAINTENANCE_FLAG),
+        "client_ip": ip,
+        "ip_allowed": _ip_in_allowlist(ip, allow),
+        "allowlist": allow,
+    })
+
+
+@app.route("/api/admin/maintenance", methods=["POST"])
+@admin_required
+def admin_maintenance_set():
+    """Liga/desliga criando/removendo o flag. Payload {"on": bool} é o estado
+    DESEJADO (idempotente), não um toggle — repetir o request não inverte. O
+    bool é ESTRITO de propósito: coerção tipo bool("false")=True ligaria a
+    manutenção ao tentar desligar."""
+    data = request.get_json(silent=True) or {}
+    want = data.get("on")
+    if not isinstance(want, bool):
+        return jsonify({"error": 'Corpo esperado: {"on": true|false}.'}), 400
+    flag = config.MAINTENANCE_FLAG
+    try:
+        if want:
+            _write_maintenance_flag(flag)
+        else:
+            try:
+                os.unlink(flag)
+            except FileNotFoundError:
+                pass  # já estava desligada — idempotente
+    except OSError as e:
+        log.error("manutenção: falha ao %s o flag %s (%s)", "criar" if want else "remover", flag, e)
+        return jsonify({"error": "Não consegui alterar o flag de manutenção no servidor."}), 500
+    log.info("admin %s %s o modo manutenção (ip %s)",
+             session["user"], "LIGOU" if want else "desligou", _client_ip())
+    return jsonify({"ok": True, "on": os.path.exists(flag)})
+
+
 # ─── Painel de saldos (créditos) — só admin ──────────────────────────────────
 _RUNPOD_GQL = "https://api.runpod.io/graphql"
 _CREDITS_TTL = 300  # cache de 5 min: não bater nas APIs externas a cada abertura do painel

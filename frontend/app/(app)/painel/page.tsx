@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -8,6 +8,8 @@ import * as api from "@/lib/api";
 import { useAuth } from "@/providers/auth-provider";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import type { AdminUser } from "@/lib/types";
 
 const STATUS_LABEL: Record<string, string> = {
@@ -299,6 +301,96 @@ function CreditsPanel() {
   );
 }
 
+
+function MaintenancePanel() {
+  const qc = useQueryClient();
+  const { data, isLoading, isError, refetch } = useQuery({
+    queryKey: ["admin-maintenance"],
+    queryFn: api.adminMaintenance,
+    // O flag também muda por fora (break-glass via SSH, outro admin): re-checa
+    // periodicamente pra o switch não mentir.
+    refetchInterval: 30_000,
+  });
+  // Congela a intenção (ligar/desligar) no clique. O `on` vivo muda por baixo do
+  // dialog aberto (refetch de 30s, foco da janela, outro admin, break-glass SSH)
+  // e inverteria a ação — o POST é estado-desejado idempotente, então basta o
+  // front preservar o alvo. null = dialog fechado.
+  const [target, setTarget] = useState<boolean | null>(null);
+  const setMaint = useMutation({
+    mutationFn: (on: boolean) => api.adminSetMaintenance(on),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["admin-maintenance"] });
+      toast.success(r.on ? "Modo manutenção LIGADO" : "Modo manutenção desligado");
+    },
+    onError: (e) => toast.error((e as Error)?.message || "Erro ao alterar o modo manutenção"),
+  });
+
+  // Só o primeiro load (sem cache) mostra skeleton/erro cheio; havendo dado em
+  // cache, mantém o switch de pé mesmo num refetch que falhe (ex.: durante o
+  // restart do gunicorn no deploy) — é quando mais se precisa do controle.
+  if (isLoading && !data) return <div className="skel" style={{ height: 120 }} />;
+  if (isError && !data)
+    return (
+      <div className="admin-list">
+        <p className="editor-hint">Não consegui carregar o estado da manutenção.</p>
+        <Button size="sm" variant="brandGhost" onClick={() => refetch()}>
+          Tentar de novo
+        </Button>
+      </div>
+    );
+
+  const on = !!data?.on;
+  const ipOk = !!data?.ip_allowed;
+  const ip = data?.client_ip || "desconhecido";
+  return (
+    <div className="admin-list">
+      <div className="admin-row">
+        <div className="admin-row-info">
+          <span className="admin-row-email">
+            Modo manutenção
+            {on && <span className="admin-tag">ligado</span>}
+          </span>
+          <span className="admin-row-meta">
+            {on
+              ? "Quem está fora da lista de IPs recebe 503 nas páginas E na API — o app fica inacessível durante a manutenção."
+              : "Site aberto pra todo mundo."}
+          </span>
+          <span className="admin-row-meta">
+            Seu IP: {ip} · {ipOk ? "liberado durante a manutenção" : "fora da lista de liberados"}
+          </span>
+        </div>
+        <div className="admin-row-actions">
+          <Switch
+            checked={on}
+            disabled={setMaint.isPending}
+            onCheckedChange={(next) => setTarget(next)}
+          />
+        </div>
+      </div>
+      <p className="credits-note">
+        A manutenção bloqueia as páginas e a /api de quem está fora da lista de IPs; só /health segue no ar.
+        Break-glass: se você estiver fora da lista, a própria API de admin fica bloqueada — o comando
+        “maintenance off” por SSH é o jeito de desligar.
+      </p>
+      <ConfirmDialog
+        open={target !== null}
+        onOpenChange={(v) => { if (!v) setTarget(null); }}
+        title={target ? "Ligar o modo manutenção?" : "Desligar o modo manutenção?"}
+        message={
+          target
+            ? (ipOk
+                ? `Quem está fora da lista de IPs passa a receber 503 nas páginas E na API imediatamente — ninguém grava no app durante a janela. Seu IP (${ip}) está liberado, você continua acessando normal.`
+                : `ATENÇÃO: seu IP (${ip}) NÃO está na lista de liberados. No modo hard a /api também é bloqueada — esta aba (inclusive este botão) para de funcionar no próximo request e só o break-glass por SSH (maintenance off) desliga. Libere seu IP no geo do nginx antes, ou ligue ciente disso.`)
+            : "O site volta a abrir pra todo mundo imediatamente."
+        }
+        okLabel={target ? "Ligar manutenção" : "Desligar"}
+        danger={!!target && !ipOk}
+        onConfirm={() => { if (target !== null) setMaint.mutate(target); }}
+      />
+    </div>
+  );
+}
+
 export default function PainelPage() {
   const router = useRouter();
   const { user } = useAuth();
@@ -330,6 +422,7 @@ export default function PainelPage() {
             <TabsTrigger value="pending">Pendentes</TabsTrigger>
             <TabsTrigger value="users">Usuários</TabsTrigger>
             <TabsTrigger value="credits">Saldos</TabsTrigger>
+            <TabsTrigger value="system">Sistema</TabsTrigger>
           </TabsList>
           <TabsContent value="pending">
             <section className="card-block">
@@ -350,6 +443,13 @@ export default function PainelPage() {
               <p className="eyebrow">Custos</p>
               <h2 className="results-title">Saldos de crédito</h2>
               <CreditsPanel />
+            </section>
+          </TabsContent>
+          <TabsContent value="system">
+            <section className="card-block">
+              <p className="eyebrow">Operação</p>
+              <h2 className="results-title">Modo manutenção</h2>
+              <MaintenancePanel />
             </section>
           </TabsContent>
         </Tabs>

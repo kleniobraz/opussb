@@ -319,3 +319,9 @@ export const adminSetAdmin = (email: string, is_admin: boolean) =>
   postJson<{ ok?: boolean }>("/api/admin/set_admin", { email, is_admin });
 export const adminDelete = (email: string) =>
   postJson<{ ok?: boolean }>("/api/admin/delete", { email });
+export const adminMaintenance = () =>
+  getJson<{ on: boolean; client_ip: string | null; ip_allowed: boolean; allowlist: string[] }>(
+    "/api/admin/maintenance",
+  );
+export const adminSetMaintenance = (on: boolean) =>
+  postJson<{ ok?: boolean; on: boolean }>("/api/admin/maintenance", { on });

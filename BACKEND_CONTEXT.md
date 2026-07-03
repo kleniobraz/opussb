@@ -1571,3 +1571,66 @@ a API esta sem key — lacuna 2) e guarda-lo como backup/especificacao: ele e a 
 pra YouTube (§39; a Parte 0 "Claude no Flask vs N8N" converge com a frente nova); 4. karaoke por PALAVRA
 (FRONTEND §28); 5. pendencias antigas: tela final num clipe REAL da Carbone; multi-apresentador (split);
 `reprocess`; ultralytics RCE; remover a SPA `static/` legada.
+
+## 43. Manutenção programada: tela 503 + botão no painel admin + break-glass SSH (2026-07-03) [front em FRONTEND §30]
+
+Tela de manutenção servida pelo **nginx** com HTTP **503**, ligada/desligada por um **flag file** (sem
+reload, sem restart — o nginx testa a existência a cada request com `if -f`). Três formas de operar o
+MESMO flag: **botão no painel admin** (Flask), **break-glass por SSH** (`maintenance on|off|status`), e
+edição manual do arquivo.
+
+**O flag:** `/var/lib/opussb/maintenance.on` (dono **www-data**). Vive em `/var/lib/opussb` (não em
+`/etc/nginx`) porque o Flask roda como www-data e precisa criar/remover; o nginx só LÊ. O conteúdo é só
+auditoria (quem/quando ligou); o que importa é a EXISTÊNCIA. `config.MAINTENANCE_FLAG` (env-tunável).
+
+**Allowlist de IP:** `geo $sb_ip_allowed` em `/etc/nginx/conf.d/00-sb-maintenance.conf` (é a **fonte de
+verdade**; IPs do dono: `177.89.14.174`, `206.42.63.129`). Sem CDN na frente → `$remote_addr` é o IP real.
+Adicionar/remover IP = editar lá + `nginx -t && systemctl reload nginx` (isso é allowlist, NÃO o liga/desliga).
+
+**Escopo HARD (decisão do dono 2026-07-03):** durante a manutenção, quem está fora da allowlist recebe 503
+tanto nas **páginas** (`location /`) quanto na **/api** — nenhuma escrita entra pelo app na janela. Pra isso
+o `location ~ ^/(api|health)` foi **dividido**: `location = /health` (prioridade máxima, NUNCA bloqueado —
+monitoramento sempre vê o app; `proxy_intercept_errors off` deixa até um /health "degraded" 503 do Flask
+passar como JSON, nunca a página) + `location ~ ^/api` (com `if ($sb_maint = "on") { return 503; }`). O
+`location ~ ^/api/(callback|internal)` (404) continua casando antes. O IP liberado tem `$sb_maint=""` e passa
+normal. A SPA legada `/static/` NÃO é gateada de propósito (sem /api ela não funciona mesmo).
+
+**Rotas Flask** (app.py, `@admin_required` — valida is_admin+status=active no DB a cada request):
+- `GET /api/admin/maintenance` → `{on, client_ip, ip_allowed, allowlist}`. Estado = existência do flag, então
+  mudanças por fora (break-glass, outro admin) aparecem na hora. `client_ip` via `_client_ip()` (None pra
+  loopback — acesso do próprio VPS mostra "desconhecido"; do browser real do dono vem certo). `ip_allowed`
+  via `_ip_in_allowlist()` com **`ipaddress`** (cobre IP exato, CIDR e IPv6). Parse do geo com `errors="replace"`
+  (byte não-UTF-8 num comentário não derruba o GET). Anti-lockout: informativo, nunca bloqueia o interruptor.
+- `POST /api/admin/maintenance {"on": bool}` → estado DESEJADO, idempotente (não é toggle). `bool` ESTRITO
+  (string não coage → 400). `_write_maintenance_flag()` é à prova de flag root-owned: se `open('w')` der EACCES
+  (flag criado por root/break-glass), faz `unlink`+recria (o unlink só exige escrita no diretório, que é do
+  www-data). Loga a ação (`log.info admin ... LIGOU/desligou ... ip`).
+
+**Break-glass** `/usr/local/bin/maintenance` (cópia **root:root 755** do `maintenance.sh` do repo — NUNCA
+symlink pro repo www-data, senão vira escalada www-data→root). `on` cria `/var/lib/opussb` se faltar
+(`install -d`, cobre DR/restore, já que o backup é só db+código) e cria o flag como www-data. `off` = `rm -f`.
+`status` mostra a auditoria. Instalação/atualização do script = re-`install` manual (deliberado).
+
+**Página** (`/var/www/sb-maintenance/sb_maintenance.html`): documento único **self-contained** (0 request
+externo). Identidade real do design system: fundo `#0a0a0b`, dourado `#f5c518` (+grad `#ffd75e→#e0a800`),
+fonte **Space Grotesk** embutida como woff2 `data:` (subset latin do `.next`, variável 300–700), marca
+(tesoura "Corte Viral") inline SVG, e um **fundo WebGL** (ondas douradas c/ aberração cromática, fallback pra
+glows CSS se o WebGL falhar; respeita `prefers-reduced-motion`). Texto exato: "Opa, estamos em manutenção
+programada! / Voltamos amanhã às 09:00 PT/BR :)". Servida via `error_page 503 /sb_maintenance.html` +
+`location = /sb_maintenance.html` internal; os headers de segurança (CSP com `script-src/style-src
+'unsafe-inline'` + `font-src data:`) são **re-declarados no location** (add_header no location cancela a
+herança) — por isso o script/fonte/estilo inline da página passam no CSP.
+
+**Deploy (2026-07-03):** backups em `/opt/opussb_backups/` (db via `.backup` online + tarball do código;
+**diretório criado neste deploy** — não existia na VPS Hostinger, era lacuna 5 da §42). Migração do flag SEM
+gap (`/etc/nginx/sb_maintenance.on` → `/var/lib/opussb/maintenance.on`): flag novo criado ligado ANTES do
+reload, antigo removido depois. `test_admin_maintenance` (test_backend.py) **30/30**; `tsc --noEmit` 0;
+`nginx -t` 0; E2E ponta-a-ponta OK (botão liga/desliga + break-glass no mesmo flag + /api hard + /health
+sempre 200). Diff passou por verificação adversarial (3 lentes) antes de aplicar. **Falhas pré-existentes
+(NÃO desta mudança, confirmado por git stash):** `test_backend.py` 1 fail `RERENDER_GPU_ENABLED default false`
+(o `.env` tem `=true`); `pytest tests/` 11 fails em `test_app.py` (suíte antiga desatualizada do sistema de
+login → 401).
+
+**Rollback:** desligar = `maintenance off` (ou `rm -f` o flag). Reverter o mecanismo = `git revert` do código +
+restaurar `/etc/nginx/sites-available/sbclips.space` do `.bak-maint-*` + `conf.d/00-sb-maintenance.conf` +
+`nginx -t && reload`. Backups do deploy em `/opt/opussb_backups/opussb-20260703-115925.db` e `code-*.tar.gz`.

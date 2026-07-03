@@ -835,3 +835,24 @@ Feature nova, pipeline PARALELO ao de clipes (nao mexe no editor 9:16). Backend 
   `aguardando_aprovacao`, `montando`).
 - **Reusa:** `UploadConsole`, os handles de trim, `useJobStatus`, o CRUD da biblioteca de telas finais, e
   `lib/api.ts` + `types.ts`. NAO toca o editor de clipe 9:16.
+
+## 30. Botao "Modo manutencao" no painel admin (2026-07-03) [backend BACKEND §43]
+
+Aba nova **"Sistema"** no painel admin (`app/(app)/painel/page.tsx`, componente local `MaintenancePanel`,
+padrao das outras abas). Liga/desliga a manutencao programada (a mesma tela 503 do nginx; BACKEND §43) sem SSH.
+
+- **Estado:** `useQuery(["admin-maintenance"], api.adminMaintenance)` com `refetchInterval: 30s` (o flag muda por
+  fora — break-glass SSH, outro admin — entao re-checa). Mutacao `api.adminSetMaintenance(on)` +
+  `invalidateQueries` + `toast` (sonner), no idiom das mutacoes de usuario.
+- **Switch + ConfirmDialog:** `Switch` (radix, controlado por `checked={on}`) abre um `ConfirmDialog`
+  (componente da casa) com confirmacao obrigatoria. **Anti-TOCTOU:** a intencao (ligar/desligar) e CONGELADA no
+  clique num `useState<boolean|null>` (`target`), nao lida do `on` vivo — senao um refetch/outro admin poderia
+  inverter a acao com o dialog aberto. O POST e estado-desejado idempotente, entao repetir e inocuo.
+- **Copy fiel ao HARD:** o texto deixa claro que a manutencao bloqueia paginas E `/api` de quem esta fora da
+  allowlist; so `/health` fica no ar. Aviso anti-lockout quando o IP do admin (`data.client_ip`,
+  `data.ip_allowed`) esta FORA da lista: no hard a propria API de admin cai, entao o plano B e o break-glass SSH
+  (`maintenance off`). Do browser real o IP aparece; do proprio VPS (loopback) vem "desconhecido".
+- **Resiliencia:** so o primeiro load (sem cache) mostra skeleton/erro cheio; havendo dado em cache, o switch
+  fica de pe mesmo num refetch que falhe (ex.: durante o restart do gunicorn no deploy) — botao "Tentar de novo".
+- **Gate de admin:** o backend valida todo `/api/admin/*` (a pagina ja tinha o gate client-side de UX). Helpers
+  novos em `lib/api.ts`: `adminMaintenance()` (GET) e `adminSetMaintenance(on)` (POST).
