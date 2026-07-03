@@ -192,6 +192,16 @@ def _fetch_frame(video_path: str, t: float, dst: str) -> None:
                  "-frames:v", "1", "-q:v", "3", dst], "busca de frame")
 
 
+def _video_dims(video_path: str) -> tuple[int, int]:
+    r = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "stream=width,height", "-of", "csv=p=0", video_path],
+        capture_output=True, text=True, timeout=30,
+    )
+    w, h = r.stdout.strip().split(",")[:2]
+    return int(w), int(h)
+
+
 def _crop_upscale(src: str, dst: str, y0f: float, y1f: float) -> None:
     """Recorte-e-amplia: corta a faixa da legenda do frame cheio e AMPLIA (texto
     grande lê melhor). LANCZOS, teto na borda longa."""
@@ -261,48 +271,57 @@ def prepare_frames(video_path: str, work_dir: str) -> list[dict]:
     if not states:  # vídeo estático sem texto: garante ao menos 1 quadro de contexto
         states = [{"index": n - 1, "kind": "scene", "words": None}]
 
-    # Busca em qualidade cheia + materialização (crop ampliado ou quadro 1280)
+    # Orçamento ANTES da busca (as dimensões são previsíveis pela banda x resolução;
+    # buscar full-res pra depois descartar desperdiçaria a passada 2 em vídeo extremo).
+    vw, vh = _video_dims(video_path)
+
+    def _pred_dims(st: dict) -> tuple[int, int]:
+        if st["kind"] == "caption":
+            bh = max(2, int(y1f * vh) - int(y0f * vh))
+            scale = min(config.CAPTION_REVIEW_CROP_UPSCALE,
+                        config.CAPTION_REVIEW_CROP_MAX_LONG_EDGE / max(vw, bh))
+            return ((round(vw * scale), round(bh * scale)) if scale > 1 else (vw, bh))
+        scale = config.CAPTION_REVIEW_SEND_LONG_EDGE / max(vw, vh)
+        return ((round(vw * scale), round(vh * scale)) if scale < 1 else (vw, vh))
+
+    price_in, price_out = config.CLAUDE_PRICING.get(config.CAPTION_REVIEW_MODEL, (3.0, 15.0))
+    base = caption_sampler.estimate_cost(
+        [], overhead_in=_EST_OVERHEAD_IN, marker_tokens=_EST_MARKER_TOKENS,
+        read_out=_EST_READ_OUT, review_in=_EST_REVIEW_IN, review_out=_EST_REVIEW_OUT,
+        price_in=price_in, price_out=price_out)
+    img_costs = [(caption_sampler.image_tokens(*_pred_dims(st)) + _EST_MARKER_TOKENS)
+                 * price_in / 1e6 for st in states]
+    kept, dropped = caption_sampler.apply_budget(
+        states, img_costs, base_cost=base,
+        max_cost=config.CAPTION_REVIEW_MAX_COST_USD,
+        max_images=config.CAPTION_REVIEW_MAX_IMAGES)
+    if dropped:
+        log.warning("[caption_review] orçamento (US$ %.2f / %d imgs): descartados %d de %d "
+                    "estados: %s", config.CAPTION_REVIEW_MAX_COST_USD,
+                    config.CAPTION_REVIEW_MAX_IMAGES, len(dropped), len(states),
+                    ", ".join(f"{states[i]['kind']}@{round(states[i]['index'] / fps, 2)}s"
+                              for i in dropped))
+    est = base + sum(img_costs[i] for i in kept)
+    log.info("[caption_review] %d imagens selecionadas (%d legenda, %d cena), custo "
+             "estimado US$ %.4f", len(kept),
+             sum(1 for i in kept if states[i]["kind"] == "caption"),
+             sum(1 for i in kept if states[i]["kind"] == "scene"), est)
+
+    # Busca em qualidade cheia + materialização SÓ do que sobreviveu ao orçamento
     out: list[dict] = []
-    for i, st in enumerate(states, 1):
+    for seq, i in enumerate(kept, 1):
+        st = states[i]
         t = round(st["index"] / fps, 2)
-        raw = os.path.join(send_dir, f"raw_{i:03d}.jpg")
-        dst = os.path.join(send_dir, f"send_{i:03d}.jpg")
+        raw = os.path.join(send_dir, f"raw_{seq:03d}.jpg")
+        dst = os.path.join(send_dir, f"send_{seq:03d}.jpg")
         _fetch_frame(video_path, t, raw)
         if st["kind"] == "caption":
             _crop_upscale(raw, dst, y0f, y1f)
         else:
             _resize_for_send(raw, dst, config.CAPTION_REVIEW_SEND_LONG_EDGE)
         os.remove(raw)
-        with Image.open(dst) as im:
-            w, h = im.size
-        out.append({"path": dst, "t": t, "kind": st["kind"], "words": st["words"],
-                    "_dims": (w, h), "_state": st})
-
-    # Orçamento: teto em US$ + teto de imagens da API, corte por prioridade, logado.
-    price_in, price_out = config.CLAUDE_PRICING.get(config.CAPTION_REVIEW_MODEL, (3.0, 15.0))
-    base = caption_sampler.estimate_cost(
-        [], overhead_in=_EST_OVERHEAD_IN, marker_tokens=_EST_MARKER_TOKENS,
-        read_out=_EST_READ_OUT, review_in=_EST_REVIEW_IN, review_out=_EST_REVIEW_OUT,
-        price_in=price_in, price_out=price_out)
-    img_costs = [(caption_sampler.image_tokens(*o["_dims"]) + _EST_MARKER_TOKENS)
-                 * price_in / 1e6 for o in out]
-    kept, dropped = caption_sampler.apply_budget(
-        [o["_state"] for o in out], img_costs, base_cost=base,
-        max_cost=config.CAPTION_REVIEW_MAX_COST_USD,
-        max_images=config.CAPTION_REVIEW_MAX_IMAGES)
-    if dropped:
-        log.warning("[caption_review] orçamento (US$ %.2f / %d imgs): descartados %d de %d "
-                    "estados: %s", config.CAPTION_REVIEW_MAX_COST_USD,
-                    config.CAPTION_REVIEW_MAX_IMAGES, len(dropped), len(out),
-                    ", ".join(f"{out[i]['kind']}@{out[i]['t']}s" for i in dropped))
-        for i in dropped:
-            os.remove(out[i]["path"])
-    est = base + sum(img_costs[i] for i in kept)
-    log.info("[caption_review] %d imagens selecionadas (%d legenda, %d cena), custo "
-             "estimado US$ %.4f", len(kept),
-             sum(1 for i in kept if out[i]["kind"] == "caption"),
-             sum(1 for i in kept if out[i]["kind"] == "scene"), est)
-    return [{k: v for k, v in out[i].items() if not k.startswith("_")} for i in kept]
+        out.append({"path": dst, "t": t, "kind": st["kind"], "words": st["words"]})
+    return out
 
 
 # ─── Chamadas ao Claude ───────────────────────────────────────────────────────
