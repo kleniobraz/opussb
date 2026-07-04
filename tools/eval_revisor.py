@@ -77,6 +77,10 @@ REPO = Path(__file__).resolve().parent.parent
 # relativo ao diretório do MÓDULO, que no worktree da master não tem banco).
 
 def _worker(repo: str, video: str, out_path: str) -> None:
+    # O load_dotenv() do config procura o .env a partir do diretório do MÓDULO
+    # (worktree temporário não tem .env); carrega o real explicitamente ANTES.
+    from dotenv import load_dotenv
+    load_dotenv(REPO / ".env")
     sys.path.insert(0, repo)
     logging.basicConfig(stream=sys.stderr, level=logging.INFO,
                         format="%(levelname)s %(message)s")
