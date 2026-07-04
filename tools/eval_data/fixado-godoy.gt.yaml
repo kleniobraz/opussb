@@ -1,0 +1,28 @@
+# Ground truth do caso ORIGINAL do bug de cobertura (camada 2, vídeo 1).
+# Review antiga no DB: 4164b944 (28 frames, US$ 0.1199, 1 finding).
+
+# Quando subir o vídeo, deixe o .mp4 nesta pasta com este nome exato
+# (ou me avise o caminho que eu ajusto esta linha).
+video: Fixado Godoy - O QUE FAZ A WEEVO.mp4
+
+descricao: caso original do acento; o codigo antigo perdeu "inteligencia" (cobertura)
+
+# Diff direto contra o relatório antigo guardado no DB.
+original_review_id: 4164b944be174f439f0fece80f956f23
+
+# OPCIONAL (Klenio): o texto FIEL da legenda queimada, palavra por palavra, do
+# jeito que aparece na tela (com os erros). Habilita a métrica de cobertura de
+# palavras, que é o diagnóstico do texto picado. Descomente e preencha:
+# texto_legenda: |
+#   ...
+
+erros:
+  - trecho: inteligencia          # sem acento na tela; o erro que o antigo PERDEU
+    correto: inteligência         # (nunca foi lido: caiu entre as amostras do dedup)
+    tipo: ortografia
+
+  - trecho: Vínicius Godoy        # acento na letra errada (Ví em vez de ní); lower-third
+    correto: Vinícius Godoy       # o antigo PEGOU este (único finding da review 4164b944)
+    tipo: ortografia
+
+# Falso positivo esperado: NENHUM. Todo finding fora desta lista conta como FP.
