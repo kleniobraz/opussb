@@ -174,6 +174,23 @@ def test_prepare_frames_fonte_fps_baixo_nao_quebra(tmp_path):
         assert os.path.exists(f["path"])
 
 
+def test_filtro_truncamento_derruba_borda_cortada_e_preserva_erro_real():
+    terms = ["ONEVO Energia", "Weevo", "Vinícius Godoy"]
+    findings = [
+        {"trecho": "NEVO ENERGIA", "sugestao": "ONEVO ENERGIA"},   # borda cortada -> cai
+        {"trecho": "Wevo", "sugestao": "Weevo"},                    # letra do MEIO -> fica
+        {"trecho": "Vínicius Godoy", "sugestao": "Vinícius Godoy"},  # acento errado -> fica
+        {"trecho": "inteligencia", "sugestao": "inteligência"},     # fala -> fica
+    ]
+    kept, dropped = caption_reviewer._filtra_truncamentos(findings, terms)
+    assert [f["trecho"] for f in dropped] == ["NEVO ENERGIA"]
+    assert [f["trecho"] for f in kept] == ["Wevo", "Vínicius Godoy", "inteligencia"]
+    # igual ao canônico não é truncamento (não é papel do filtro derrubar)
+    kept2, dropped2 = caption_reviewer._filtra_truncamentos(
+        [{"trecho": "Weevo", "sugestao": "Weevo"}], terms)
+    assert dropped2 == [] and len(kept2) == 1
+
+
 def test_read_frames_marca_legenda_e_cena(tmp_path, monkeypatch):
     p1, p2 = str(tmp_path / "a.jpg"), str(tmp_path / "b.jpg")
     Image.new("RGB", (64, 32), (0, 0, 0)).save(p1)

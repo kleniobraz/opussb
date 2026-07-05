@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -400,6 +401,24 @@ def _glossary_text() -> str:
     return "\n".join(lines)
 
 
+def _filtra_truncamentos(findings: list, terms: list[str]) -> tuple[list, list]:
+    """Garantia DETERMINÍSTICA contra corte de borda de recorte: finding cujo trecho
+    cabe INTEIRO dentro de um termo do glossário (substring própria, casefold) é
+    artefato de captura ('NEVO ENERGIA' lido de um 'ONEVO ENERGIA' cortado), não
+    erro. Instrução equivalente no prompt vaza quando o truncamento é a única
+    anomalia do vídeo (medido 3/3 no caso limpo da calibração de 2026-07-05); erro
+    real mexe DENTRO da palavra ('Wevo' não é substring de 'Weevo' e passa)."""
+    normed = [t.casefold() for t in terms]
+    kept, dropped = [], []
+    for f in findings:
+        tre = re.sub(r"\s+", " ", (f.get("trecho") or "").strip().casefold())
+        if tre and any(tre != t and tre in t for t in normed):
+            dropped.append(f)
+        else:
+            kept.append(f)
+    return kept, dropped
+
+
 def review_text(legenda_fala: str, graficos: list[dict]) -> dict:
     """REVIEW call (Sonnet texto): revisa a leitura contra o glossário + regras."""
     graf = "\n".join(f"- {g.get('texto', '')}" for g in graficos) or "(nenhum)"
@@ -409,12 +428,20 @@ def review_text(legenda_fala: str, graficos: list[dict]) -> dict:
         "TEXTOS GRÁFICOS (lidos do vídeo):\n" + graf + "\n\n"
         "Revise e devolva os achados (findings) seguindo as regras do sistema."
     )
-    return anthropic_client.call(
+    out = anthropic_client.call(
         config.CAPTION_REVIEW_MODEL, _REVIEW_SYSTEM,
         [anthropic_client.text_block(payload)],
         max_tokens=_REVIEW_MAX_TOKENS, thinking=config.CAPTION_REVIEW_THINKING,
         json_schema=_REVIEW_SCHEMA,
     )
+    if out.get("data") and out["data"].get("findings"):
+        terms = [t["term"] for t in db.list_glossary()]
+        kept, dropped = _filtra_truncamentos(out["data"]["findings"], terms)
+        if dropped:
+            log.info("[caption_review] filtro de truncamento descartou %d finding(s): %s",
+                     len(dropped), ", ".join(repr(f.get("trecho")) for f in dropped))
+        out["data"]["findings"] = kept
+    return out
 
 
 # ─── Orquestrador (daemon thread) ─────────────────────────────────────────────
