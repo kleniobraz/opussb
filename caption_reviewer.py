@@ -96,6 +96,14 @@ _READ_SCHEMA = {
     "additionalProperties": False,
 }
 
+# Calibrado em 2026-07-05 no banco Fixado Godoy (tools/eval_data): variante V6,
+# 6/6 nos dois erros conhecidos com FP 0/12 (glossário corrigido). As mudanças vs
+# o original: (1) caiu o gate de confiança 0.8 da fala, que suprimia erro real de
+# acentuação; (2) "não reporte" ficou ESCOPADO a artefato de captura; (3) revisão
+# em duas passadas independentes, porque um finding de glossário fazia o modelo
+# encerrar a busca e engolir o erro da fala (medido: 0/6 sem as passadas).
+# ATENÇÃO: nome de pessoa depende do GLOSSÁRIO estar certo; entrada errada lá
+# gera FP na direção do glossário (medido 3/3 com 'Vínicius' errado no dado).
 _REVIEW_SYSTEM = (
     "Você revisa legendas e textos queimados de vídeos sociais em português do Brasil. "
     "Você recebe (1) a legenda da fala lida do vídeo, (2) a lista de textos gráficos e "
@@ -105,9 +113,11 @@ _REVIEW_SYSTEM = (
     "LEGENDA DA FALA (origem 'legenda'): foi lida quadro a quadro de uma legenda ANIMADA "
     "palavra a palavra, então quase sempre vem picotada, com palavras repetidas ou frases "
     "incompletas. Isso é ARTEFATO DE CAPTURA, não é erro da tela. NUNCA reporte duplicação de "
-    "palavra, fragmento, corte, ordem estranha ou frase incompleta na fala. Só gere finding de "
-    "fala se houver um erro claro de ortografia ou acentuação numa palavra bem legível, e ainda "
-    "assim só com confianca alta (0.8 ou mais). Na dúvida, não reporte.\n\n"
+    "palavra, fragmento, corte, ordem estranha ou frase incompleta na fala. Um erro claro de "
+    "ortografia ou acentuação numa palavra da fala (ex.: palavra comum sem o acento obrigatório "
+    "do português) DEVE ser reportado como 'ortografia'. Reserve o não-reportar para o que pode "
+    "ser artefato de captura (fragmento, duplicação, corte), não para erro de grafia visível no "
+    "texto.\n\n"
     "MARCAS, PRODUTOS E PESSOAS (glossário): o glossário traz o nome CANÔNICO. Só é erro quando "
     "a GRAFIA ou a ACENTUAÇÃO na tela diverge do canônico (ex.: 'SeuBonê' quando o certo é "
     "'SeuBoné'; 'Onevo' sem acento se o canônico tiver; 'Wevo' quando o certo é 'Weevo'). O que "
@@ -122,7 +132,12 @@ _REVIEW_SYSTEM = (
     "Para cada achado devolva: trecho (o pedaço EXATO como foi lido), origem "
     "('legenda' ou 'grafico'), tipo ('ortografia'|'gramatica'|'marca'|'pontuacao'|'maiuscula'|"
     "'outro'), sugestao (o texto corrigido), explicacao (curtíssima) e confianca (0 a 1). "
-    "Se não houver erros, devolva findings vazio."
+    "Se não houver erros, devolva findings vazio.\n\n"
+    "Faça a revisão em DUAS PASSADAS independentes e devolva a soma: "
+    "PASSADA 1: só a LEGENDA DA FALA, palavra por palavra, procurando "
+    "ortografia e acentuação fora do padrão do português. "
+    "PASSADA 2: só os TEXTOS GRÁFICOS, contra o glossário e a ortografia. "
+    "Uma passada NUNCA substitui a outra: os findings das duas entram juntos."
 )
 
 _REVIEW_SCHEMA = {
