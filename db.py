@@ -69,6 +69,13 @@ def init_db() -> None:
         # (a marca so entra nos projetos que o usuario escolher; nao estampa cliente errado). Os
         # clipes herdam isto, com override por clipe em clip_captions.end_screen.
         _ensure_column(conn, "jobs", "end_screen", "TEXT")
+        # Tipo do job (BACKEND_CONTEXT §39): 'clips' = pipeline 9:16 de hoje, 'podcast' =
+        # pipeline 16:9 pra YouTube. O DEFAULT preenche os jobs existentes e todo INSERT
+        # do create_job (que não menciona a coluna), então o fluxo de clipes segue intacto.
+        _ensure_column(conn, "jobs", "job_type", "TEXT NOT NULL DEFAULT 'clips'")
+        # Vinheta escolhida pro job de podcast (id na futura biblioteca `vinhetas`, mesmo
+        # padrão do end_screen). NULL sempre em jobs de clipes.
+        _ensure_column(conn, "jobs", "vinheta_id", "TEXT")
         # Índices: list_jobs filtra por dono e ordena por created_at; count_active e
         # reap_stale filtram por status. Baratos e ajudam conforme o histórico cresce.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs(user_email, created_at)")

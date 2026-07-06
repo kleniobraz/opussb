@@ -12,6 +12,10 @@ os.environ.setdefault("N8N_WEBHOOK_URL", "http://localhost:5678/webhook/opussb")
 os.environ.setdefault("MAX_CONCURRENT_JOBS", "1")
 os.environ.setdefault("FLASK_PORT", "5001")
 os.environ.setdefault("JOB_DIR", "/tmp/test-opussb-jobs")
+# Worktree de staging tem S3_KEY_PREFIX=staging/ no .env; os testes assertam keys
+# cruas, então o pino garante suíte determinística em qualquer worktree (load_dotenv
+# não sobrescreve env já setada).
+os.environ.setdefault("S3_KEY_PREFIX", "")
 
 import pytest
 import importlib
