@@ -228,6 +228,57 @@ def delete_end_screen(es_id: str) -> None:
         conn.execute("DELETE FROM end_screens WHERE id = ?", (es_id,))
 
 
+# ─── Vinhetas (biblioteca do pipeline de podcast, §39) ───────────────────────
+
+def init_vinhetas() -> None:
+    """Espelho de end_screens pro podcast: a vinheta entra entre o gancho e o corpo.
+    s3_key aponta pro mp4 no S3 (assets/vinhetas/<id>.mp4); duration = duração do asset.
+    Sem seed do config: a biblioteca nasce vazia e o time sobe pelo sistema."""
+    with _conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS vinhetas (
+                id         TEXT PRIMARY KEY,
+                label      TEXT NOT NULL,
+                s3_key     TEXT NOT NULL,
+                duration   REAL,
+                created_at TEXT
+            )
+        """)
+
+
+def list_vinhetas() -> list:
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT id, label, s3_key, duration FROM vinhetas ORDER BY created_at, id"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_vinheta(v_id: str) -> dict | None:
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT id, label, s3_key, duration FROM vinhetas WHERE id = ?", (v_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def add_vinheta(v_id: str, label: str, s3_key: str, duration) -> None:
+    """Insere/atualiza uma vinheta na biblioteca (upsert por id)."""
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO vinhetas (id, label, s3_key, duration, created_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET label=excluded.label, s3_key=excluded.s3_key,
+                                             duration=excluded.duration""",
+            (v_id, label, s3_key, duration, _now()),
+        )
+
+
+def delete_vinheta(v_id: str) -> None:
+    with _conn() as conn:
+        conn.execute("DELETE FROM vinhetas WHERE id = ?", (v_id,))
+
+
 # ─── Glossário do revisor de legendas ────────────────────────────────────────
 
 def init_glossary() -> None:
@@ -510,6 +561,22 @@ def create_job(job_id: str, filename: str, min_duration: int, max_duration: int,
                VALUES (?, ?, 'queued', 5, ?, ?, ?, ?, ?, ?, ?)""",
             (job_id, filename, min_duration, max_duration, local_path, user_email,
              1 if captions else 0, _now(), _now()),
+        )
+
+
+def create_podcast_job(job_id: str, filename: str, local_path: str,
+                       user_email: str | None, vinheta_id: str) -> None:
+    """Entrada do pipeline de podcast (§39): o job nasce ESTACIONADO em 'uploaded',
+    status que count_active_jobs e reap_stale_jobs ignoram (não compete com a fila de
+    clipes nem é morto pelo watchdog; as próximas fases do pipeline é que o movem).
+    Sem min/max (não corta clipes) e captions=0 (o export 16:9 sai sem legenda)."""
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO jobs
+               (job_id, filename, status, progress, local_path, user_email,
+                job_type, vinheta_id, captions, created_at, updated_at)
+               VALUES (?, ?, 'uploaded', 0, ?, ?, 'podcast', ?, 0, ?, ?)""",
+            (job_id, filename, local_path, user_email, vinheta_id, _now(), _now()),
         )
 
 
@@ -831,9 +898,11 @@ def heartbeat_job(job_id: str, expected_status: str) -> None:
 
 
 def count_active_jobs() -> int:
+    # 'uploaded' = podcast estacionado sem pipeline rodando (§39): não ocupa a vaga de
+    # MAX_CONCURRENT_JOBS, senão um podcast parado travaria a fila de clipes com 429.
     with _conn() as conn:
         row = conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE status NOT IN ('done', 'error')"
+            "SELECT COUNT(*) FROM jobs WHERE status NOT IN ('done', 'error', 'uploaded')"
         ).fetchone()
         return row[0]
 
@@ -988,9 +1057,11 @@ def reap_stale_jobs(stale_minutes: int) -> int:
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=stale_minutes)).isoformat()
     msg = f"timeout: sem atualização há mais de {stale_minutes}min (callback do N8N perdido?)"
     with _conn() as conn:
+        # 'uploaded' fica de fora: podcast estacionado (§39) não é job preso, é espera
+        # legítima sem heartbeat; a expiração dele vem por TTL próprio (parte de retenção).
         cur = conn.execute(
             "UPDATE jobs SET status = 'error', error = ?, updated_at = ? "
-            "WHERE status NOT IN ('done', 'error') AND updated_at < ?",
+            "WHERE status NOT IN ('done', 'error', 'uploaded') AND updated_at < ?",
             (msg, _now(), cutoff),
         )
         return cur.rowcount

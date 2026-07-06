@@ -92,6 +92,17 @@ END_SCREEN_TIMEOUT: int = int(os.environ.get("END_SCREEN_TIMEOUT", "120"))  # te
 END_SCREEN_MAX_SECONDS: float = float(os.environ.get("END_SCREEN_MAX_SECONDS", "10"))  # teto da tela final
 END_SCREEN_MAX_BYTES: int = int(os.environ.get("END_SCREEN_MAX_BYTES", str(60 * 1024 * 1024)))  # upload
 
+# Pipeline de podcast 16:9 (BACKEND_CONTEXT §39). Master switch: com false as rotas
+# /api/vinhetas e /api/podcast respondem 404, então o código pode ser mergeado inerte
+# em produção e só liga quando o dono decidir (o staging liga no .env).
+PODCAST_ENABLED: bool = os.environ.get("PODCAST_ENABLED", "false").lower() in ("1", "true", "yes")
+VINHETA_PREFIX: str = "assets/vinhetas/"
+VINHETA_MAX_SECONDS: float = float(os.environ.get("VINHETA_MAX_SECONDS", "30"))
+VINHETA_MAX_BYTES: int = int(os.environ.get("VINHETA_MAX_BYTES", str(200 * 1024 * 1024)))
+# Teto do ffprobe que varre TODOS os pacotes do podcast no upload (detecção de VFR).
+# É só demux, sem decode (~30s pra 8GB medido); 600 cobre um 2h/20GB com folga.
+PODCAST_PROBE_TIMEOUT: int = int(os.environ.get("PODCAST_PROBE_TIMEOUT", "600"))
+
 # Sobra (handles) cortada de cada lado do clipe, em segundos. O clip_NN_base.mp4 passa a ser
 # a janela [start-H, end+H] (clamped ao vídeo) reenquadrada, e o editor abre/fecha o corte
 # dentro dessa sobra (ajuste fino quando a IA erra o ponto de corte). 0 desliga (corte exato,

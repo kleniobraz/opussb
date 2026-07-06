@@ -80,6 +80,7 @@ db.init_clip_captions()
 db.init_clip_music()
 db.init_sessions()
 db.init_end_screens()
+db.init_vinhetas()
 db.init_glossary()
 db.init_caption_reviews()
 
@@ -2490,6 +2491,100 @@ def end_screen_delete(es_id):
     return jsonify({"ok": True})
 
 
+# ─── Vinhetas (biblioteca do pipeline de podcast, §39) ────────────────────────
+
+def _vinheta_options():
+    """Biblioteca de vinhetas pro seletor do front (id + rótulo + duração). Lê do DB."""
+    return [{"id": v["id"], "label": v.get("label", v["id"]), "duration": v.get("duration")}
+            for v in db.list_vinhetas()]
+
+
+@app.route("/api/vinhetas")
+@login_required
+def vinhetas_list():
+    if not config.PODCAST_ENABLED:
+        return jsonify({"error": "Recurso indisponível."}), 404
+    return jsonify({"vinhetas": _vinheta_options()})
+
+
+@app.route("/api/vinhetas", methods=["POST"])
+@admin_required
+def vinheta_upload():
+    """Sobe uma vinheta (multipart 'file') pra biblioteca do podcast. Espelha o upload de
+    end_screens; o gate diverge de propósito (admin_required): vinheta é ativo de marca,
+    curadoria fica com o admin."""
+    if not config.PODCAST_ENABLED:
+        return jsonify({"error": "Recurso indisponível."}), 404
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"error": "Envie um arquivo de vídeo (campo 'file')."}), 400
+    if os.path.splitext(f.filename)[1].lower() not in (".mp4", ".mov", ".m4v"):
+        return jsonify({"error": "Formato inválido. Envie um .mp4."}), 400
+    label = (request.form.get("label") or os.path.splitext(f.filename)[0]).strip()[:60] or "Vinheta"
+    tmp = None
+    try:
+        tmp = tempfile.mkdtemp(prefix="vin_up_")
+        local = os.path.join(tmp, "src" + os.path.splitext(f.filename)[1].lower())
+        f.save(local)
+        size = os.path.getsize(local)
+        if size < 1024 or size > config.VINHETA_MAX_BYTES:
+            return jsonify({"error": "Arquivo vazio ou grande demais."}), 400
+        pr = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                             "stream=codec_type:format=duration", "-of", "default=nk=1:nw=1", local],
+                            capture_output=True, text=True, timeout=30)
+        parts = pr.stdout.split()
+        if pr.returncode != 0 or "video" not in pr.stdout:
+            return jsonify({"error": "O arquivo não parece um vídeo válido."}), 400
+        try:
+            dur = float(parts[-1])
+        except (ValueError, IndexError):
+            return jsonify({"error": "Não consegui ler a duração do vídeo."}), 400
+        if dur <= 0 or dur > config.VINHETA_MAX_SECONDS + 0.5:
+            return jsonify({"error": f"A vinheta pode ter no máximo {config.VINHETA_MAX_SECONDS:g}s."}), 400
+        v_id = uuid.uuid4().hex[:12]
+        key = config.VINHETA_PREFIX + v_id + ".mp4"
+        # normaliza pra h264/aac yuv420p (mesma receita das telas finais). O casamento fino
+        # com os params do podcast acontece na montagem, que re-encoda a vinheta de novo;
+        # vinheta sem áudio segue sem áudio aqui (o anullsrc entra na montagem).
+        out = os.path.join(tmp, "vin.mp4")
+        r = subprocess.run(["ffmpeg", "-y", "-i", local, "-c:v", "libx264", "-preset", "veryfast",
+                            "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart",
+                            "-threads", str(config.BURN_FFMPEG_THREADS), out],
+                           capture_output=True, text=True, timeout=config.END_SCREEN_TIMEOUT,
+                           preexec_fn=lambda: os.nice(config.BURN_NICE))
+        if r.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) < 1024:
+            log.warning("[vinheta] normalizar upload falhou: %s", r.stderr[-300:])
+            return jsonify({"error": "Falha ao processar o vídeo."}), 400
+        s3_client.upload_file(out, key)
+        db.add_vinheta(v_id, label, key, round(dur, 3))
+        return jsonify({"ok": True, "vinheta": {"id": v_id, "label": label, "duration": round(dur, 3)}})
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "O vídeo demorou demais pra processar."}), 400
+    except Exception as e:
+        log.warning("[vinheta] upload falhou: %s", e)
+        return jsonify({"error": "Falha no upload."}), 500
+    finally:
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+@app.route("/api/vinhetas/<v_id>", methods=["DELETE"])
+@admin_required
+def vinheta_delete(v_id):
+    """Remove uma vinheta da biblioteca (DB + asset no S3). Jobs que a referenciavam
+    degradam pra 'sem vinheta' (id inexistente é ignorado na montagem). Idempotente."""
+    if not config.PODCAST_ENABLED:
+        return jsonify({"error": "Recurso indisponível."}), 404
+    v = db.get_vinheta(v_id)
+    db.delete_vinheta(v_id)
+    if v and v.get("s3_key"):
+        try:
+            s3_client.delete_object(v["s3_key"])
+        except Exception as e:
+            log.warning("[vinheta] falha ao apagar asset %s: %s", v["s3_key"], e)
+    return jsonify({"ok": True})
+
+
 # ─── Glossário do revisor de legendas ─────────────────────────────────────────
 # Biblioteca compartilhada de nomes canônicos (marcas/produtos/pessoas). Qualquer usuário
 # ativo adiciona/edita; só admin exclui. O glossário entra no prompt de revisão.
@@ -2929,6 +3024,117 @@ def upload():
     threading.Thread(target=processor.run_thread1, args=(job_id,), daemon=True).start()
 
     return jsonify({"job_id": job_id}), 202
+
+
+# ─── Upload de podcast 16:9 (§39: só a ENTRADA; transcrição/gancho nas próximas partes) ─
+
+def _probe_podcast_video(path: str):
+    """(width, height, dar) do primeiro stream de vídeo, com SAR aplicado, ou None se
+    o arquivo não tiver vídeo legível."""
+    pr = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                         "stream=width,height,sample_aspect_ratio", "-of", "json", path],
+                        capture_output=True, text=True, timeout=60)
+    if pr.returncode != 0:
+        return None
+    try:
+        st = json.loads(pr.stdout)["streams"][0]
+        w, h = int(st["width"]), int(st["height"])
+        sar_n, sar_d = 1, 1
+        sar = st.get("sample_aspect_ratio") or ""
+        if ":" in sar:
+            a, b = sar.split(":", 1)
+            if int(a) > 0 and int(b) > 0:
+                sar_n, sar_d = int(a), int(b)
+        return w, h, (w * sar_n) / (h * sar_d)
+    except (KeyError, IndexError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _podcast_is_cfr(path: str) -> bool:
+    """Detecção de VFR validada empiricamente (§39): histograma dos deltas de DTS de TODOS
+    os pacotes de vídeo (só demux, sem decode: ~30s pra 8GB). CFR = um único delta cobre
+    >=99,9% dos pacotes e não há delta não-positivo. Propaga TimeoutExpired pro caller."""
+    pr = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                         "-show_entries", "packet=dts", "-of", "csv=p=0", path],
+                        capture_output=True, text=True, timeout=config.PODCAST_PROBE_TIMEOUT)
+    if pr.returncode != 0:
+        return False
+    deltas = {}
+    prev = None
+    for tok in pr.stdout.split():
+        try:
+            dts = int(tok)
+        except ValueError:
+            continue
+        if prev is not None:
+            d = dts - prev
+            deltas[d] = deltas.get(d, 0) + 1
+        prev = dts
+    total = sum(deltas.values())
+    if not total:
+        return False
+    return max(deltas.values()) / total >= 0.999 and min(deltas) > 0
+
+
+@app.route("/api/podcast/upload", methods=["POST"])
+@login_required
+def podcast_upload():
+    """Entrada do pipeline de podcast: valida 16:9 + frame rate constante e ESTACIONA o
+    job ('uploaded', job_type='podcast'), sem disparar transcrição. Diferente do upload
+    de clipes, valida ANTES de criar a linha (rejeição não deixa job nem arquivo órfão)
+    e não passa pela admissão de MAX_CONCURRENT_JOBS (job parado não compete com a fila)."""
+    if not config.PODCAST_ENABLED:
+        return jsonify({"error": "Recurso indisponível."}), 404
+    user = db.get_user(session["user"])
+    if not user:
+        session.clear()
+        return jsonify({"error": "Sessão inválida.", "auth": False}), 401
+    if user["must_change_password"]:
+        return jsonify({"error": "Troque a senha do primeiro acesso antes de processar vídeos."}), 403
+
+    file = request.files.get("video")
+    if not file or not file.filename or not _allowed(file.filename):
+        return jsonify({"error": "Arquivo inválido. Use mp4, mov, avi, mkv ou webm."}), 400
+    vinheta_id = (request.form.get("vinheta_id") or "").strip()
+    if not vinheta_id or not db.get_vinheta(vinheta_id):
+        return jsonify({"error": "Escolha uma vinheta válida da biblioteca."}), 400
+
+    job_id = str(uuid.uuid4())
+    job_dir = os.path.join(config.JOB_DIR, job_id)
+    ext = os.path.splitext(file.filename)[1].lower()
+    local_path = os.path.join(job_dir, f"original{ext}")
+    try:
+        os.makedirs(job_dir, exist_ok=True)
+        file.save(local_path)
+    except Exception as e:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        log.warning("[podcast] falha ao salvar upload: %s", e)
+        return jsonify({"error": "Falha ao salvar o vídeo."}), 500
+
+    try:
+        probe = _probe_podcast_video(local_path)
+        if not probe:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            return jsonify({"error": "O arquivo não parece um vídeo válido."}), 400
+        w, h, dar = probe
+        if abs(dar - 16 / 9) > (16 / 9) * 0.02:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            return jsonify({"error": f"O vídeo do podcast precisa ser horizontal, na proporção 16:9 "
+                                     f"(ex.: 1920x1080). Este arquivo veio {w}x{h}. Exporte o vídeo em "
+                                     f"16:9 e envie de novo."}), 400
+        if not _podcast_is_cfr(local_path):
+            shutil.rmtree(job_dir, ignore_errors=True)
+            return jsonify({"error": "Esse vídeo está com taxa de quadros irregular e ainda não pode ser "
+                                     "processado. Peça ao estúdio um export com frame rate constante "
+                                     "(CFR, ex.: 30 fps fixos) e envie de novo."}), 422
+    except subprocess.TimeoutExpired:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        return jsonify({"error": "A análise do vídeo demorou demais e foi interrompida. Tente enviar de "
+                                 "novo; se acontecer outra vez, avise o administrador."}), 400
+
+    db.create_podcast_job(job_id, file.filename, local_path, session["user"], vinheta_id)
+    log.info("[podcast] job %s estacionado em 'uploaded' (%dx%d, vinheta %s)", job_id, w, h, vinheta_id)
+    return jsonify({"job_id": job_id, "status": "uploaded"}), 201
 
 
 def _is_youtube_url(url: str) -> bool:
