@@ -21,6 +21,13 @@ function ProjectWave({ seed }: { seed: number }) {
   );
 }
 
+// Podcast estacionado (§39) abre a tela de aprovação de gancho, não a página de clipes.
+function projectHref(p: Project) {
+  return p.status === "aguardando_aprovacao" || p.status === "gancho_aprovado"
+    ? `/podcast/${p.id}`
+    : `/projetos/${p.id}`;
+}
+
 function ProjectPill({ p }: { p: Project }) {
   if (p.status === "processing")
     return (
@@ -30,6 +37,15 @@ function ProjectPill({ p }: { p: Project }) {
       </span>
     );
   if (p.status === "error") return <span className="project-pill is-err">falhou</span>;
+  if (p.status === "uploaded") return <span className="project-pill">aguardando disparo</span>;
+  if (p.status === "aguardando_aprovacao")
+    return (
+      <span className="project-pill is-proc">
+        <span className="pill-dot" />
+        aprovar gancho
+      </span>
+    );
+  if (p.status === "gancho_aprovado") return <span className="project-pill">gancho aprovado</span>;
   if (p.clip_count != null)
     return (
       <span className="project-pill">
@@ -59,7 +75,7 @@ function GenCover({ p }: { p: Project }) {
 
 export function ProjectCard({ p }: { p: Project }) {
   return (
-    <Link className="project-card" href={`/projetos/${p.id}`}>
+    <Link className="project-card" href={projectHref(p)}>
       {p.thumbnail_url ? (
         <div className="project-thumb">
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -121,7 +137,7 @@ export function FeaturedCard({ p }: { p: Project }) {
   const good = p.avg_score != null && p.avg_score >= 8;
   const score = p.avg_score != null ? fmtScore(p.avg_score) : "—";
   const meta = (p.clip_count != null ? p.clip_count + " clipes · " : "") + timeAgo(p.created_at);
-  const href = `/projetos/${p.id}`;
+  const href = projectHref(p);
   return (
     <div className="featured-card">
       <Link className="featured-thumb" href={href}>

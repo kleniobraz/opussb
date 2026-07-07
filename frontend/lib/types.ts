@@ -85,7 +85,35 @@ export interface Project {
   thumbnail_url?: string | null;
   owner_email?: string | null; // quem subiu o vídeo (biblioteca compartilhada); null = legado
   end_screen?: string | null; // tela final padrão do projeto (id) ou null = nenhuma; clipes herdam
+  job_type?: string; // 'clips' (default) ou 'podcast' (§39)
   clips?: Clip[];
+}
+
+// ── Podcast: aprovação de gancho (§39 Parte 4) ──────────────────────────────
+// Trecho candidato a abertura sugerido pelo hooks.py (o texto vem do SRT, não do modelo).
+export interface PodcastHook {
+  start: number;
+  end: number;
+  text: string;
+  reason: string;
+}
+
+// Escolha humana gravada em jobs.hook_choice: qual gancho + as pontas aparadas.
+export interface PodcastHookChoice {
+  index: number;
+  start: number;
+  end: number;
+  approved_by?: string;
+  approved_at?: string;
+}
+
+export interface PodcastHooksResponse {
+  job_id: string;
+  status: string;
+  filename?: string | null;
+  hooks: PodcastHook[];
+  hook_choice: PodcastHookChoice | null;
+  source_available: boolean; // 16:9 ainda no servidor (preview e aprovação dependem dele)
 }
 
 // Uma opção da biblioteca de telas finais (outro anexado ao fim do clipe).

@@ -18,6 +18,8 @@ import type {
   LoginResponse,
   Me,
   Music,
+  PodcastHookChoice,
+  PodcastHooksResponse,
   Preferences,
   Project,
   Session,
@@ -346,6 +348,18 @@ export const glossaryUpdate = (
 export const glossaryDelete = (id: string) =>
   request("/api/glossary/" + encodeURIComponent(id), { method: "DELETE" }).then((r) =>
     asJson<{ ok?: boolean }>(r),
+  );
+
+// ── Podcast: aprovação de gancho (§39 Parte 4) ──────────────────────────────
+export const podcastHooks = (id: string) =>
+  getJson<PodcastHooksResponse>("/api/podcast/" + encodeURIComponent(id) + "/hooks");
+// URL do 16:9 original servido com HTTP Range (preview do trim toca direto no <video>).
+export const podcastSourceUrl = (id: string) =>
+  "/api/podcast/" + encodeURIComponent(id) + "/source";
+export const podcastApprove = (id: string, choice: { index: number; start: number; end: number }) =>
+  postJson<{ job_id: string; status: string; hook_choice: PodcastHookChoice }>(
+    "/api/podcast/" + encodeURIComponent(id) + "/approve",
+    choice,
   );
 
 // Revisão: sobe o vídeo (FormData), depois faz polling do status até done/error.

@@ -21,7 +21,7 @@ import urllib.parse
 from datetime import datetime, timezone, timedelta
 
 import requests
-from flask import Flask, request, jsonify, abort, session, redirect
+from flask import Flask, request, jsonify, abort, session, redirect, send_file
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.exceptions import HTTPException
 
@@ -1104,7 +1104,11 @@ def _project_from_job(job):
         items = []
     scores = [float(it["score"]) for it in items
               if isinstance(it, dict) and it.get("score") is not None]
-    status = job["status"] if job["status"] in ("done", "error") else "processing"
+    # Os estados estacionados do podcast (§39) passam CRUS pro front (o card linka pra
+    # tela de aprovação e mostra o pill certo); job de clipes nunca os assume, então o
+    # colapso pra "processing" segue idêntico no fluxo de clipes.
+    passthrough = ("done", "error", "uploaded", "aguardando_aprovacao", "gancho_aprovado")
+    status = job["status"] if job["status"] in passthrough else "processing"
     return {
         "id": job["job_id"],
         "title": job["filename"],
@@ -1119,6 +1123,7 @@ def _project_from_job(job):
         "owner_email": job.get("user_email"),
         # Tela final padrão do projeto (id em config.END_SCREENS) ou null = nenhuma. Os clipes herdam.
         "end_screen": job.get("end_screen"),
+        "job_type": job.get("job_type") or "clips",
     }
 
 
@@ -3178,6 +3183,111 @@ def podcast_transcribe(job_id):
 
     threading.Thread(target=processor.run_thread1, args=(job_id,), daemon=True).start()
     return jsonify({"job_id": job_id, "status": "queued"}), 202
+
+
+def _podcast_job_or_error(job_id):
+    """Guardas comuns das rotas da tela de aprovação do gancho (§39 Parte 4): flag ligada,
+    job existe e é podcast. Devolve (job, None) ou (None, resposta de erro pronta)."""
+    if not config.PODCAST_ENABLED:
+        return None, (jsonify({"error": "Recurso indisponível."}), 404)
+    job = db.get_job(job_id)
+    if not job:
+        return None, (jsonify({"error": "Projeto não encontrado."}), 404)
+    if job.get("job_type") != "podcast":
+        return None, (jsonify({"error": "Este projeto não é um podcast."}), 400)
+    return job, None
+
+
+def _job_hooks(job) -> list:
+    try:
+        return json.loads(job.get("hooks_json") or "{}").get("hooks") or []
+    except (ValueError, AttributeError):
+        return []
+
+
+@app.route("/api/podcast/<job_id>/hooks")
+@login_required
+def podcast_hooks_view(job_id):
+    """Dados da tela de aprovação: os ganchos sugeridos + a escolha já gravada (se houver).
+    Biblioteca compartilhada: qualquer usuário ativo vê (igual get_project); a APROVAÇÃO é
+    que exige dono/admin."""
+    job, err = _podcast_job_or_error(job_id)
+    if err:
+        return err
+    try:
+        choice = json.loads(job["hook_choice"]) if job.get("hook_choice") else None
+    except ValueError:
+        choice = None
+    return jsonify({
+        "job_id": job_id,
+        "status": job["status"],
+        "filename": job["filename"],
+        "hooks": _job_hooks(job),
+        "hook_choice": choice,
+        "source_available": bool(job.get("local_path") and os.path.exists(job["local_path"])),
+    })
+
+
+@app.route("/api/podcast/<job_id>/source")
+@login_required
+def podcast_source(job_id):
+    """16:9 original do JOB_DIR pro preview do trim, SEM re-encode: conditional=True liga
+    o suporte a HTTP Range (206), o navegador busca só os bytes do trecho que vai tocar.
+    O peso do preview fica no cliente; a VPS só faz I/O de disco."""
+    job, err = _podcast_job_or_error(job_id)
+    if err:
+        return err
+    if not job.get("local_path") or not os.path.exists(job["local_path"]):
+        return jsonify({"error": "O arquivo do podcast não está mais no servidor. Envie de novo."}), 409
+    return send_file(job["local_path"], conditional=True)
+
+
+@app.route("/api/podcast/<job_id>/approve", methods=["POST"])
+@login_required
+def podcast_approve(job_id):
+    """Gate humano do gancho: grava a escolha (qual gancho + pontas aparadas) em
+    jobs.hook_choice e estaciona o job em 'gancho_aprovado' pra montagem (Parte 5)
+    consumir. NÃO monta nada aqui. Guarda de duração FROUXA de propósito (10 a 90s,
+    anti dedo gordo): a faixa 30-60s do hooks.py é do modelo; aqui quem manda é o humano."""
+    job, err = _podcast_job_or_error(job_id)
+    if err:
+        return err
+    user = db.get_user(session["user"])
+    if not user:
+        session.clear()
+        return jsonify({"error": "Sessão inválida.", "auth": False}), 401
+    if job.get("user_email") != session["user"] and not user.get("is_admin"):
+        return jsonify({"error": "Este projeto é de outro usuário."}), 403
+    if job["status"] != "aguardando_aprovacao":
+        return jsonify({"error": f"O podcast não está aguardando aprovação (status: {job['status']})."}), 409
+
+    data = request.get_json(silent=True) or {}
+    hooks_list = _job_hooks(job)
+    idx = data.get("index")
+    if not isinstance(idx, int) or isinstance(idx, bool) or not (0 <= idx < len(hooks_list)):
+        return jsonify({"error": "Escolha um dos ganchos sugeridos."}), 400
+    try:
+        start, end = float(data["start"]), float(data["end"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"error": "Tempos de início e fim inválidos."}), 400
+    if not (start >= 0 and end > start):
+        return jsonify({"error": "O fim precisa vir depois do início (e o início ser >= 0)."}), 400
+    dur = end - start
+    if not (10.0 <= dur <= 90.0):
+        return jsonify({"error": f"Duração de {dur:.0f}s fora do razoável pra uma abertura (10 a 90s)."}), 400
+    if not job.get("local_path") or not os.path.exists(job["local_path"]):
+        return jsonify({"error": "O arquivo do podcast não está mais no servidor. Envie de novo."}), 409
+    total = _probe_duration(job["local_path"])
+    if total and end > total + 1.0:
+        return jsonify({"error": f"O fim ({end:.1f}s) passa da duração do vídeo ({total:.1f}s)."}), 400
+
+    choice = {"index": idx, "start": round(start, 3), "end": round(end, 3),
+              "approved_by": session["user"],
+              "approved_at": datetime.now(timezone.utc).isoformat()}
+    db.update_job(job_id, hook_choice=json.dumps(choice, ensure_ascii=False),
+                  status="gancho_aprovado", progress=90)
+    log.info("[podcast] job %s: gancho %d aprovado (%.1fs a %.1fs)", job_id, idx, start, end)
+    return jsonify({"job_id": job_id, "status": "gancho_aprovado", "hook_choice": choice})
 
 
 def _is_youtube_url(url: str) -> bool:
