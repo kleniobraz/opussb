@@ -2,8 +2,9 @@
 
 Recebe a transcrição SRT do episódio inteiro, compacta pra blocos "[mm:ss] texto"
 (chamada única, ~30k tokens pra 2h) e pede ao HOOK_MODEL as 3 melhores ABERTURAS de
-1 a 3 minutos. Cada sugestão passa pelo critério duro da casa (autossuficiência,
-fronteira de fala via snap_clip_bounds, duração 60-180s); o que não passa é DESCARTADO
+30 a 60 segundos (faixa calibrada por validação humana: 2-3min ficou longo demais pra
+abertura). Cada sugestão passa pelo critério duro da casa (autossuficiência, fronteira
+de fala via snap_clip_bounds, duração 30-60s); o que não passa é DESCARTADO
 (nunca clampado: encurtar um trecho quebraria a autossuficiência) e há no máximo UMA
 retry corretiva, que é também o teto de custo por episódio (2 chamadas).
 
@@ -20,8 +21,8 @@ import db
 
 log = logging.getLogger("opussb.hooks")
 
-HOOK_MIN_SECONDS = 60.0
-HOOK_MAX_SECONDS = 180.0
+HOOK_MIN_SECONDS = 30.0
+HOOK_MAX_SECONDS = 60.0
 _MAX_CALLS = 2
 _MAX_TOKENS = 4000
 
@@ -34,7 +35,10 @@ O gancho é uma ABERTURA, não um trailer de fisgada máxima. Critérios, em ord
 sem depender do que veio antes ou do que vem depois. Este é o critério mais importante.
 2. Interessante por si só: um bom papo, uma história, uma opinião com personalidade, um \
 assunto que valha a pena pra um empresário.
-3. Duração entre 1 e 3 minutos (60 a 180 segundos). Regra dura: nada fora disso.
+3. Duração entre 30 e 60 SEGUNDOS (end - start entre 30 e 60). Regra dura: nada fora \
+dessa janela. NUNCA sugira trechos de vários minutos. A abertura é curta e direta: um \
+momento só, sem enrolação, que faz o público querer ficar. Exemplo de gancho válido: \
+start 1234.5, end 1281.0 (46,5 segundos de duração).
 4. Começa e termina em fronteira de frase limpa, nunca no meio de uma palavra ou frase.
 
 A transcrição vem em blocos "[mm:ss] texto" (minutos:segundos desde o início). Use esses \
@@ -121,7 +125,7 @@ def _valida(brutos: list, srt_text: str, cues: list, dur_total: float, aceitos: 
             pass
         dur = end - start
         if not (HOOK_MIN_SECONDS <= dur <= HOOK_MAX_SECONDS):
-            rejeicoes.append((h, f"duração de {dur:.0f}s viola a regra dura de 60 a 180s"))
+            rejeicoes.append((h, f"duração de {dur:.0f}s viola a regra dura de 30 a 60s"))
             continue
         ja_tem = aceitos + validos
         if any(_overlap(start, end, v["start"], v["end"]) > 0.5 for v in ja_tem):
@@ -144,7 +148,8 @@ def suggest_hooks(srt_text: str):
         raise RuntimeError("transcrição vazia ou ilegível (SRT sem cues)")
     dur_total = cues[-1]["end"]
     pedido = ("Transcrição do episódio em blocos [mm:ss]:\n\n" + compact_transcript(srt_text)
-              + "\n\nDevolva os 3 melhores ganchos, com start e end em segundos.")
+              + "\n\nDevolva EXATAMENTE 3 ganchos, com start e end em segundos e duração "
+                "de 30 a 60 segundos cada (end - start entre 30 e 60).")
 
     validos = []
     correcao = None
@@ -175,7 +180,8 @@ def suggest_hooks(srt_text: str):
         correcao = (f"Da sua resposta anterior aproveitei {len(validos)} gancho(s). "
                     f"Sugestões rejeitadas e motivos: {motivos}. "
                     f"Sugira {3 - len(validos)} gancho(s) NOVO(s), em trechos DIFERENTES dos "
-                    f"anteriores, respeitando a regra dura de 60 a 180 segundos.")
+                    f"anteriores, respeitando a regra dura de 30 a 60 segundos de duração "
+                    f"(end - start entre 30 e 60).")
 
     meta = {"model": model_usado,
             "usage": {"input_tokens": total_in, "output_tokens": total_out},
@@ -193,7 +199,7 @@ def run_podcast_hooks(job_id: str) -> None:
         validos, meta = suggest_hooks(job.get("transcript") or "")
         if not validos:
             raise RuntimeError(
-                "o modelo não devolveu nenhum gancho dentro do critério (60-180s, autossuficiente)")
+                "o modelo não devolveu nenhum gancho dentro do critério (30-60s, autossuficiente)")
         db.update_job(
             job_id,
             hooks_json=json.dumps({"hooks": validos, **meta}, ensure_ascii=False),

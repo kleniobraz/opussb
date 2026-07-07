@@ -91,31 +91,31 @@ def test_valida_criterio_duro():
     srt = _srt_longo(total=600)
     cues = hooks.captions.parse_srt(srt)
     brutos = [
-        {"start": 10, "end": 100, "text": "x", "reason": "boa abertura"},   # válido (90s)
-        {"start": 10, "end": 40, "text": "x", "reason": "curto"},           # < 60s
-        {"start": 100, "end": 400, "text": "x", "reason": "longo"},         # > 180s
+        {"start": 10, "end": 55, "text": "x", "reason": "boa abertura"},    # válido (45s)
+        {"start": 10, "end": 30, "text": "x", "reason": "curto"},           # < 30s
+        {"start": 100, "end": 200, "text": "x", "reason": "longo"},         # > 60s
         {"start": 550, "end": 700, "text": "x", "reason": "estoura"},       # fora do episódio
-        {"start": 15, "end": 110, "text": "x", "reason": "sobrepõe"},       # overlap > 50%
-        {"start": "abc", "end": 100, "text": "x", "reason": "ruim"},        # não numérico
+        {"start": 12, "end": 50, "text": "x", "reason": "sobrepõe"},        # overlap > 50%
+        {"start": "abc", "end": 55, "text": "x", "reason": "ruim"},         # não numérico
     ]
     validos, rejeicoes = hooks._valida(brutos, srt, cues, cues[-1]["end"], [])
     assert len(validos) == 1
     v = validos[0]
-    assert 60 <= v["end"] - v["start"] <= 180
+    assert 30 <= v["end"] - v["start"] <= 60
     # o texto persistido vem do SRT, não do modelo
     assert "fala número" in v["text"] and v["text"] != "x"
     assert len(rejeicoes) == 5
     motivos = " | ".join(m for _, m in rejeicoes)
-    assert "60 a 180" in motivos and "duração do episódio" in motivos and "sobrepõe" in motivos
+    assert "30 a 60" in motivos and "duração do episódio" in motivos and "sobrepõe" in motivos
 
 
 # ─── hooks.py: chamada + retry ────────────────────────────────────────────────
 
 def test_suggest_hooks_feliz_uma_chamada(mocker):
     call = mocker.patch("anthropic_client.call", return_value=_resp([
-        {"start": 10, "end": 100, "text": "a", "reason": "r1"},
-        {"start": 200, "end": 320, "text": "b", "reason": "r2"},
-        {"start": 400, "end": 520, "text": "c", "reason": "r3"},
+        {"start": 10, "end": 55, "text": "a", "reason": "r1"},
+        {"start": 200, "end": 250, "text": "b", "reason": "r2"},
+        {"start": 400, "end": 455, "text": "c", "reason": "r3"},
     ]))
     validos, meta = hooks.suggest_hooks(_srt_longo())
     assert len(validos) == 3 and call.call_count == 1
@@ -126,17 +126,17 @@ def test_suggest_hooks_feliz_uma_chamada(mocker):
 
 def test_suggest_hooks_retry_corretiva_e_merge(mocker):
     call = mocker.patch("anthropic_client.call", side_effect=[
-        _resp([{"start": 10, "end": 100, "text": "a", "reason": "ok"},
-               {"start": 100, "end": 400, "text": "b", "reason": "longo demais"},
-               {"start": 12, "end": 95, "text": "c", "reason": "sobrepõe"}]),
-        _resp([{"start": 200, "end": 320, "text": "d", "reason": "novo1"},
-               {"start": 400, "end": 520, "text": "e", "reason": "novo2"}]),
+        _resp([{"start": 10, "end": 55, "text": "a", "reason": "ok"},
+               {"start": 100, "end": 200, "text": "b", "reason": "longo demais"},
+               {"start": 12, "end": 50, "text": "c", "reason": "sobrepõe"}]),
+        _resp([{"start": 200, "end": 250, "text": "d", "reason": "novo1"},
+               {"start": 400, "end": 455, "text": "e", "reason": "novo2"}]),
     ])
     validos, meta = hooks.suggest_hooks(_srt_longo())
     assert call.call_count == 2 and len(validos) == 3
     # a 2ª chamada recebe a correção com os motivos da rejeição
     corpo_retry = call.call_args_list[1][0][2][0]["text"]
-    assert "rejeitadas" in corpo_retry.lower() and "60 a 180" in corpo_retry
+    assert "rejeitadas" in corpo_retry.lower() and "30 a 60" in corpo_retry
     assert meta["usage"]["input_tokens"] == 2000  # somado das 2 chamadas
 
 
@@ -149,9 +149,9 @@ def test_suggest_hooks_zero_validos_apos_retry(mocker):
 
 def test_run_podcast_hooks_grava_e_estaciona(mocker):
     mocker.patch("anthropic_client.call", return_value=_resp([
-        {"start": 10, "end": 100, "text": "a", "reason": "r1"},
-        {"start": 200, "end": 320, "text": "b", "reason": "r2"},
-        {"start": 400, "end": 520, "text": "c", "reason": "r3"},
+        {"start": 10, "end": 55, "text": "a", "reason": "r1"},
+        {"start": 200, "end": 250, "text": "b", "reason": "r2"},
+        {"start": 400, "end": 455, "text": "c", "reason": "r3"},
     ]))
     _podcast_job(status="analisando_gancho")
     db.update_job("TEST-pod", transcript=_srt_longo())
