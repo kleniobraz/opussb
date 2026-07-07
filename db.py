@@ -76,6 +76,9 @@ def init_db() -> None:
         # Vinheta escolhida pro job de podcast (id na futura biblioteca `vinhetas`, mesmo
         # padrão do end_screen). NULL sempre em jobs de clipes.
         _ensure_column(conn, "jobs", "vinheta_id", "TEXT")
+        # Sugestões de gancho do podcast (hooks.py): JSON com a lista {start,end,text,reason}
+        # + modelo/usage/custo da chamada. O dono escolhe/ajusta na tela de aprovação.
+        _ensure_column(conn, "jobs", "hooks_json", "TEXT")
         # Índices: list_jobs filtra por dono e ordena por created_at; count_active e
         # reap_stale filtram por status. Baratos e ajudam conforme o histórico cresce.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs(user_email, created_at)")
@@ -898,11 +901,14 @@ def heartbeat_job(job_id: str, expected_status: str) -> None:
 
 
 def count_active_jobs() -> int:
-    # 'uploaded' = podcast estacionado sem pipeline rodando (§39): não ocupa a vaga de
-    # MAX_CONCURRENT_JOBS, senão um podcast parado travaria a fila de clipes com 429.
+    # 'uploaded' e 'aguardando_aprovacao' = podcast estacionado sem pipeline rodando (§39):
+    # não ocupam a vaga de MAX_CONCURRENT_JOBS, senão um podcast parado travaria a fila de
+    # clipes com 429. Os estados de trabalho real do podcast (queued..analisando_gancho)
+    # CONTAM, de propósito: transcrição e gancho disputam a mesma VPS.
     with _conn() as conn:
         row = conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE status NOT IN ('done', 'error', 'uploaded')"
+            "SELECT COUNT(*) FROM jobs WHERE status NOT IN "
+            "('done', 'error', 'uploaded', 'aguardando_aprovacao')"
         ).fetchone()
         return row[0]
 
@@ -1057,11 +1063,14 @@ def reap_stale_jobs(stale_minutes: int) -> int:
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=stale_minutes)).isoformat()
     msg = f"timeout: sem atualização há mais de {stale_minutes}min (callback do N8N perdido?)"
     with _conn() as conn:
-        # 'uploaded' fica de fora: podcast estacionado (§39) não é job preso, é espera
-        # legítima sem heartbeat; a expiração dele vem por TTL próprio (parte de retenção).
+        # 'uploaded' e 'aguardando_aprovacao' ficam de fora: podcast estacionado (§39) não
+        # é job preso, é espera legítima sem heartbeat; a expiração vem por TTL próprio
+        # (parte de retenção). Um podcast preso em transcribing/analisando_gancho é ceifado
+        # normalmente, igual clipe (callback perdido não pode travar a fila pra sempre).
         cur = conn.execute(
             "UPDATE jobs SET status = 'error', error = ?, updated_at = ? "
-            "WHERE status NOT IN ('done', 'error', 'uploaded') AND updated_at < ?",
+            "WHERE status NOT IN ('done', 'error', 'uploaded', 'aguardando_aprovacao') "
+            "AND updated_at < ?",
             (msg, _now(), cutoff),
         )
         return cur.rowcount

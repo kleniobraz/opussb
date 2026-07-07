@@ -31,6 +31,7 @@ import s3_client
 import processor
 import captions
 import caption_reviewer
+import hooks
 
 # Logging pra stderr: print() no worker do gunicorn fica com buffer e some do
 # journalctl. Um handler próprio no logger "opussb" (sem propagar) garante log
@@ -3137,6 +3138,48 @@ def podcast_upload():
     return jsonify({"job_id": job_id, "status": "uploaded"}), 201
 
 
+@app.route("/api/podcast/<job_id>/transcribe", methods=["POST"])
+@login_required
+def podcast_transcribe(job_id):
+    """Dispara a Fase A do podcast (transcrição via run_thread1 + análise de gancho no
+    callback) pro job estacionado em 'uploaded'. Disparo EXPLÍCITO de propósito: um
+    upload de GBs não deve levar 429 depois de pronto; o produtor aciona com a fila
+    livre. Usa a MESMA admissão atômica dos clipes (reserva a vaga virando 'queued')."""
+    if not config.PODCAST_ENABLED:
+        return jsonify({"error": "Recurso indisponível."}), 404
+    user = db.get_user(session["user"])
+    if not user:
+        session.clear()
+        return jsonify({"error": "Sessão inválida.", "auth": False}), 401
+    job = db.get_job(job_id)
+    if not job:
+        return jsonify({"error": "Projeto não encontrado."}), 404
+    if job.get("user_email") != session["user"] and not user.get("is_admin"):
+        return jsonify({"error": "Este projeto é de outro usuário."}), 403
+    if job.get("job_type") != "podcast":
+        return jsonify({"error": "Este projeto não é um podcast."}), 400
+    if not job.get("local_path") or not os.path.exists(job["local_path"]):
+        return jsonify({"error": "O arquivo do podcast não está mais no servidor. Envie de novo."}), 409
+
+    with _upload_lock:
+        # Re-checa o status DENTRO do lock: dois disparos simultâneos não podem
+        # reservar a vaga e subir duas thread1 pro mesmo job.
+        job = db.get_job(job_id)
+        if job["status"] != "uploaded":
+            return jsonify({"error": f"O podcast não está aguardando disparo (status: {job['status']})."}), 409
+        reaped = db.reap_stale_jobs(config.JOB_STALE_MINUTES)
+        if reaped:
+            log.info("[watchdog] %d job(s) preso(s) liberado(s) por timeout", reaped)
+        if db.count_active_jobs() >= config.MAX_CONCURRENT_JOBS:
+            return jsonify({
+                "error": "Um vídeo já está em processamento! Aguarde a conclusão antes de disparar o podcast."
+            }), 429
+        db.update_job(job_id, status="queued", progress=5)
+
+    threading.Thread(target=processor.run_thread1, args=(job_id,), daemon=True).start()
+    return jsonify({"job_id": job_id, "status": "queued"}), 202
+
+
 def _is_youtube_url(url: str) -> bool:
     """Aceita só URLs de vídeo do YouTube (não qualquer host): evita apontar o yt-dlp pra
     destinos arbitrários (abuso/SSRF) e mantém a feature no escopo pedido."""
@@ -3262,6 +3305,18 @@ def callback():
     # se falhasse, dispararia _fail_job -> apagaria o 16:9 retido VIVO daquele projeto).
     if job["status"] in ("error", "done"):
         return jsonify({"ok": True, "skipped": f"job ja {job['status']}"})
+    # Podcast (§39): a transcrição volta pelo MESMO webhook do N8N, mas daqui o fluxo é
+    # outro: guarda o SRT, IGNORA o clips_json (o scoring de clipes roda à toa no N8N por
+    # ora; morre na frente de remover o N8N) e dispara a análise de gancho. Idempotência
+    # estrita: só aceita em 'transcribing', então callback duplicado não re-roda o hooks
+    # nem re-gasta API (o caminho de clipes mantém a semântica de retry que já tinha).
+    if job.get("job_type") == "podcast":
+        if job["status"] != "transcribing":
+            return jsonify({"ok": True, "skipped": f"podcast em {job['status']}"})
+        db.update_job(job_id, transcript=data.get("transcript"),
+                      status="analisando_gancho", progress=75)
+        threading.Thread(target=hooks.run_podcast_hooks, args=(job_id,), daemon=True).start()
+        return jsonify({"ok": True})
     db.update_job(
         job_id,
         transcript=data.get("transcript"),

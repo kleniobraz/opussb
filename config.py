@@ -102,6 +102,10 @@ VINHETA_MAX_BYTES: int = int(os.environ.get("VINHETA_MAX_BYTES", str(200 * 1024 
 # Teto do ffprobe que varre TODOS os pacotes do podcast no upload (detecção de VFR).
 # É só demux, sem decode (~30s pra 8GB medido); 600 cobre um 2h/20GB com folga.
 PODCAST_PROBE_TIMEOUT: int = int(os.environ.get("PODCAST_PROBE_TIMEOUT", "600"))
+# Modelo do scoring de gancho (hooks.py). Haiku pela regra 5 (mesmo tier do scoring de
+# clipes); o alias casa o preço por prefixo em CLAUDE_PRICING. Env-tunável só se um
+# teste de qualidade MEDIDO justificar subir de tier.
+HOOK_MODEL: str = os.environ.get("HOOK_MODEL", "claude-haiku-4-5")
 
 # Sobra (handles) cortada de cada lado do clipe, em segundos. O clip_NN_base.mp4 passa a ser
 # a janela [start-H, end+H] (clamped ao vídeo) reenquadrada, e o editor abre/fecha o corte

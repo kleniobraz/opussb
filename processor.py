@@ -53,8 +53,10 @@ def run_thread1(job_id: str) -> None:
         audio_s3_url = s3_client.get_presigned_url(audio_s3_key, expiry_seconds=86400)
         db.update_job(job_id, audio_s3_url=audio_s3_url, status="transcribing", progress=35)
 
+        # Podcast não tem min/max (NULL) e o nó de scoring do N8N interpola esses campos
+        # no prompt (não pode receber null). Clipe sempre tem valor: nada muda pra ele.
         _trigger_n8n_with_retry(
-            job_id, audio_s3_url, job["min_duration"], job["max_duration"]
+            job_id, audio_s3_url, job["min_duration"] or 60, job["max_duration"] or 180
         )
     except _Cancelled:
         log.info("[cancel] job %s cancelado; encerrando thread1 e limpando disco", job_id)
