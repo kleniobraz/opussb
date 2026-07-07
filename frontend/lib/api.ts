@@ -361,6 +361,14 @@ export const podcastApprove = (id: string, choice: { index: number; start: numbe
     "/api/podcast/" + encodeURIComponent(id) + "/approve",
     choice,
   );
+// Dispara a montagem (gancho + vinheta + podcast). 202; acompanhar pelo podcastHooks (polling).
+export const podcastCompose = (id: string) =>
+  postJson<{ job_id: string; status: string }>(
+    "/api/podcast/" + encodeURIComponent(id) + "/compose",
+  );
+// URL do episódio montado (302 presignado). download=true força attachment com nome amigável.
+export const podcastFinalUrl = (id: string, download = false) =>
+  "/api/podcast/" + encodeURIComponent(id) + "/final" + (download ? "?download=1" : "");
 
 // Revisão: sobe o vídeo (FormData), depois faz polling do status até done/error.
 export function captionReviewCreate(file: File): Promise<{ review_id: string }> {

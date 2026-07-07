@@ -32,6 +32,7 @@ import processor
 import captions
 import caption_reviewer
 import hooks
+import podcast_compose
 
 # Logging pra stderr: print() no worker do gunicorn fica com buffer e some do
 # journalctl. Um handler próprio no logger "opussb" (sem propagar) garante log
@@ -1485,32 +1486,10 @@ def _endscreen_key(content_key: str) -> str:
     return content_key + "_es.mp4"
 
 
-def _probe_av_signature(path: str):
-    """Params de A/V do content pra casar o outro: {fps_s, timescale, ar, ac} ou None se faltar vídeo
-    OU áudio (sem áudio o concat-copy quebraria por nº de streams diferente -> sem tela final)."""
-    def _probe(stream, entries):
-        r = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", stream,
-             "-show_entries", f"stream={entries}", "-of", "default=noprint_wrappers=1:nokey=1", path],
-            capture_output=True, text=True, timeout=30,
-        )
-        return r.stdout.split() if r.returncode == 0 else []
-    try:
-        v = _probe("v:0", "r_frame_rate,time_base")
-        a = _probe("a:0", "sample_rate,channels")
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return None
-    if len(v) < 2 or len(a) < 2:
-        return None
-    fps_s = v[0]                              # ex.: "30/1" ou "24000/1001"
-    tb = v[1]                                 # time_base "1/15360"
-    timescale = tb.split("/")[-1] if "/" in tb else "15360"
-    if not fps_s or "/" not in fps_s or fps_s.startswith("0/"):
-        return None
-    try:
-        return {"fps_s": fps_s, "timescale": int(timescale), "ar": int(a[0]), "ac": int(a[1])}
-    except ValueError:
-        return None
+# Movida pro podcast_compose (§39 Parte 5) e estendida (profile/level/SAR/dimensões); o
+# alias preserva os call sites e o contrato daqui: sem áudio devolve None (require_audio
+# default True), e a chave de cache do _matched/ segue usando só os 4 campos históricos.
+_probe_av_signature = podcast_compose.probe_av_signature
 
 
 def _ensure_matched_outro(es_id: str, outro_src_key: str, sig: dict, tmp: str, dur=None):
@@ -1548,20 +1527,12 @@ def _ensure_matched_outro(es_id: str, outro_src_key: str, sig: dict, tmp: str, d
     return matched_path
 
 
-def _append_end_screen(content_path: str, outro_path: str, out_path: str, tmp: str) -> bool:
+def _append_end_screen(content_path: str, outro_path: str, out_path: str) -> bool:
     """Concatena content + outro (já casado) por concat-copy (NÃO re-encoda o content, o caro) +
-    faststart. Só funciona porque o outro foi casado aos params do content. Retorna True/False."""
-    list_path = os.path.join(tmp, "concat.txt")
-    with open(list_path, "w", encoding="utf-8") as f:
-        f.write(f"file '{content_path}'\nfile '{outro_path}'\n")
-    cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path,
-           "-c", "copy", "-movflags", "+faststart", out_path]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=config.END_SCREEN_TIMEOUT,
-                       preexec_fn=lambda: os.nice(config.BURN_NICE))
-    if r.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1024:
-        log.warning("[endscreen] concat falhou: %s", r.stderr[-300:])
-        return False
-    return True
+    faststart. Só funciona porque o outro foi casado aos params do content. Delegado pro
+    concat_copy genérico do podcast_compose (mesma linha de comando de sempre)."""
+    return podcast_compose.concat_copy([content_path, outro_path], out_path,
+                                       timeout=config.END_SCREEN_TIMEOUT, nice=config.BURN_NICE)
 
 
 def _produce_endscreen(content_key: str, es_id: str, final_key: str, dur=None) -> bool:
@@ -1590,7 +1561,7 @@ def _produce_endscreen(content_key: str, es_id: str, final_key: str, dur=None) -
         if not matched_path:
             return False
         out_path = os.path.join(tmp, "final.mp4")
-        if not _append_end_screen(content_path, matched_path, out_path, tmp):
+        if not _append_end_screen(content_path, matched_path, out_path):
             return False
         s3_client.upload_file(out_path, final_key)            # só após render local ok
         return True
@@ -3221,10 +3192,13 @@ def podcast_hooks_view(job_id):
     return jsonify({
         "job_id": job_id,
         "status": job["status"],
+        "progress": job.get("progress"),
         "filename": job["filename"],
         "hooks": _job_hooks(job),
         "hook_choice": choice,
         "source_available": bool(job.get("local_path") and os.path.exists(job["local_path"])),
+        "final_available": bool(job.get("podcast_final_key")) and job["status"] == "done",
+        "error": job.get("error") if job["status"] == "error" else None,
     })
 
 
@@ -3288,6 +3262,67 @@ def podcast_approve(job_id):
                   status="gancho_aprovado", progress=90)
     log.info("[podcast] job %s: gancho %d aprovado (%.1fs a %.1fs)", job_id, idx, start, end)
     return jsonify({"job_id": job_id, "status": "gancho_aprovado", "hook_choice": choice})
+
+
+@app.route("/api/podcast/<job_id>/compose", methods=["POST"])
+@login_required
+def podcast_compose_route(job_id):
+    """Dispara a MONTAGEM (§39 Parte 5) do podcast com gancho aprovado. Manual e explícito
+    (mesma razão do /transcribe: trabalho pronto não pode tomar 429 por fila cheia; o
+    produtor aciona com a fila livre), mesma admissão atômica. Aceita também status
+    'error' COM hook_choice: retry de montagem que falhou é só re-POSTar."""
+    job, err = _podcast_job_or_error(job_id)
+    if err:
+        return err
+    user = db.get_user(session["user"])
+    if not user:
+        session.clear()
+        return jsonify({"error": "Sessão inválida.", "auth": False}), 401
+    if job.get("user_email") != session["user"] and not user.get("is_admin"):
+        return jsonify({"error": "Este projeto é de outro usuário."}), 403
+    if not job.get("local_path") or not os.path.exists(job["local_path"]):
+        return jsonify({"error": "O arquivo do podcast não está mais no servidor. Envie de novo."}), 409
+    try:
+        choice = json.loads(job.get("hook_choice") or "null")
+    except ValueError:
+        choice = None
+    if not isinstance(choice, dict):
+        return jsonify({"error": "Este podcast não tem gancho aprovado."}), 409
+    if not db.get_vinheta(job.get("vinheta_id") or ""):
+        return jsonify({"error": "A vinheta do projeto não existe mais na biblioteca."}), 409
+
+    with _upload_lock:
+        job = db.get_job(job_id)
+        if job["status"] not in ("gancho_aprovado", "error"):
+            return jsonify({"error": f"O podcast não está pronto pra montagem (status: {job['status']})."}), 409
+        reaped = db.reap_stale_jobs(config.JOB_STALE_MINUTES)
+        if reaped:
+            log.info("[watchdog] %d job(s) preso(s) liberado(s) por timeout", reaped)
+        if db.count_active_jobs() >= config.MAX_CONCURRENT_JOBS:
+            return jsonify({
+                "error": "Um vídeo já está em processamento! Aguarde a conclusão antes de montar o podcast."
+            }), 429
+        db.update_job(job_id, status="montando", progress=10, error=None)
+
+    threading.Thread(target=podcast_compose.run_podcast_compose, args=(job_id,), daemon=True).start()
+    return jsonify({"job_id": job_id, "status": "montando"}), 202
+
+
+@app.route("/api/podcast/<job_id>/final")
+@login_required
+def podcast_final(job_id):
+    """302 pra URL presignada do episódio montado (player). ?download=1 embute
+    Content-Disposition: attachment com nome amigável (mesma mecânica dos clipes)."""
+    job, err = _podcast_job_or_error(job_id)
+    if err:
+        return err
+    key = job.get("podcast_final_key")
+    if not key or job["status"] != "done":
+        return jsonify({"error": "O episódio ainda não foi montado."}), 409
+    dl = None
+    if request.args.get("download"):
+        dl = os.path.splitext(job.get("filename") or "podcast")[0] + "_final.mp4"
+    return redirect(s3_client.get_presigned_url(key, download_name=dl), code=302)
 
 
 def _is_youtube_url(url: str) -> bool:

@@ -106,6 +106,14 @@ PODCAST_PROBE_TIMEOUT: int = int(os.environ.get("PODCAST_PROBE_TIMEOUT", "600"))
 # clipes); o alias casa o preço por prefixo em CLAUDE_PRICING. Env-tunável só se um
 # teste de qualidade MEDIDO justificar subir de tier.
 HOOK_MODEL: str = os.environ.get("HOOK_MODEL", "claude-haiku-4-5")
+# Teto POR ffmpeg da montagem do podcast (gancho/vinheta/remux/concat). O concat do corpo
+# de 2h é só I/O (~30GB), mas o END_SCREEN_TIMEOUT de 120s não cobre; 900 dá folga 4x
+# sobre o medido (52min montados em ~32s) sem deixar um ffmpeg travado pendurar a thread.
+COMPOSE_TIMEOUT: int = int(os.environ.get("COMPOSE_TIMEOUT", "900"))
+# Guard-rail de disco da montagem: exige livre >= fator x tamanho do fonte (pico real ≈
+# fonte + pedaços + final ≈ 2x fonte; 2.2 dá margem) e falha com mensagem clara em vez
+# de estourar o volume no meio do concat.
+COMPOSE_DISK_FACTOR: float = float(os.environ.get("COMPOSE_DISK_FACTOR", "2.2"))
 
 # Sobra (handles) cortada de cada lado do clipe, em segundos. O clip_NN_base.mp4 passa a ser
 # a janela [start-H, end+H] (clamped ao vídeo) reenquadrada, e o editor abre/fecha o corte

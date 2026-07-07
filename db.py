@@ -82,6 +82,9 @@ def init_db() -> None:
         # Escolha humana da tela de aprovação (§39 Parte 4): JSON {index,start,end,
         # approved_by,approved_at}. A montagem (Parte 5) consome daqui, não do hooks_json.
         _ensure_column(conn, "jobs", "hook_choice", "TEXT")
+        # Key S3 do episódio final montado (§39 Parte 5: gancho + vinheta + podcast).
+        # Fora de result_urls de propósito: aquele formato é de clipes (_clip_objects).
+        _ensure_column(conn, "jobs", "podcast_final_key", "TEXT")
         # Índices: list_jobs filtra por dono e ordena por created_at; count_active e
         # reap_stale filtram por status. Baratos e ajudam conforme o histórico cresce.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs(user_email, created_at)")

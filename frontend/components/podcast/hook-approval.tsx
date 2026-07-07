@@ -9,11 +9,12 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Check, Play, Square, Volume2 } from "lucide-react";
+import { Check, Clapperboard, Download, Play, Square, Volume2 } from "lucide-react";
 import * as api from "@/lib/api";
 import { fmtSeconds, nameFromEmail, timeAgo } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
 import { Slider } from "@/components/ui/slider";
 import type { PodcastHook } from "@/lib/types";
 
@@ -70,6 +71,8 @@ export function HookApproval({ jobId }: { jobId: string }) {
   const { data, isLoading, isError } = useQuery({
     queryKey: ["podcastHooks", jobId],
     queryFn: () => api.podcastHooks(jobId),
+    // A montagem roda no servidor; o polling leve acompanha o progresso até done/error.
+    refetchInterval: (q) => (q.state.data?.status === "montando" ? 3000 : false),
   });
 
   const [selected, setSelected] = useState<number | null>(null);
@@ -77,6 +80,7 @@ export function HookApproval({ jobId }: { jobId: string }) {
   const [videoDur, setVideoDur] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
   const [approving, setApproving] = useState(false);
+  const [composing, setComposing] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const stopAtRef = useRef<number | null>(null);
   const rafRef = useRef<number>(0);
@@ -147,6 +151,20 @@ export function HookApproval({ jobId }: { jobId: string }) {
     setRange(([s]) => [s, round1(Math.max(Math.min(t, win.max), s + GAP_MIN))]);
   }
 
+  async function compose() {
+    setComposing(true);
+    try {
+      await api.podcastCompose(jobId);
+      toast.success("Montagem iniciada.");
+      qc.invalidateQueries({ queryKey: ["podcastHooks", jobId] });
+      qc.invalidateQueries({ queryKey: ["projects"] });
+    } catch (e) {
+      toast.error(e instanceof api.ApiError ? e.message : "Falha ao iniciar a montagem.");
+    } finally {
+      setComposing(false);
+    }
+  }
+
   async function approve() {
     if (selected == null) return;
     setApproving(true);
@@ -192,20 +210,90 @@ export function HookApproval({ jobId }: { jobId: string }) {
     );
   }
 
-  // Já aprovado: resumo da escolha (a montagem consome jobs.hook_choice daqui em diante).
+  const cabecalho = (rotulo: string) => (
+    <>
+      <Link href="/projetos" className="back-link">
+        ← Projetos
+      </Link>
+      <div className="section-head">
+        <div>
+          <p className="eyebrow">Podcast · {rotulo}</p>
+          <h1 className="section-title">{data.filename || "Episódio"}</h1>
+        </div>
+      </div>
+    </>
+  );
+
+  // Episódio montado: player do final + download. Fim da linha do pipeline.
+  if (data.status === "done" && data.final_available) {
+    const c = data.hook_choice;
+    return (
+      <div className="view-pad">
+        {cabecalho("episódio montado")}
+        <div className="max-w-2xl space-y-3">
+          <video
+            controls
+            preload="metadata"
+            src={api.podcastFinalUrl(jobId)}
+            className="aspect-video w-full rounded-xl border border-border bg-black"
+          />
+          {c && (
+            <p className="text-sm text-muted-foreground">
+              Abertura: gancho {c.index + 1}, {fmtSeconds(c.start)} a {fmtSeconds(c.end)} (
+              {round1(c.end - c.start)}s), seguido da vinheta e do episódio completo.
+            </p>
+          )}
+          <Button asChild>
+            <a href={api.podcastFinalUrl(jobId, true)}>
+              <Download className="size-4" /> Baixar o episódio
+            </a>
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // Montagem rodando no servidor (polling do refetchInterval acompanha).
+  if (data.status === "montando") {
+    return (
+      <div className="view-pad">
+        {cabecalho("montando")}
+        <div className="max-w-xl space-y-3">
+          <Progress value={data.progress ?? 10} />
+          <p className="text-sm text-muted-foreground">
+            Montando o episódio (gancho + vinheta + podcast completo). O corpo não é
+            re-encodado, então isso leva poucos minutos.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Montagem falhou mas a escolha do gancho persiste: mostra o erro e deixa re-tentar.
+  if (data.status === "error" && data.hook_choice) {
+    return (
+      <div className="view-pad">
+        {cabecalho("montagem falhou")}
+        <div className="max-w-xl space-y-3">
+          <p className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-400">
+            {data.error || "A montagem falhou."}
+          </p>
+          <Button disabled={composing} onClick={compose}>
+            <Clapperboard className="size-4" />
+            {composing ? "Disparando..." : "Tentar a montagem de novo"}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // Já aprovado: resumo da escolha + disparo manual da montagem (padrão do /transcribe:
+  // trabalho pronto não toma 429; o produtor aciona com a fila livre).
   if (data.status === "gancho_aprovado" && data.hook_choice) {
     const c = data.hook_choice;
     return (
       <div className="view-pad">
-        <Link href="/projetos" className="back-link">
-          ← Projetos
-        </Link>
-        <div className="section-head">
-          <div>
-            <p className="eyebrow">Podcast</p>
-            <h1 className="section-title">{data.filename || "Episódio"}</h1>
-          </div>
-        </div>
+        {cabecalho("aprovado")}
         <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-5 max-w-xl">
           <p className="flex items-center gap-2 font-medium text-emerald-400">
             <Check className="size-4" /> Gancho {c.index + 1} aprovado
@@ -216,8 +304,17 @@ export function HookApproval({ jobId }: { jobId: string }) {
             {c.approved_at ? ` · ${timeAgo(c.approved_at)}` : ""}
           </p>
           <p className="mt-2 text-sm text-muted-foreground">
-            Aguardando a montagem do episódio (próxima etapa do pipeline).
+            Falta montar: gancho + vinheta + episódio completo, sem re-encodar o corpo.
           </p>
+          <Button className="mt-4" disabled={composing || !data.source_available} onClick={compose}>
+            <Clapperboard className="size-4" />
+            {composing ? "Disparando..." : "Montar episódio"}
+          </Button>
+          {!data.source_available && (
+            <p className="mt-2 text-xs text-amber-400">
+              O vídeo original não está mais no servidor; envie o episódio de novo pra montar.
+            </p>
+          )}
         </div>
       </div>
     );

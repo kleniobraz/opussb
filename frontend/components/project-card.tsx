@@ -21,9 +21,9 @@ function ProjectWave({ seed }: { seed: number }) {
   );
 }
 
-// Podcast estacionado (§39) abre a tela de aprovação de gancho, não a página de clipes.
+// Podcast (§39) abre a tela própria (aprovação/montagem/player), não a página de clipes.
 function projectHref(p: Project) {
-  return p.status === "aguardando_aprovacao" || p.status === "gancho_aprovado"
+  return p.job_type === "podcast" || p.status === "aguardando_aprovacao" || p.status === "gancho_aprovado"
     ? `/podcast/${p.id}`
     : `/projetos/${p.id}`;
 }
@@ -46,6 +46,8 @@ function ProjectPill({ p }: { p: Project }) {
       </span>
     );
   if (p.status === "gancho_aprovado") return <span className="project-pill">gancho aprovado</span>;
+  if (p.job_type === "podcast" && p.status === "done")
+    return <span className="project-pill">episódio montado</span>;
   if (p.clip_count != null)
     return (
       <span className="project-pill">
