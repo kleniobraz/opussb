@@ -162,7 +162,9 @@ def concat_copy(paths: list, out_path: str, timeout: int, nice: int = 0) -> bool
     return True
 
 
-def _duration(path: str):
+def duration(path: str):
+    """Duração (segundos) via ffprobe, ou None sem conseguir ler. Pública: usada pela
+    montagem e pelo corte de início (podcast_cut.py), não duplica a lógica em cada um."""
     try:
         r = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -173,8 +175,12 @@ def _duration(path: str):
         return None
 
 
-def _run_ffmpeg(cmd: list, nice: int, etapa: str) -> None:
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=config.COMPOSE_TIMEOUT,
+def run_ffmpeg(cmd: list, nice: int, etapa: str, timeout: int | None = None) -> None:
+    """Roda um ffmpeg e valida o resultado (saída existe e não é lixo pequeno). Pública:
+    usada pela montagem (timeout default = COMPOSE_TIMEOUT) e pelo corte de início, que
+    passa seu próprio timeout dedicado (etapas com pesos de I/O bem diferentes)."""
+    to = timeout if timeout is not None else config.COMPOSE_TIMEOUT
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=to,
                        preexec_fn=lambda: os.nice(nice))
     out = cmd[-1]
     if r.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) < 1024:
@@ -202,8 +208,8 @@ def _ensure_matched_vinheta(vinheta: dict, sig: dict, workdir: str, threads: int
     s3_client.download_file(vinheta["s3_key"], src)
     vsig = probe_av_signature(src, require_audio=False)
     silence = bool(sig["has_audio"]) and not (vsig and vsig["has_audio"])
-    _run_ffmpeg(build_matched_cmd(src, matched, sig, silence=silence, threads=threads),
-                nice, "casamento da vinheta")
+    run_ffmpeg(build_matched_cmd(src, matched, sig, silence=silence, threads=threads),
+               nice, "casamento da vinheta")
     try:
         s3_client.upload_file(matched, matched_key)
     except Exception as e:
@@ -259,8 +265,8 @@ def _compose(job_id: str, job: dict, workdir: str) -> None:
 
     db.update_job(job_id, progress=20)
     gancho = os.path.join(workdir, "gancho.mp4")
-    _run_ffmpeg(build_matched_cmd(src, gancho, sig, seek=(hook_start, hook_end - hook_start),
-                                  threads=threads), nice, "recorte do gancho")
+    run_ffmpeg(build_matched_cmd(src, gancho, sig, seek=(hook_start, hook_end - hook_start),
+                                 threads=threads), nice, "recorte do gancho")
 
     db.update_job(job_id, progress=45)
     vin_matched = _ensure_matched_vinheta(vinheta, sig, workdir, threads, nice)
@@ -274,7 +280,7 @@ def _compose(job_id: str, job: dict, workdir: str) -> None:
         cmd = ["ffmpeg", "-y", "-i", src, "-map", "0:v:0"]
         if sig["has_audio"]:
             cmd += ["-map", "0:a:0"]
-        _run_ffmpeg(cmd + ["-c", "copy", corpo], nice, "remux do corpo (trilhas extras)")
+        run_ffmpeg(cmd + ["-c", "copy", corpo], nice, "remux do corpo (trilhas extras)")
 
     db.update_job(job_id, progress=65)
     final_local = os.path.join(workdir, "final.mp4")
@@ -284,9 +290,9 @@ def _compose(job_id: str, job: dict, workdir: str) -> None:
 
     # Sanidade da emenda: uma junção corrompida some ou duplica tempo; duração total tem
     # que bater com a soma das partes.
-    esperado = ((hook_end - hook_start) + (_duration(vin_matched) or 0)
-                + (_duration(corpo) or 0))
-    total = _duration(final_local) or 0
+    esperado = ((hook_end - hook_start) + (duration(vin_matched) or 0)
+                + (duration(corpo) or 0))
+    total = duration(final_local) or 0
     if abs(total - esperado) > 2.0:
         raise RuntimeError(f"duração do final ({total:.1f}s) não bate com a soma "
                            f"das partes ({esperado:.1f}s)")

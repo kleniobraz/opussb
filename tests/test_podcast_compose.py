@@ -157,7 +157,7 @@ def test_compose_monta_com_emendas_continuas_e_anullsrc(tmp_path, s3_falso):
     final = s3_falso["uploads"][key]
 
     # Duração = gancho (2,5s) + vinheta (2s) + corpo (10s)
-    dur = podcast_compose._duration(final)
+    dur = podcast_compose.duration(final)
     assert abs(dur - 14.5) < 0.6, dur
 
     # Assinatura do final = a do corpo, e as trilhas existem (anullsrc entrou na vinheta)
