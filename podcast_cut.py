@@ -75,15 +75,23 @@ def keyframe_density(path: str, inicio: float, janela: float) -> float | None:
 
 def _diagnostico_arquivo_todo(path: str, total: float | None, lookahead: float) -> bool:
     """True se uma amostra em outra parte do arquivo (o meio, longe do ponto marcado)
-    também tiver keyframes espaçados além do lookahead configurado: sinal de que o
-    problema é do arquivo inteiro (GOP largo em todo canto), não só perto do ponto
-    marcado. Usada só pra escolher a mensagem de erro certa."""
+    também indicar GOP largo: sinal de que o problema é do arquivo inteiro, não só perto
+    do ponto marcado. Usada só pra escolher a mensagem de erro certa."""
     if not total or total <= 0:
         return False
     janela = min(_DIAG_SAMPLE_WINDOW, total)
     inicio = max(0.0, (total - janela) / 2)
     media = keyframe_density(path, inicio, janela)
-    return media is not None and media > lookahead
+    if media is None:
+        # Menos de 2 keyframes numa janela de quase 90s já É a evidência de GOP largo
+        # (mais largo que a própria janela, portanto maior que o lookahead testado): não é
+        # "sem sinal", é o MESMO sinal do outro ramo, só que não dá pra calcular uma média
+        # com 0 ou 1 ponto. Tratar como inconclusivo erraria pro lado de deixar o usuário
+        # preso num retry sem saída.
+        log.info("[cut_intro] diagnóstico em %s: menos de 2 keyframes numa amostra de "
+                 "%.0fs no meio do arquivo, tratando como GOP largo", path, janela)
+        return True
+    return media > lookahead
 
 
 def mensagem_sem_keyframe(path: str, t: float, lookahead: float, total: float | None) -> str:
@@ -98,10 +106,12 @@ def mensagem_sem_keyframe(path: str, t: float, lookahead: float, total: float | 
             "ponto um pouco diferente")
 
 
-def _copiar_resto_com_heartbeat(cmd: list, nice: int, job_id: str) -> None:
-    """Cópia do resto (-c copy) é I/O de um corpo de possivelmente vários GB, a etapa mais
-    demorada do corte. Heartbeat periódico (mesmo padrão de _upload_com_heartbeat do
-    podcast_compose) pra não ser ceifada pelo watchdog no meio de um trabalho legítimo."""
+def _com_heartbeat(job_id: str, fn) -> None:
+    """Roda fn() com sinal de vida periódico em 'cortando_inicio' (mesmo padrão de
+    _upload_com_heartbeat do podcast_compose), pra não ser ceifado pelo watchdog no meio
+    de um trabalho de I/O pesado sobre um corpo de possivelmente vários GB. Cobre a janela
+    INTEIRA entre o início da cópia do resto e o fim do concat (não só a cópia isolada):
+    as duas etapas leem/escrevem um arquivo do tamanho do corpo, ordem de grandeza igual."""
     pare = threading.Event()
 
     def _bate():
@@ -111,7 +121,7 @@ def _copiar_resto_com_heartbeat(cmd: list, nice: int, job_id: str) -> None:
     t = threading.Thread(target=_bate, daemon=True)
     t.start()
     try:
-        podcast_compose.run_ffmpeg(cmd, nice, "cópia do resto", timeout=config.PODCAST_CUT_TIMEOUT)
+        fn()
     finally:
         pare.set()
 
@@ -164,18 +174,23 @@ def _cortar_inicio(job_id: str, job: dict, workdir: str, cut_at: float) -> None:
 
     db.update_job(job_id, progress=35)
     resto = os.path.join(workdir, "resto.mp4")
+    final_local = os.path.join(workdir, "final.mp4")
     # Precisão alta no -ss (6 casas decimais), nunca truncado pra milissegundos: o keyframe
     # veio de pts_time com essa mesma precisão, um arredondamento aqui reintroduz o offset
     # que a técnica inteira existe pra evitar.
     cmd_resto = ["ffmpeg", "-y", "-ss", f"{keyframe:.6f}", "-i", src,
                  "-c", "copy", "-avoid_negative_ts", "make_zero", resto]
-    _copiar_resto_com_heartbeat(cmd_resto, nice, job_id)
 
-    db.update_job(job_id, progress=80)
-    final_local = os.path.join(workdir, "final.mp4")
-    if not podcast_compose.concat_copy([pedaco, resto], final_local,
-                                       timeout=config.PODCAST_CUT_TIMEOUT, nice=nice):
-        raise RuntimeError("concat do corte de início falhou")
+    def _copiar_e_concatenar():
+        podcast_compose.run_ffmpeg(cmd_resto, nice, "cópia do resto", timeout=config.PODCAST_CUT_TIMEOUT)
+        db.update_job(job_id, progress=80)
+        if not podcast_compose.concat_copy([pedaco, resto], final_local,
+                                           timeout=config.PODCAST_CUT_TIMEOUT, nice=nice):
+            raise RuntimeError("concat do corte de início falhou")
+
+    # Heartbeat ÚNICO cobrindo cópia do resto + concat: as duas leem/escrevem um arquivo
+    # do tamanho do corpo, a mesma ordem de grandeza de I/O (ver _com_heartbeat).
+    _com_heartbeat(job_id, _copiar_e_concatenar)
 
     # Sanidade da emenda: tolerância apertada de propósito (ver _DUR_TOLERANCIA).
     esperado = total - cut_at
