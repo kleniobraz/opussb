@@ -127,14 +127,21 @@ PODCAST_CUT_KEYFRAME_LOOKAHEAD: float = float(os.environ.get("PODCAST_CUT_KEYFRA
 PODCAST_CUT_MIN_REMAINING_SECONDS: float = float(
     os.environ.get("PODCAST_CUT_MIN_REMAINING_SECONDS", "300"))
 # Guard-rail de disco DEDICADO do corte de início (não reaproveita COMPOSE_DISK_FACTOR):
-# aqui o "resto" (quase o corpo inteiro) e o "final" coexistem no disco ao mesmo tempo que
-# o fonte original, pico real ≈ 2x o fonte, não ≈ 1x como na montagem. Valor PROVISÓRIO
-# com folga generosa, a validar empiricamente depois.
-PODCAST_CUT_DISK_FACTOR: float = float(os.environ.get("PODCAST_CUT_DISK_FACTOR", "3.0"))
+# o "resto" (quase o corpo inteiro) e o "final" coexistem no disco entre si E com o fonte
+# original (só apagado depois de tudo confirmado), pico TOTAL no pior caso (corte bem no
+# início, o uso mais comum da feature) tende a ≈3x o fonte, não ≈2x como um comentário
+# antigo sugeria (ver podcast_cut.py). Validação empírica de 2026-07-08 com sintético de
+# 2h34min (montado a partir de um corpo real da Carbone, corte em 120s) mediu pico real de
+# 2.974x: o antigo default de 3.0 tinha margem quase zero. 3.5 dá ~17% de folga sobre o
+# pior caso teórico de 3x.
+PODCAST_CUT_DISK_FACTOR: float = float(os.environ.get("PODCAST_CUT_DISK_FACTOR", "3.5"))
 # Teto POR ffmpeg do corte de início (reencode do pedacinho, cópia do resto, concat). A
-# cópia do resto é I/O de um corpo de possivelmente vários GB; valor PROVISÓRIO generoso,
-# a validar contra um arquivo real de 2h+.
-PODCAST_CUT_TIMEOUT: int = int(os.environ.get("PODCAST_CUT_TIMEOUT", "1800"))
+# cópia do resto é I/O de um corpo de possivelmente vários GB. Validação empírica de
+# 2026-07-08 (mesmo sintético de 2h34min) mediu 46.6s pra cópia do resto e 73.7s pro
+# concat (etapa mais lenta); 300s dá quase 4x de folga sobre os 73.7s medidos, cobrindo
+# disco de produção mais contestado que o ambiente isolado do teste, e segue bem longe do
+# watchdog de 30min (que o heartbeat já cobre à parte).
+PODCAST_CUT_TIMEOUT: int = int(os.environ.get("PODCAST_CUT_TIMEOUT", "300"))
 
 # Sobra (handles) cortada de cada lado do clipe, em segundos. O clip_NN_base.mp4 passa a ser
 # a janela [start-H, end+H] (clamped ao vídeo) reenquadrada, e o editor abre/fecha o corte

@@ -159,8 +159,14 @@ def _cortar_inicio(job_id: str, job: dict, workdir: str, cut_at: float) -> None:
             f"(mínimo {config.PODCAST_CUT_MIN_REMAINING_SECONDS:.0f}s)")
 
     # Defesa em profundidade: o endpoint já checa disco livre, mas o motor do corte não
-    # confia cegamente (mesmo padrão de podcast_compose._compose). Pico real do corte é
-    # ~2x o fonte (resto + final coexistem com o fonte), não ~1x como na montagem.
+    # confia cegamente (mesmo padrão de podcast_compose._compose). O "resto" e o "final"
+    # coexistem entre si (~2x o fonte, já que os dois têm quase o tamanho inteiro do
+    # corpo) E com o fonte original, que só é apagado depois de tudo confirmado: pico
+    # TOTAL no pior caso (corte bem no início, o uso mais comum da feature) tende a ~3x
+    # o fonte, não ~2x. Validação empírica de 2026-07-08 (sintético de 2h34min montado a
+    # partir de um corpo real da Carbone, corte em 120s) mediu pico real de 2.974x,
+    # confirmando essa conta. Bem diferente do ~1x da montagem (podcast_compose._compose),
+    # que não mantém um "resto" do tamanho do corpo inteiro.
     src_bytes = os.path.getsize(src)
     livre = shutil.disk_usage(os.path.dirname(src)).free
     preciso = int(src_bytes * config.PODCAST_CUT_DISK_FACTOR)
