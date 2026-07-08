@@ -3256,6 +3256,7 @@ def podcast_hooks_view(job_id):
         "filename": job["filename"],
         "hooks": _job_hooks(job),
         "hook_choice": choice,
+        "intro_cut_at": job.get("intro_cut_at"),
         "source_available": bool(job.get("local_path") and os.path.exists(job["local_path"])),
         "final_available": bool(job.get("podcast_final_key")) and job["status"] == "done",
         "error": job.get("error") if job["status"] == "error" else None,
