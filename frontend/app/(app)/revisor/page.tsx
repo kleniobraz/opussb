@@ -449,7 +449,7 @@ export default function RevisorPage() {
       <section className="page-hero">
         <div className="page-hero-inner">
           <p className="eyebrow">IA</p>
-          <h1 className="page-title">Revisor de legenda</h1>
+          <h1 className="page-title">Revisor IA</h1>
         </div>
       </section>
       <div className="view-pad-narrow">

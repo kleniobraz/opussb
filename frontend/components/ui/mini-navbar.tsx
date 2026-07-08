@@ -3,24 +3,48 @@
 import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Scissors, LogOut } from "lucide-react";
+import { Scissors, LogOut, ChevronDown } from "lucide-react";
 import { useAuth } from "@/providers/auth-provider";
 import { firstNameFromEmail, initialsFromEmail } from "@/lib/format";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 interface NavItem {
   label: string;
   href: string;
 }
 
+// Itens que ficam agrupados no dropdown "Workspace" da barra desktop.
+const WORKSPACE_ITEMS: NavItem[] = [
+  { label: "Revisor IA", href: "/revisor" },
+  { label: "Podcasts", href: "/podcast" },
+  { label: "Favoritos", href: "/favoritos" },
+];
+
 function navItemsFor(isAdmin: boolean): NavItem[] {
   const base: NavItem[] = [
     { label: "Home", href: "/" },
     { label: "Projetos", href: "/projetos" },
     { label: "Podcasts", href: "/podcast" },
-    { label: "Revisor de legenda", href: "/revisor" },
+    { label: "Revisor IA", href: "/revisor" },
     { label: "Favoritos", href: "/favoritos" },
     { label: "Configurações", href: "/config" },
   ];
+  return isAdmin ? [...base, { label: "Painel", href: "/painel" }] : base;
+}
+
+// Itens da barra desktop antes e depois do dropdown "Workspace".
+const DESKTOP_ITEMS_BEFORE_WORKSPACE: NavItem[] = [
+  { label: "Home", href: "/" },
+  { label: "Projetos", href: "/projetos" },
+];
+
+function desktopItemsAfterWorkspaceFor(isAdmin: boolean): NavItem[] {
+  const base: NavItem[] = [{ label: "Configurações", href: "/config" }];
   return isAdmin ? [...base, { label: "Painel", href: "/painel" }] : base;
 }
 
@@ -71,6 +95,8 @@ export function MiniNavbar() {
   const { user, logout } = useAuth();
   const isAdmin = !!user?.is_admin;
   const items = navItemsFor(isAdmin);
+  const desktopItemsAfterWorkspace = desktopItemsAfterWorkspaceFor(isAdmin);
+  const workspaceActive = WORKSPACE_ITEMS.some((it) => isActive(pathname, it.href));
   const name = firstNameFromEmail(user?.email);
   const initials = initialsFromEmail(user?.email);
 
@@ -133,7 +159,37 @@ export function MiniNavbar() {
         </Link>
 
         <nav className="hidden items-center gap-6 sm:flex">
-          {items.map((it) => (
+          {DESKTOP_ITEMS_BEFORE_WORKSPACE.map((it) => (
+            <AnimatedNavLink key={it.href} href={it.href} active={isActive(pathname, it.href)}>
+              {it.label}
+            </AnimatedNavLink>
+          ))}
+
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              aria-label="Menu Workspace"
+              className={`group relative inline-flex h-5 items-center gap-1 text-sm outline-none ${
+                workspaceActive ? "font-semibold text-[var(--gold)]" : "text-[var(--ink-soft)]"
+              }`}
+            >
+              Workspace
+              <ChevronDown className="size-3.5 transition-transform group-data-[state=open]:rotate-180" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="center">
+              {WORKSPACE_ITEMS.map((it) => (
+                <DropdownMenuItem key={it.href} asChild>
+                  <Link
+                    href={it.href}
+                    className={isActive(pathname, it.href) ? "font-semibold text-[var(--gold)]" : undefined}
+                  >
+                    {it.label}
+                  </Link>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {desktopItemsAfterWorkspace.map((it) => (
             <AnimatedNavLink key={it.href} href={it.href} active={isActive(pathname, it.href)}>
               {it.label}
             </AnimatedNavLink>
