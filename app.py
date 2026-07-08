@@ -3453,11 +3453,21 @@ def callback():
     # Podcast (§39): a transcrição volta pelo MESMO webhook do N8N, mas daqui o fluxo é
     # outro: guarda o SRT, IGNORA o clips_json (o scoring de clipes roda à toa no N8N por
     # ora; morre na frente de remover o N8N) e dispara a análise de gancho. Idempotência
-    # estrita: só aceita em 'transcribing', então callback duplicado não re-roda o hooks
-    # nem re-gasta API (o caminho de clipes mantém a semântica de retry que já tinha).
+    # por transcript (NÃO por status 'transcribing'): o N8N de produção faz PATCH direto
+    # de status/progress ANTES do callback (Steps 2 e 7 do N8N_WORKFLOW.md, feitos pro
+    # fluxo de clipes: "transcribing"/40 e depois "cutting"/65), então quando o callback
+    # chega o job de podcast já pode estar em 'cutting'. Uma guarda por status travava
+    # nesse "cutting" e pulava o callback pra sempre (transcript nunca salvo, hooks nunca
+    # dispara). transcript IS NULL é o estado real que importa: ainda não processamos
+    # este job, não importa que status o N8N tenha deixado. E fica ATÔMICO com o disparo
+    # do hooks (mesmo update abaixo grava transcript e já tira o job do "ainda não
+    # processado"), o que hooks_json IS NULL sozinho não garantiria: o hooks.run_podcast_hooks
+    # leva vários segundos (até 2 chamadas ao Claude) com hooks_json ainda NULL nesse meio
+    # tempo, e o serviço roda com threads reais (gthread) recebendo um N8N "at least once";
+    # uma duplicata nessa janela reprocessaria e dispararia o Claude em dobro.
     if job.get("job_type") == "podcast":
-        if job["status"] != "transcribing":
-            return jsonify({"ok": True, "skipped": f"podcast em {job['status']}"})
+        if job.get("transcript") is not None:
+            return jsonify({"ok": True, "skipped": f"podcast já processado (status {job['status']})"})
         db.update_job(job_id, transcript=data.get("transcript"),
                       status="analisando_gancho", progress=75)
         threading.Thread(target=hooks.run_podcast_hooks, args=(job_id,), daemon=True).start()

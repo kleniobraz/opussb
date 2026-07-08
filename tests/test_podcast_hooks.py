@@ -242,10 +242,51 @@ def test_callback_podcast_dispara_hooks_e_ignora_clips_json(client, monkeypatch,
     assert job["transcript"] and job["clips_json"] is None
     assert _espera(lambda: rodou.called)
 
-    # duplicata do N8N: já saiu de 'transcribing' -> skip, sem nova thread
+    # duplicata do N8N: transcript já gravado -> skip, sem nova thread (mesmo com
+    # hooks_json AINDA NULL, já que hooks.run_podcast_hooks está mockado e não escreveu
+    # nada; é exatamente a janela em que hooks_json IS NULL sozinho reprocessaria)
+    assert db.get_job("TEST-pod")["hooks_json"] is None
     rodou.reset_mock()
     r = client.post("/api/callback", json={"job_id": "TEST-pod", "transcript": "x"})
     assert "skipped" in r.get_json()
+    time.sleep(0.1)
+    rodou.assert_not_called()
+
+
+def test_callback_podcast_sobrevive_ao_n8n_pulando_status_pra_cutting(client, monkeypatch, mocker):
+    """Regressão do bug real de produção (2026-07-08): o N8N de produção, feito pro
+    fluxo de clipes, faz PATCH direto status='cutting' ANTES de chamar o callback (Step 7
+    do N8N_WORKFLOW.md). Um job de podcast NUNCA passa por 'cutting' por conta própria,
+    mas chega ao callback já nesse status. A guarda por transcript (não por status
+    'transcribing') tem que aceitar e disparar os ganchos mesmo assim."""
+    monkeypatch.setattr(config, "PODCAST_ENABLED", True)
+    rodou = mocker.patch("hooks.run_podcast_hooks")
+    _podcast_job(status="cutting")  # o N8N já pulou o status antes do callback chegar
+
+    r = client.post("/api/callback", json={"job_id": "TEST-pod",
+                                           "transcript": _srt_longo(),
+                                           "clips_json": '[{"start": 1}]'})
+    assert r.status_code == 200
+    assert "skipped" not in r.get_json()
+    job = db.get_job("TEST-pod")
+    assert job["status"] == "analisando_gancho"
+    assert job["transcript"] and job["clips_json"] is None
+    assert _espera(lambda: rodou.called)
+
+
+def test_callback_podcast_duplicata_apos_aguardando_aprovacao_e_pulada(client, monkeypatch, mocker):
+    """Idempotência no outro extremo: callback duplicado chegando bem depois, quando o
+    job já tem hooks_json e está em 'aguardando_aprovacao' (ou além). transcript IS NOT
+    NULL cobre esse caso do mesmo jeito, sem precisar checar hooks_json nem status."""
+    monkeypatch.setattr(config, "PODCAST_ENABLED", True)
+    rodou = mocker.patch("hooks.run_podcast_hooks")
+    _podcast_job(status="aguardando_aprovacao")
+    db.update_job("TEST-pod", transcript=_srt_longo(),
+                  hooks_json=json.dumps({"hooks": []}))
+
+    r = client.post("/api/callback", json={"job_id": "TEST-pod", "transcript": "outro srt"})
+    assert r.get_json().get("skipped")
+    assert db.get_job("TEST-pod")["status"] == "aguardando_aprovacao"
     time.sleep(0.1)
     rodou.assert_not_called()
 
