@@ -33,24 +33,39 @@ _DIAG_SAMPLE_WINDOW = 90.0
 def _keyframes_no_intervalo(path: str, inicio: float, janela: float) -> list:
     """Pacotes de vídeo com flag de keyframe ('K') numa janela [inicio, inicio+janela],
     via ffprobe a nível de PACOTE (sem decodificar). read_intervals restringe o ffprobe a
-    essa janela em vez de escanear o arquivo inteiro, fundamental num corpo de horas."""
+    essa janela em vez de escanear o arquivo inteiro, fundamental num corpo de horas.
+
+    Fim do read_intervals em formato ABSOLUTO (inicio+janela), nunca relativo ("%+janela"):
+    o ffprobe faz seek pro keyframe anterior mais próximo de `inicio` (não dá pra decodificar
+    no meio de um GOP) e, com o fim relativo, soma `janela` a partir de ONDE O SEEK CAIU, não
+    a partir de `inicio`. Com GOP pequeno (o comum) o seek cai perto e o erro é desprezível;
+    com GOP maior que `janela` a janela lida fica deslocada pra trás e some keyframe real
+    dentro de [inicio, inicio+janela) (bug encontrado escrevendo o teste desse cenário).
+
+    Efeito colateral do fim absoluto: como o ffprobe faz seek pro keyframe ANTERIOR a
+    `inicio` antes de começar a devolver pacotes, o retorno bruto pode incluir keyframes de
+    ANTES de `inicio` (o próprio keyframe do seek). Por isso filtramos explicitamente pelo
+    limite inferior aqui, em vez de confiar que o ffprobe já devolve só o pedido."""
     try:
         r = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
-             "-read_intervals", f"{inicio}%+{janela}",
+             "-read_intervals", f"{inicio}%{inicio + janela}",
              "-show_entries", "packet=pts_time,flags", "-of", "json", path],
             capture_output=True, text=True, timeout=_PROBE_TIMEOUT)
         pacotes = (json.loads(r.stdout) if r.returncode == 0 and r.stdout else {}).get("packets") or []
     except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
         return []
+    margem = 1e-6
     pts = []
     for p in pacotes:
         if "K" not in (p.get("flags") or ""):
             continue
         try:
-            pts.append(float(p.get("pts_time")))
+            pts_time = float(p.get("pts_time"))
         except (TypeError, ValueError):
             continue
+        if inicio - margem <= pts_time <= inicio + janela + margem:
+            pts.append(pts_time)
     return sorted(pts)
 
 
