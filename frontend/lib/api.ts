@@ -28,6 +28,7 @@ import type {
   Stats,
   UploadOptions,
   UploadResponse,
+  Vinheta,
 } from "./types";
 
 export class AuthError extends Error {
@@ -351,6 +352,57 @@ export const glossaryDelete = (id: string) =>
   );
 
 // ── Podcast: aprovação de gancho (§39 Parte 4) ──────────────────────────────
+// Biblioteca de vinhetas (id + rótulo + duração), escolhida no upload do podcast.
+export const getVinhetas = () => getJson<{ vinhetas: Vinheta[] }>("/api/vinhetas");
+
+// Upload do episódio (multipart: video + vinheta_id) com progresso real (mesmo padrão do
+// uploadWithProgress de clipes, mas sem os campos de min/max/aspect/idioma/legenda, que não
+// existem no fluxo de podcast). Estaciona o job em status 'uploaded'.
+export function podcastUploadWithProgress(
+  file: File,
+  vinhetaId: string,
+  onProgress?: (p: { loaded: number; total: number }) => void,
+): Promise<UploadResponse & { status?: string }> {
+  const fd = new FormData();
+  fd.append("video", file);
+  fd.append("vinheta_id", vinhetaId);
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/podcast/upload");
+    xhr.withCredentials = true;
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress({ loaded: e.loaded, total: e.total });
+    };
+    xhr.onload = () => {
+      let data: unknown = {};
+      try {
+        data = JSON.parse(xhr.responseText || "{}");
+      } catch {
+        /* resposta sem JSON */
+      }
+      const err = (data as { error?: string })?.error;
+      if (xhr.status === 401) {
+        if (typeof window !== "undefined") window.dispatchEvent(new Event(AUTH_EVENT));
+        reject(new AuthError());
+      } else if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(data as UploadResponse & { status?: string });
+      } else {
+        reject(new ApiError(String(err || "HTTP " + xhr.status), xhr.status, data));
+      }
+    };
+    xhr.onerror = () => reject(new ApiError("Falha de rede no upload.", 0));
+    xhr.ontimeout = () => reject(new ApiError("Tempo esgotado no upload.", 0));
+    xhr.send(fd);
+  });
+}
+
+// Dispara a transcrição do job estacionado (pode devolver 429 se a fila estiver ocupada).
+export const podcastTranscribe = (id: string) =>
+  postJson<{ job_id: string; status: string }>(
+    "/api/podcast/" + encodeURIComponent(id) + "/transcribe",
+  );
+
 export const podcastHooks = (id: string) =>
   getJson<PodcastHooksResponse>("/api/podcast/" + encodeURIComponent(id) + "/hooks");
 // URL do 16:9 original servido com HTTP Range (preview do trim toca direto no <video>).

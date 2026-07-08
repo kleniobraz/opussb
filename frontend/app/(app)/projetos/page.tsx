@@ -21,7 +21,7 @@ function SkelGrid() {
 export default function ProjetosPage() {
   const { data, isLoading, isError } = useProjects();
   const [sort, setSort] = useState<Sort>("all");
-  const projects = data?.projects ?? [];
+  const projects = (data?.projects ?? []).filter((p) => p.job_type !== "podcast");
 
   const sorted = [...projects].sort((a, b) => {
     if (sort === "score") return (b.avg_score || 0) - (a.avg_score || 0);

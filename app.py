@@ -1223,7 +1223,7 @@ def download_all(job_id):
 @login_required
 def stats():
     jobs = db.list_jobs(session["user"])
-    done = [j for j in jobs if j["status"] == "done"]
+    done = [j for j in jobs if j["status"] == "done" and (j.get("job_type") or "clips") != "podcast"]
     clips, all_scores = 0, []
     for j in done:
         try:
@@ -1237,7 +1237,8 @@ def stats():
         "videos_processed": len(done),
         "clips_generated": clips,
         "avg_score": round(sum(all_scores) / len(all_scores), 1) if all_scores else None,
-        "processing_count": sum(1 for j in jobs if j["status"] not in ("done", "error")),
+        "processing_count": sum(1 for j in jobs if j["status"] not in ("done", "error")
+                                 and (j.get("job_type") or "clips") != "podcast"),
         "recent": [_project_from_job(j) for j in done[:4]],
     })
 

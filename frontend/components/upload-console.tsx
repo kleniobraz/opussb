@@ -3,9 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Upload, Sparkles } from "lucide-react";
 import * as api from "@/lib/api";
-import { fmtBytes } from "@/lib/format";
+import { fmtBytes, fmtEta } from "@/lib/format";
+import { MAX_BYTES, extOk } from "@/lib/upload";
 import { usePrefs } from "@/hooks/use-prefs";
 import { cn } from "@/lib/utils";
+import { DropIcon } from "./drop-icon";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Switch } from "./ui/switch";
@@ -16,9 +18,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./ui/select";
-
-const ACCEPT_EXT = ["mp4", "mov", "avi", "mkv", "webm"];
-const MAX_BYTES = 15 * 1024 * 1024 * 1024; // 15GB
 
 // Logos das redes nas predefinicoes (simple-icons, CC0). Monocromaticos: herdam a cor do chip
 // (cinza quando inativo, dourado quando ativo), no mesmo padrao do glifo do Zoho/YouTube.
@@ -62,35 +61,6 @@ const ASPECTS = [
 // YouTube temporariamente OFF (bloqueio anti-robô intermitente do IP de datacenter; ver
 // BACKEND §17). A stack funciona, mas não é confiável ainda. Flip pra true reativa tudo.
 const YOUTUBE_ENABLED = false;
-
-function extOk(name: string) {
-  const m = /\.([a-z0-9]+)$/i.exec(name || "");
-  return !!m && ACCEPT_EXT.includes(m[1].toLowerCase());
-}
-
-function fmtEta(sec: number): string {
-  if (!isFinite(sec) || sec < 0) return "—";
-  const s = Math.round(sec);
-  if (s < 60) return `${s} s`;
-  const m = Math.floor(s / 60);
-  const r = s % 60;
-  return r ? `${m} min ${r} s` : `${m} min`;
-}
-
-const DropIcon = () => (
-  <svg
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-  >
-    <path d="M20 16.5A4.5 4.5 0 0 0 17.5 8h-1.3A7 7 0 1 0 4 14.9" />
-    <polyline points="9 13 12 10 15 13" />
-    <line x1="12" y1="10" x2="12" y2="20" />
-  </svg>
-);
 
 // Glifo do YouTube (lucide desta versão não exporta Youtube). Monocromático: herda a cor
 // do segmento (escuro sobre o thumb dourado quando ativo, cinza quando inativo).

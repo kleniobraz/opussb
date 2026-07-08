@@ -25,6 +25,15 @@ export function scoreClass(score?: number | null): string {
   return "score-low";
 }
 
+export function fmtEta(sec: number): string {
+  if (!isFinite(sec) || sec < 0) return "—";
+  const s = Math.round(sec);
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return r ? `${m} min ${r} s` : `${m} min`;
+}
+
 export function fmtSeconds(s?: number | null): string {
   const sec = Math.round(s || 0);
   const m = Math.floor(sec / 60);

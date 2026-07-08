@@ -71,8 +71,14 @@ export function HookApproval({ jobId }: { jobId: string }) {
   const { data, isLoading, isError } = useQuery({
     queryKey: ["podcastHooks", jobId],
     queryFn: () => api.podcastHooks(jobId),
-    // A montagem roda no servidor; o polling leve acompanha o progresso até done/error.
-    refetchInterval: (q) => (q.state.data?.status === "montando" ? 3000 : false),
+    // Todo estado que roda sozinho no servidor (fila, transcrição, análise de gancho,
+    // montagem) precisa de polling; só os que dependem de ação humana (uploaded,
+    // aguardando_aprovacao, gancho_aprovado) ou já terminaram (done, error) ficam parados.
+    refetchInterval: (q) => {
+      const s = q.state.data?.status;
+      const parado = ["uploaded", "aguardando_aprovacao", "gancho_aprovado", "done", "error"];
+      return s && !parado.includes(s) ? 3000 : false;
+    },
   });
 
   const [selected, setSelected] = useState<number | null>(null);
@@ -81,6 +87,7 @@ export function HookApproval({ jobId }: { jobId: string }) {
   const [playing, setPlaying] = useState(false);
   const [approving, setApproving] = useState(false);
   const [composing, setComposing] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const stopAtRef = useRef<number | null>(null);
   const rafRef = useRef<number>(0);
@@ -162,6 +169,20 @@ export function HookApproval({ jobId }: { jobId: string }) {
       toast.error(e instanceof api.ApiError ? e.message : "Falha ao iniciar a montagem.");
     } finally {
       setComposing(false);
+    }
+  }
+
+  async function startTranscribe() {
+    setTranscribing(true);
+    try {
+      await api.podcastTranscribe(jobId);
+      toast.success("Transcrição iniciada.");
+      qc.invalidateQueries({ queryKey: ["podcastHooks", jobId] });
+      qc.invalidateQueries({ queryKey: ["projects"] });
+    } catch (e) {
+      toast.error(e instanceof api.ApiError ? e.message : "Falha ao iniciar a transcrição.");
+    } finally {
+      setTranscribing(false);
     }
   }
 
@@ -287,6 +308,27 @@ export function HookApproval({ jobId }: { jobId: string }) {
     );
   }
 
+  // Falhou antes da aprovação (transcrição ou análise de gancho): a rota de disparo só
+  // aceita job em 'uploaded', então não dá pra re-tentar este mesmo job; orienta a reenviar.
+  if (data.status === "error" && !data.hook_choice) {
+    return (
+      <div className="view-pad">
+        {cabecalho("falhou")}
+        <div className="max-w-xl space-y-3">
+          <p className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-400">
+            {data.error || "O processamento falhou antes de gerar os ganchos."}
+          </p>
+          <p className="text-sm text-muted-foreground">
+            Não dá pra re-tentar este envio; envie o episódio de novo pra tentar outra vez.
+          </p>
+          <Button asChild variant="outline">
+            <Link href="/podcast">Enviar de novo</Link>
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   // Já aprovado: resumo da escolha + disparo manual da montagem (padrão do /transcribe:
   // trabalho pronto não toma 429; o produtor aciona com a fila livre).
   if (data.status === "gancho_aprovado" && data.hook_choice) {
@@ -315,6 +357,26 @@ export function HookApproval({ jobId }: { jobId: string }) {
               O vídeo original não está mais no servidor; envie o episódio de novo pra montar.
             </p>
           )}
+        </div>
+      </div>
+    );
+  }
+
+  // Job estacionado: o vídeo subiu e passou na validação (16:9 + frame rate constante), mas
+  // a transcrição ainda não foi disparada. O produtor aciona quando a fila estiver livre.
+  if (data.status === "uploaded") {
+    return (
+      <div className="view-pad">
+        {cabecalho("aguardando transcrição")}
+        <div className="max-w-xl space-y-3">
+          <p className="text-sm text-muted-foreground">
+            O episódio foi enviado e está pronto pra transcrever. Dispare quando a fila
+            estiver livre; a análise de ganchos abre logo em seguida.
+          </p>
+          <Button disabled={transcribing} onClick={startTranscribe}>
+            <Clapperboard className="size-4" />
+            {transcribing ? "Disparando..." : "Iniciar transcrição"}
+          </Button>
         </div>
       </div>
     );

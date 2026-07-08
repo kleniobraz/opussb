@@ -90,6 +90,13 @@ export interface Project {
 }
 
 // ── Podcast: aprovação de gancho (§39 Parte 4) ──────────────────────────────
+// Vinheta da biblioteca (GET /api/vinhetas), escolhida no upload do podcast.
+export interface Vinheta {
+  id: string;
+  label: string;
+  duration?: number | null;
+}
+
 // Trecho candidato a abertura sugerido pelo hooks.py (o texto vem do SRT, não do modelo).
 export interface PodcastHook {
   start: number;
