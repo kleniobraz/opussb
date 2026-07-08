@@ -85,6 +85,10 @@ def init_db() -> None:
         # Key S3 do episódio final montado (§39 Parte 5: gancho + vinheta + podcast).
         # Fora de result_urls de propósito: aquele formato é de clipes (_clip_objects).
         _ensure_column(conn, "jobs", "podcast_final_key", "TEXT")
+        # Segundos cortados do início do corpo bruto (§39 Parte 2), gravado ANTES do corte
+        # rodar (não só no sucesso), igual hook_choice é gravado antes da montagem: permite
+        # o front distinguir erro do corte de erro de outra fase. NULL = nunca cortou.
+        _ensure_column(conn, "jobs", "intro_cut_at", "REAL")
         # Índices: list_jobs filtra por dono e ordena por created_at; count_active e
         # reap_stale filtram por status. Baratos e ajudam conforme o histórico cresce.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs(user_email, created_at)")
@@ -910,8 +914,8 @@ def count_active_jobs() -> int:
     # 'uploaded', 'aguardando_aprovacao' e 'gancho_aprovado' = podcast estacionado sem
     # pipeline rodando (§39): não ocupam a vaga de MAX_CONCURRENT_JOBS, senão um podcast
     # parado travaria a fila de clipes com 429. Os estados de trabalho real do podcast
-    # (queued..analisando_gancho) CONTAM, de propósito: transcrição e gancho disputam a
-    # mesma VPS.
+    # (queued..analisando_gancho, 'cortando_inicio' e 'montando' inclusive) CONTAM, de
+    # propósito: transcrição, corte de início, gancho e montagem disputam a mesma VPS.
     with _conn() as conn:
         row = conn.execute(
             "SELECT COUNT(*) FROM jobs WHERE status NOT IN "
@@ -1073,8 +1077,10 @@ def reap_stale_jobs(stale_minutes: int) -> int:
         # 'uploaded', 'aguardando_aprovacao' e 'gancho_aprovado' ficam de fora: podcast
         # estacionado (§39) não é job preso, é espera legítima sem heartbeat; a expiração
         # vem por TTL próprio (parte de retenção). Um podcast preso em transcribing/
-        # analisando_gancho é ceifado normalmente, igual clipe (callback perdido não pode
-        # travar a fila pra sempre).
+        # analisando_gancho/cortando_inicio/montando é ceifado normalmente, igual clipe
+        # (callback perdido ou ffmpeg pendurado não pode travar a fila pra sempre); essas
+        # etapas longas têm heartbeat próprio (db.heartbeat_job) pra não serem ceifadas
+        # no meio de um trabalho legítimo.
         cur = conn.execute(
             "UPDATE jobs SET status = 'error', error = ?, updated_at = ? "
             "WHERE status NOT IN "
