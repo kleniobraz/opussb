@@ -115,6 +115,27 @@ COMPOSE_TIMEOUT: int = int(os.environ.get("COMPOSE_TIMEOUT", "900"))
 # de estourar o volume no meio do concat.
 COMPOSE_DISK_FACTOR: float = float(os.environ.get("COMPOSE_DISK_FACTOR", "2.2"))
 
+# Corte manual do início do corpo bruto, ANTES da transcrição (§39 Parte 2): reencoda só o
+# pedacinho até o próximo keyframe e copia o resto em -c copy (nunca reencoda o corpo
+# inteiro). Janela de busca do próximo keyframe (segundos) a partir do ponto marcado.
+# Default provisório e generoso: a amostra medida até agora (2 episódios reais de ~52min
+# da Carbone) tinha GOP fixo de 1s, então 30s sobra muito; calibrar com folga menor numa
+# etapa posterior, contra um arquivo real de 2h+.
+PODCAST_CUT_KEYFRAME_LOOKAHEAD: float = float(os.environ.get("PODCAST_CUT_KEYFRAME_LOOKAHEAD", "30"))
+# Sobra mínima exigida depois do corte (o episódio inteiro não pode desaparecer por um
+# corte grande demais por engano).
+PODCAST_CUT_MIN_REMAINING_SECONDS: float = float(
+    os.environ.get("PODCAST_CUT_MIN_REMAINING_SECONDS", "300"))
+# Guard-rail de disco DEDICADO do corte de início (não reaproveita COMPOSE_DISK_FACTOR):
+# aqui o "resto" (quase o corpo inteiro) e o "final" coexistem no disco ao mesmo tempo que
+# o fonte original, pico real ≈ 2x o fonte, não ≈ 1x como na montagem. Valor PROVISÓRIO
+# com folga generosa, a validar empiricamente depois.
+PODCAST_CUT_DISK_FACTOR: float = float(os.environ.get("PODCAST_CUT_DISK_FACTOR", "3.0"))
+# Teto POR ffmpeg do corte de início (reencode do pedacinho, cópia do resto, concat). A
+# cópia do resto é I/O de um corpo de possivelmente vários GB; valor PROVISÓRIO generoso,
+# a validar contra um arquivo real de 2h+.
+PODCAST_CUT_TIMEOUT: int = int(os.environ.get("PODCAST_CUT_TIMEOUT", "1800"))
+
 # Sobra (handles) cortada de cada lado do clipe, em segundos. O clip_NN_base.mp4 passa a ser
 # a janela [start-H, end+H] (clamped ao vídeo) reenquadrada, e o editor abre/fecha o corte
 # dentro dessa sobra (ajuste fino quando a IA erra o ponto de corte). 0 desliga (corte exato,
