@@ -89,22 +89,62 @@
 @keyframes loginMarkFloat { 0%, 100% { transform: rotate(-14deg) translate3d(0, 0, 0); } 50% { transform: rotate(-9deg) translate3d(-1.5%, 2%, 0); } }
 @keyframes loginMarkFloat2 { 0%, 100% { transform: rotate(20deg) translate3d(0, 0, 0); } 50% { transform: rotate(25deg) translate3d(1.5%, -2%, 0); } }
 
-.login-shell { position: relative; z-index: 10; min-height: 100dvh; display: flex; flex-direction: column; align-items: center; padding: 40px 24px 72px; }
-.login-topbar { position: relative; z-index: 10; width: 100%; max-width: 1080px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: clamp(32px, 8vh, 76px); }
+/* Shell: topbar fixo em cima + .login-content ocupando o resto da altura (flex-grow) e
+   centralizando o par hero/card no meio do espaço sobrando; e' o conteudo que dita a
+   altura, controlado abaixo pra nunca passar da viewport. */
+.login-shell { position: relative; z-index: 10; min-height: 100dvh; width: 100%; display: flex; flex-direction: column; align-items: center; padding: clamp(16px, 3vh, 32px) 24px; }
+.login-topbar { position: relative; z-index: 10; width: 100%; max-width: 1120px; flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
 .login-topbar-tag { display: flex; align-items: center; gap: 8px; font-size: 0.78rem; color: var(--ink-muted); }
-.login-hero { position: relative; z-index: 10; width: 100%; max-width: 760px; text-align: center; margin-bottom: 40px; animation: heroVisualIn 0.7s var(--ease-out) both; }
-.login-headline { font-size: clamp(40px, 7vw, 84px); font-weight: 800; letter-spacing: -0.04em; line-height: 0.98; margin: 0; color: var(--ink); }
-.login-hero-sub { font-size: 1.05rem; line-height: 1.55; color: var(--ink-soft); max-width: 480px; margin: 20px auto 0; }
-.login-card { position: relative; z-index: 10; width: 100%; max-width: 420px; background: rgba(17, 17, 19, 0.72); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid var(--border); border-radius: var(--radius-2xl); box-shadow: var(--shadow-hero); padding: 40px 36px; animation: heroVisualIn 0.7s var(--ease-out) 0.08s both; }
+
+/* Hero (titulo/marca) e o card do formulario lado a lado no desktop, pra soma das
+   alturas nao estourar 100vh (empilhados era o motivo do scroll). Vira coluna no mobile. */
+.login-content { position: relative; z-index: 10; width: 100%; max-width: 1120px; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: row; align-items: center; justify-content: center; gap: clamp(28px, 5vw, 64px); padding: clamp(12px, 3vh, 36px) 0; }
+
+.login-hero { position: relative; z-index: 10; flex: 1 1 440px; max-width: 560px; text-align: left; animation: heroVisualIn 0.7s var(--ease-out) both; }
+.login-headline { font-size: clamp(32px, 3.6vw, 58px); font-weight: 800; letter-spacing: -0.04em; line-height: 1.02; margin: 0; color: var(--ink); }
+.login-hero-sub { font-size: 1rem; line-height: 1.5; color: var(--ink-soft); max-width: 440px; margin: 18px 0 0; }
+.login-card { position: relative; z-index: 10; flex: 0 0 auto; width: 100%; max-width: 400px; background: rgba(17, 17, 19, 0.72); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid var(--border); border-radius: var(--radius-2xl); box-shadow: var(--shadow-hero); padding: 32px 32px; animation: heroVisualIn 0.7s var(--ease-out) 0.08s both; }
 .login-card::before { content: ""; position: absolute; top: 0; left: 20px; right: 20px; height: 3px; border-radius: 999px; background: var(--grad); opacity: 0.9; }
+
+/* Campo de formulario do login (substitui o utilitario mb-[18px] p/ dar pra apertar o
+   respiro em telas baixas via media query abaixo). */
+.login-field { display: grid; gap: 8px; margin-bottom: 16px; }
+
+@media (max-width: 900px) {
+  .login-content { flex-direction: column; gap: 24px; }
+  /* flex-basis de 440px era p/ o eixo principal horizontal da linha; em coluna vira
+     altura minima e infla o hero (o motivo do vao gigante antes do card no mobile). */
+  .login-hero { flex: 0 0 auto; text-align: center; max-width: 620px; }
+  .login-hero-sub { margin-left: auto; margin-right: auto; }
+  .login-card { max-width: 420px; }
+}
 
 @media (max-width: 640px) {
   .login-hero-mark { top: -13%; right: -20%; opacity: 0.32; }
   .login-hero-mark .brand-mark { width: 150px; height: 150px; border-radius: 30px; }
   .login-hero-mark .brand-mark svg { width: 70px; height: 70px; }
   .login-hero-mark-alt { display: none; }
-  .login-shell { padding: 28px 18px 48px; }
-  .login-card { padding: 32px 22px; }
+  .login-shell { padding: 18px 18px; }
+  .login-content { gap: 18px; padding: 6px 0; }
+  .login-headline { font-size: clamp(28px, 9vw, 44px); }
+  .login-card { padding: 24px 20px; }
+}
+
+/* Notebook comum (1366x768, 1280x720...): a soma topbar + hero + card nao pode passar
+   da viewport. Aperta respiros verticais do card (pior caso: Zoho ligado ou signup),
+   independente da largura, por isso vem depois das media queries de largura. */
+@media (max-height: 800px) {
+  .login-shell { padding: 10px 24px; }
+  .login-content { padding: 8px 0; gap: clamp(20px, 4vw, 48px); }
+  .login-headline { font-size: clamp(26px, 3.2vw, 42px); }
+  .login-hero-sub { margin-top: 10px; font-size: 0.9rem; }
+  .login-card { padding: 20px 26px; }
+  .auth-title { font-size: 1.4rem; margin-bottom: 4px; }
+  .auth-sub { margin-bottom: 14px; }
+  .eyebrow { margin-bottom: 8px; }
+  .login-field { margin-bottom: 10px; }
+  .auth-divider { margin: 12px 0; }
+  .auth-foot { margin-top: 12px; padding-top: 10px; }
 }
 
 .auth-title { font-size: 1.85rem; font-weight: 700; letter-spacing: -0.03em; margin: 0 0 8px; color: var(--ink); }

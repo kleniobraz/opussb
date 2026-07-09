@@ -126,170 +126,172 @@ export default function LoginPage() {
           </span>
         </header>
 
-        <div className="login-hero">
-          <h1 className="login-headline">
-            Vídeos longos viram <span className="grad-text">clipes que bombam.</span>
-          </h1>
-          <p className="login-hero-sub">
-            A central de clipes do Grupo SB. Envie um vídeo longo e receba os melhores momentos em
-            9:16.
-          </p>
-        </div>
+        <div className="login-content">
+          <div className="login-hero">
+            <h1 className="login-headline">
+              Vídeos longos viram <span className="grad-text">clipes que bombam.</span>
+            </h1>
+            <p className="login-hero-sub">
+              A central de clipes do Grupo SB. Envie um vídeo longo e receba os melhores momentos
+              em 9:16.
+            </p>
+          </div>
 
-        <div className="login-card">
-          {mode === "login" ? (
-            <>
-              <p className="eyebrow">Acesso interno</p>
-              <h2 className="auth-title">Entrar no SB Clips</h2>
-              <p className="auth-sub">Entre com sua conta do Grupo SB.</p>
+          <div className="login-card">
+            {mode === "login" ? (
+              <>
+                <p className="eyebrow">Acesso interno</p>
+                <h2 className="auth-title">Entrar no SB Clips</h2>
+                <p className="auth-sub">Entre com sua conta do Grupo SB.</p>
 
-              {zohoEnabled && (
-                <>
-                  <ShinyButton
+                {zohoEnabled && (
+                  <>
+                    <ShinyButton
+                      type="button"
+                      className="w-full"
+                      onClick={() => {
+                        window.location.href = "/api/auth/zoho/login";
+                      }}
+                    >
+                      <ZohoLogo />
+                      Entrar com Zoho
+                    </ShinyButton>
+                    <div className="auth-divider">
+                      <span>ou com e-mail e senha</span>
+                    </div>
+                  </>
+                )}
+
+                <form onSubmit={onSubmit}>
+                  <div className="login-field">
+                    <Label htmlFor="login-email">Email</Label>
+                    <Input
+                      id="login-email"
+                      type="email"
+                      autoComplete="username"
+                      placeholder="voce@seubone.com"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      required
+                    />
+                  </div>
+                  <div className="login-field">
+                    <Label htmlFor="login-password">Senha</Label>
+                    <Input
+                      id="login-password"
+                      type="password"
+                      autoComplete="current-password"
+                      placeholder="••••••••"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      required
+                    />
+                  </div>
+                  <MotionButton
+                    type="submit"
+                    label={loading ? "Entrando..." : "Entrar"}
+                    disabled={loading}
+                  />
+                </form>
+                {error && <div className="error">{error}</div>}
+
+                <div className="auth-foot">
+                  Não tem conta?{" "}
+                  <button
                     type="button"
-                    className="w-full"
+                    className="auth-link"
                     onClick={() => {
-                      window.location.href = "/api/auth/zoho/login";
+                      setMode("signup");
+                      setError("");
                     }}
                   >
-                    <ZohoLogo />
-                    Entrar com Zoho
-                  </ShinyButton>
-                  <div className="auth-divider">
-                    <span>ou com e-mail e senha</span>
-                  </div>
-                </>
-              )}
-
-              <form onSubmit={onSubmit}>
-                <div className="mb-[18px] grid gap-2">
-                  <Label htmlFor="login-email">Email</Label>
-                  <Input
-                    id="login-email"
-                    type="email"
-                    autoComplete="username"
-                    placeholder="voce@seubone.com"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    required
-                  />
+                    Cadastre-se
+                  </button>
                 </div>
-                <div className="mb-[18px] grid gap-2">
-                  <Label htmlFor="login-password">Senha</Label>
-                  <Input
-                    id="login-password"
-                    type="password"
-                    autoComplete="current-password"
-                    placeholder="••••••••"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                  />
-                </div>
-                <MotionButton
-                  type="submit"
-                  label={loading ? "Entrando..." : "Entrar"}
-                  disabled={loading}
-                />
-              </form>
-              {error && <div className="error">{error}</div>}
+              </>
+            ) : (
+              <>
+                <p className="eyebrow">Novo cadastro</p>
+                <h2 className="auth-title">Criar conta</h2>
+                <p className="auth-sub">
+                  Seu cadastro passa por aprovação de um administrador antes do primeiro acesso.
+                </p>
 
-              <div className="auth-foot">
-                Não tem conta?{" "}
-                <button
-                  type="button"
-                  className="auth-link"
-                  onClick={() => {
-                    setMode("signup");
-                    setError("");
-                  }}
-                >
-                  Cadastre-se
-                </button>
-              </div>
-            </>
-          ) : (
-            <>
-              <p className="eyebrow">Novo cadastro</p>
-              <h2 className="auth-title">Criar conta</h2>
-              <p className="auth-sub">
-                Seu cadastro passa por aprovação de um administrador antes do primeiro acesso.
-              </p>
+                {suDone ? (
+                  <div className="auth-success">
+                    <p className="auth-success-title">Cadastro recebido! ✅</p>
+                    <p>
+                      Sua conta foi criada e está <strong>aguardando aprovação</strong> de um
+                      administrador. Você poderá entrar assim que for liberada.
+                    </p>
+                  </div>
+                ) : (
+                  <form onSubmit={onSignup}>
+                    <div className="login-field">
+                      <Label htmlFor="su-email">Email</Label>
+                      <Input
+                        id="su-email"
+                        type="email"
+                        autoComplete="email"
+                        placeholder="seu@email.com"
+                        value={suEmail}
+                        onChange={(e) => setSuEmail(e.target.value)}
+                        required
+                      />
+                    </div>
+                    <div className="login-field">
+                      <Label htmlFor="su-pass">Senha (mín. 8 caracteres)</Label>
+                      <Input
+                        id="su-pass"
+                        type="password"
+                        autoComplete="new-password"
+                        minLength={8}
+                        value={suPass}
+                        onChange={(e) => setSuPass(e.target.value)}
+                        required
+                      />
+                    </div>
+                    <div className="login-field">
+                      <Label htmlFor="su-pass2">Repita a senha</Label>
+                      <Input
+                        id="su-pass2"
+                        type="password"
+                        autoComplete="new-password"
+                        minLength={8}
+                        value={suPass2}
+                        onChange={(e) => setSuPass2(e.target.value)}
+                        required
+                      />
+                    </div>
+                    <Button
+                      type="submit"
+                      variant="gold"
+                      size="brand"
+                      className="w-full"
+                      disabled={suLoading}
+                    >
+                      {suLoading ? "Cadastrando..." : "Criar conta"}
+                    </Button>
+                  </form>
+                )}
+                {suError && <div className="error">{suError}</div>}
 
-              {suDone ? (
-                <div className="auth-success">
-                  <p className="auth-success-title">Cadastro recebido! ✅</p>
-                  <p>
-                    Sua conta foi criada e está <strong>aguardando aprovação</strong> de um
-                    administrador. Você poderá entrar assim que for liberada.
-                  </p>
-                </div>
-              ) : (
-                <form onSubmit={onSignup}>
-                  <div className="mb-[18px] grid gap-2">
-                    <Label htmlFor="su-email">Email</Label>
-                    <Input
-                      id="su-email"
-                      type="email"
-                      autoComplete="email"
-                      placeholder="seu@email.com"
-                      value={suEmail}
-                      onChange={(e) => setSuEmail(e.target.value)}
-                      required
-                    />
-                  </div>
-                  <div className="mb-[18px] grid gap-2">
-                    <Label htmlFor="su-pass">Senha (mín. 8 caracteres)</Label>
-                    <Input
-                      id="su-pass"
-                      type="password"
-                      autoComplete="new-password"
-                      minLength={8}
-                      value={suPass}
-                      onChange={(e) => setSuPass(e.target.value)}
-                      required
-                    />
-                  </div>
-                  <div className="mb-[18px] grid gap-2">
-                    <Label htmlFor="su-pass2">Repita a senha</Label>
-                    <Input
-                      id="su-pass2"
-                      type="password"
-                      autoComplete="new-password"
-                      minLength={8}
-                      value={suPass2}
-                      onChange={(e) => setSuPass2(e.target.value)}
-                      required
-                    />
-                  </div>
-                  <Button
-                    type="submit"
-                    variant="gold"
-                    size="brand"
-                    className="w-full"
-                    disabled={suLoading}
+                <div className="auth-foot">
+                  <button
+                    type="button"
+                    className="auth-link"
+                    onClick={() => {
+                      setMode("login");
+                      setSuError("");
+                      setSuDone(false);
+                    }}
                   >
-                    {suLoading ? "Cadastrando..." : "Criar conta"}
-                  </Button>
-                </form>
-              )}
-              {suError && <div className="error">{suError}</div>}
-
-              <div className="auth-foot">
-                <button
-                  type="button"
-                  className="auth-link"
-                  onClick={() => {
-                    setMode("login");
-                    setSuError("");
-                    setSuDone(false);
-                  }}
-                >
-                  ← Voltar ao login
-                </button>
-              </div>
-            </>
-          )}
+                    ← Voltar ao login
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
     </div>
