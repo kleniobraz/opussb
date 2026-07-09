@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { BrandMark } from "@/components/brand-mark";
-import { ArrowBurst } from "@/components/arrow-burst";
+import { LoginWaveBackground } from "@/components/login-wave-background";
 import { Button } from "@/components/ui/button";
 import { ShinyButton } from "@/components/ui/shiny-button";
 import MotionButton from "@/components/ui/motion-button";
@@ -103,40 +103,40 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="login-split">
-      <div className="login-brandside">
-        <div className="login-glows" aria-hidden="true">
-          <div className="glow glow-a" />
-          <div className="glow glow-b" />
-          <div className="glow glow-c" />
-        </div>
-        <div className="brand login-brand-top">
-          <BrandMark />
-          <span className="brand-name" style={{ fontSize: "1.15rem" }}>
-            SB Clips
+    <div className="login-page">
+      <LoginWaveBackground />
+      <div className="login-page-veil" aria-hidden="true" />
+      <div className="login-hero-mark" aria-hidden="true">
+        <BrandMark />
+      </div>
+      <div className="login-hero-mark-alt" aria-hidden="true">
+        <BrandMark />
+      </div>
+
+      <div className="login-shell">
+        <header className="login-topbar">
+          <div className="brand">
+            <BrandMark />
+            <span className="brand-name" style={{ fontSize: "1.15rem" }}>
+              SB Clips
+            </span>
+          </div>
+          <span className="login-topbar-tag">
+            <span className="demo-dot" /> Acesso interno · Grupo SB
           </span>
-        </div>
-        <div className="login-brand-mid">
-          <ArrowBurst size={120} gradId="lgArrowLogin" style={{ marginBottom: 34 }} />
+        </header>
+
+        <div className="login-hero">
           <h1 className="login-headline">
-            Vídeos longos
-            <br />
-            viram clipes
-            <br />
-            que <span className="grad-text">bombam.</span>
+            Vídeos longos viram <span className="grad-text">clipes que bombam.</span>
           </h1>
-          <p className="login-mid-sub">
+          <p className="login-hero-sub">
             A central de clipes do Grupo SB. Envie um vídeo longo e receba os melhores momentos em
             9:16.
           </p>
         </div>
-        <div className="login-brand-foot">
-          <span className="demo-dot" /> Acesso interno · Grupo SB
-        </div>
-      </div>
 
-      <div className="login-formside">
-        <div className="login-form-inner">
+        <div className="login-card">
           {mode === "login" ? (
             <>
               <p className="eyebrow">Acesso interno</p>

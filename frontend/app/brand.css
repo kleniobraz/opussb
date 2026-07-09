@@ -63,18 +63,50 @@
 .brand-sub { margin-top: 2px; font-size: 0.6rem; font-weight: 600; letter-spacing: 0.16em; color: var(--gold); }
 .arrowburst { display: block; filter: drop-shadow(0 0 30px rgba(245,197,24,0.2)); }
 
-/* ─── Login (split editorial) ──────────────────────────────────────────── */
-.login-split { display: flex; min-height: 100vh; flex-wrap: wrap; }
-.login-brandside { flex: 1 1 440px; position: relative; overflow: hidden; padding: 48px; display: flex; flex-direction: column; justify-content: space-between; min-height: 100vh; }
+/* ─── Login (poster full bleed + waveform animada no fundo) ─────────────── */
+.login-page { position: relative; min-height: 100dvh; background: var(--background); overflow-x: hidden; }
+.login-wave { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
+.login-page-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 60% at 50% -8%, rgba(245, 197, 24, 0.16), transparent 60%),
+    radial-gradient(80% 55% at 92% 108%, rgba(224, 168, 0, 0.12), transparent 62%),
+    linear-gradient(180deg, rgba(10, 10, 11, 0.15) 0%, rgba(10, 10, 11, 0.82) 55%, rgba(10, 10, 11, 0.97) 100%);
+}
 .login-glows { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
-.login-brand-top { position: relative; z-index: 1; }
-.login-brand-mid { position: relative; z-index: 1; max-width: 520px; }
-.login-headline { font-size: clamp(38px, 4.6vw, 60px); font-weight: 700; letter-spacing: -0.035em; line-height: 0.98; margin: 0; }
-.login-mid-sub { font-size: 1rem; line-height: 1.55; color: var(--ink-soft); margin: 22px 0 0; max-width: 380px; }
-.login-brand-foot { position: relative; z-index: 1; display: flex; align-items: center; gap: 8px; font-size: 0.78rem; color: var(--ink-muted); }
 .demo-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 8px var(--gold); flex: 0 0 auto; }
-.login-formside { flex: 1 1 380px; background: #0c0c0e; border-left: 1px solid var(--border); display: flex; align-items: center; justify-content: center; padding: 48px; min-height: 100vh; }
-.login-form-inner { width: 100%; max-width: 360px; }
+
+/* Tesoura gigante como elemento gráfico da composição (não só ícone de canto) */
+.login-hero-mark { position: fixed; top: -9%; right: -7%; z-index: 2; opacity: 0.55; pointer-events: none; transform: rotate(-14deg); animation: loginMarkFloat 11s ease-in-out infinite; }
+.login-hero-mark .brand-mark { width: clamp(180px, 26vw, 380px); height: clamp(180px, 26vw, 380px); border-radius: clamp(32px, 4vw, 56px); }
+.login-hero-mark .brand-mark svg { width: clamp(80px, 12vw, 170px); height: clamp(80px, 12vw, 170px); }
+.login-hero-mark-alt { position: fixed; bottom: -12%; left: -10%; z-index: 2; opacity: 0.22; pointer-events: none; transform: rotate(20deg); animation: loginMarkFloat2 15s ease-in-out infinite; }
+.login-hero-mark-alt .brand-mark { width: clamp(130px, 18vw, 240px); height: clamp(130px, 18vw, 240px); border-radius: clamp(26px, 3vw, 42px); }
+.login-hero-mark-alt .brand-mark svg { width: clamp(56px, 8vw, 100px); height: clamp(56px, 8vw, 100px); }
+@keyframes loginMarkFloat { 0%, 100% { transform: rotate(-14deg) translate3d(0, 0, 0); } 50% { transform: rotate(-9deg) translate3d(-1.5%, 2%, 0); } }
+@keyframes loginMarkFloat2 { 0%, 100% { transform: rotate(20deg) translate3d(0, 0, 0); } 50% { transform: rotate(25deg) translate3d(1.5%, -2%, 0); } }
+
+.login-shell { position: relative; z-index: 10; min-height: 100dvh; display: flex; flex-direction: column; align-items: center; padding: 40px 24px 72px; }
+.login-topbar { position: relative; z-index: 10; width: 100%; max-width: 1080px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: clamp(32px, 8vh, 76px); }
+.login-topbar-tag { display: flex; align-items: center; gap: 8px; font-size: 0.78rem; color: var(--ink-muted); }
+.login-hero { position: relative; z-index: 10; width: 100%; max-width: 760px; text-align: center; margin-bottom: 40px; animation: heroVisualIn 0.7s var(--ease-out) both; }
+.login-headline { font-size: clamp(40px, 7vw, 84px); font-weight: 800; letter-spacing: -0.04em; line-height: 0.98; margin: 0; color: var(--ink); }
+.login-hero-sub { font-size: 1.05rem; line-height: 1.55; color: var(--ink-soft); max-width: 480px; margin: 20px auto 0; }
+.login-card { position: relative; z-index: 10; width: 100%; max-width: 420px; background: rgba(17, 17, 19, 0.72); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid var(--border); border-radius: var(--radius-2xl); box-shadow: var(--shadow-hero); padding: 40px 36px; animation: heroVisualIn 0.7s var(--ease-out) 0.08s both; }
+.login-card::before { content: ""; position: absolute; top: 0; left: 20px; right: 20px; height: 3px; border-radius: 999px; background: var(--grad); opacity: 0.9; }
+
+@media (max-width: 640px) {
+  .login-hero-mark { top: -13%; right: -20%; opacity: 0.32; }
+  .login-hero-mark .brand-mark { width: 150px; height: 150px; border-radius: 30px; }
+  .login-hero-mark .brand-mark svg { width: 70px; height: 70px; }
+  .login-hero-mark-alt { display: none; }
+  .login-shell { padding: 28px 18px 48px; }
+  .login-card { padding: 32px 22px; }
+}
+
 .auth-title { font-size: 1.85rem; font-weight: 700; letter-spacing: -0.03em; margin: 0 0 8px; color: var(--ink); }
 .auth-sub { font-size: 0.9rem; line-height: 1.5; color: var(--ink-soft); margin: 0 0 28px; }
 .auth-foot { border-top: 1px solid var(--border); margin-top: 28px; padding-top: 20px; font-size: 0.74rem; color: var(--ink-muted); text-align: center; }
@@ -969,6 +1001,8 @@
 /* ─── prefers-reduced-motion (global) ──────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   .glow-a, .glow-b, .glow-c { animation: none !important; }
+  .login-hero-mark, .login-hero-mark-alt { animation: none !important; }
+  .login-hero, .login-card { animation: none !important; }
   .skel { animation: none !important; background-position: 0 0; }
   .progress-bar-fill::after { animation: none !important; }
   .project-pill .pill-dot, .clip-prep-spin { animation: none !important; }
