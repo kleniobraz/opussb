@@ -17,8 +17,8 @@ export function StatsStrip() {
   const { data } = useQuery({ queryKey: ["stats"], queryFn: api.getStats });
 
   return (
-    <section className="mx-auto max-w-[1280px] overflow-hidden px-7 py-10">
-      <div className="grid grid-cols-1 gap-6 border-y border-v3-border py-8 sm:grid-cols-3 sm:gap-0">
+    <section className="mx-auto max-w-[1280px] overflow-hidden px-7 py-6">
+      <div className="grid grid-cols-1 gap-6 rounded-[var(--radius-md)] border border-v3-border bg-v3-surface-1 px-8 py-7 sm:grid-cols-3 sm:gap-0">
         {ITEMS.map((item, i) => {
           const value = data?.[item.key] ?? 0;
           return (
@@ -31,7 +31,7 @@ export function StatsStrip() {
             >
               <V3GhostNumber
                 value={String(value)}
-                className="pointer-events-none absolute -top-9 left-0 hidden text-[6rem] leading-none sm:block"
+                className="pointer-events-none absolute -top-4 left-0 hidden text-[6rem] leading-none sm:block"
               />
               <p className="relative font-mono text-xs font-semibold uppercase tracking-[0.24em] text-v3-text-soft">
                 {item.label}

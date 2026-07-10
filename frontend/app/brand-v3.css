@@ -28,6 +28,20 @@
   }
 }
 
+/* Respiro de luz no topo da Home: mesmo espirito do .login-page-veil do login, mas ancorado
+   no topo do CONTEUDO (nao fixo na viewport, a pagina rola bastante) e bem mais discreto (pico
+   de ~7% de opacidade contra os ~16% do login), so pra tirar o "chapado" do fundo sem clarear
+   o dark. color-mix (nao rgba fixo) segue --v3-accent se a paleta mudar. */
+.v3-home-veil {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 640px;
+  pointer-events: none;
+  background: radial-gradient(70% 60% at 50% 0%, color-mix(in srgb, var(--v3-accent) 7%, transparent), transparent 65%);
+}
+
 /* Hero da Home: canvas da waveform preenche o container relativo do hero (mesmo papel do
    antigo .hero-shader, mas sem overlay pesado; a propria waveform ja e bem sutil). */
 .v3-hero-wave {

@@ -24,7 +24,8 @@ export function HomeView() {
   }
 
   return (
-    <div className="bg-v3-bg">
+    <div className="relative bg-v3-bg">
+      <div className="v3-home-veil" aria-hidden="true" />
       <section className="relative -mt-20 overflow-hidden border-b border-v3-border pt-20">
         <HomeWaveBackground />
         <Hero />

@@ -57,7 +57,11 @@ export function HowItWorks() {
   }, [inView]);
 
   return (
-    <section ref={rootRef} className="relative overflow-hidden bg-v3-bg px-7 py-24" aria-label="Como funciona">
+    <section
+      ref={rootRef}
+      className="relative overflow-hidden bg-v3-surface-1 px-7 pb-24 pt-14"
+      aria-label="Como funciona"
+    >
       <div
         className={cn(
           "relative mx-auto max-w-[1280px] translate-y-0 opacity-100 transition-all duration-700 ease-out",
