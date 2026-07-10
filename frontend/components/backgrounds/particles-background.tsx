@@ -120,7 +120,7 @@ function draw(
   }
 }
 
-export function HomeParticlesBackground({ className }: { className?: string }) {
+export function ParticlesBackground({ className }: { className?: string }) {
   const ref = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {

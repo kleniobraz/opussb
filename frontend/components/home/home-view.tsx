@@ -6,7 +6,7 @@ import { Hero } from "./hero";
 import { HowItWorks } from "./how-it-works";
 import { Recent } from "./recent";
 import { StatsStrip } from "./stats-strip";
-import { HomeParticlesBackground } from "./home-particles-background";
+import { ParticlesBackground } from "../backgrounds/particles-background";
 import { UploadConsole } from "../upload-console";
 import { JobProgress } from "../job-progress";
 
@@ -27,7 +27,7 @@ export function HomeView() {
     <div className="relative bg-v3-bg">
       <section className="relative -mt-20 overflow-hidden border-b border-v3-border pt-20">
         <div className="v3-home-glow" aria-hidden="true" />
-        <HomeParticlesBackground />
+        <ParticlesBackground />
         <Hero />
         {!job && (
           <div className="relative z-[1] mx-auto max-w-[1280px] px-7 pb-20 pt-6">
