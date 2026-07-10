@@ -28,18 +28,19 @@
   }
 }
 
-/* Respiro de luz no topo da Home: mesmo espirito do .login-page-veil do login, mas ancorado
-   no topo do CONTEUDO (nao fixo na viewport, a pagina rola bastante) e bem mais discreto (pico
-   de ~7% de opacidade contra os ~16% do login), so pra tirar o "chapado" do fundo sem clarear
-   o dark. color-mix (nao rgba fixo) segue --v3-accent se a paleta mudar. */
-.v3-home-veil {
+/* Foco de luz atras da faixa de saudacao + upload da Home: mesmo espirito do
+   .login-page-veil do login, mas ancorado no CONTEUDO (nao fixo na viewport, a pagina rola
+   bastante). inset:0 (em vez de altura fixa) pra acompanhar a altura real da secao, que
+   agora varia com o conteudo (card de upload vs JobProgress); o centro em 55% da altura
+   fica assim sempre mais ou menos atras do card, nao colado no topo. Pico de opacidade bem
+   mais forte que as rodadas anteriores (24%, contra ~7%), pra ler como um foco de luz de
+   verdade, nao um brilho quase imperceptivel. color-mix (nao rgba fixo) segue --v3-accent
+   se a paleta mudar. */
+.v3-home-glow {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 640px;
+  inset: 0;
   pointer-events: none;
-  background: radial-gradient(70% 60% at 50% 0%, color-mix(in srgb, var(--v3-accent) 7%, transparent), transparent 65%);
+  background: radial-gradient(60% 55% at 50% 55%, color-mix(in srgb, var(--v3-accent) 24%, transparent), transparent 70%);
 }
 
 /* Hero da Home: canvas da waveform preenche o container relativo do hero (mesmo papel do

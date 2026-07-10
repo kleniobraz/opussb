@@ -3,11 +3,11 @@
 import { useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 
-// Waveform decorativa da faixa de saudacao da Home: mesmo espirito tecnico do
+// Waveform decorativa da faixa de saudacao + upload da Home: mesmo espirito tecnico do
 // LoginWaveBackground (canvas 2D puro, pausa em document.hidden, respeita
 // prefers-reduced-motion), mas dimensionada pelo container (via ResizeObserver, nao pela
-// janela inteira) e recolorida no acento v3. A faixa e compacta e de altura fixa (upload,
-// numeros e recentes viraram secoes proprias abaixo, fora da area do hero).
+// janela inteira) e recolorida no acento v3. A faixa agora e alta (saudacao + card de upload
+// na mesma secao); numeros e recentes continuam em secoes proprias abaixo.
 const BAR_COUNT = 48;
 const V3_ACCENT = "255, 212, 0"; // --v3-accent em rgb
 const V3_ACCENT_SOFT = "255, 232, 130"; // realce do "sweep" que percorre as barras
@@ -32,8 +32,8 @@ function draw(ctx: CanvasRenderingContext2D, w: number, h: number, t: number, an
   ctx.clearRect(0, 0, w, h);
   const gap = w / BAR_COUNT;
   const barW = Math.max(2, gap * 0.38);
-  const midY = h * 0.74; // faixa baixa da saudacao, atras do texto (um pouco acima da borda)
-  const maxBar = Math.min(h * 0.22, 46); // teto baixo: a faixa agora e compacta, nao full-screen
+  const midY = h * 0.6; // mais ou menos no meio da faixa alta (saudacao + upload)
+  const maxBar = Math.min(h * 0.32, 130); // pico generoso, a faixa agora tem altura de verdade
   const sweepX = animated ? ((t * 0.05) % (w + 400)) - 200 : -Infinity;
 
   for (let i = 0; i < BAR_COUNT; i++) {

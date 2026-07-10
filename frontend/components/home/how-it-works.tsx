@@ -59,7 +59,7 @@ export function HowItWorks() {
   return (
     <section
       ref={rootRef}
-      className="relative overflow-hidden bg-v3-surface-1 px-7 pb-24 pt-14"
+      className="relative overflow-hidden bg-v3-surface-2 px-7 pb-24 pt-14"
       aria-label="Como funciona"
     >
       <div
@@ -91,7 +91,13 @@ export function HowItWorks() {
                 </span>
               )}
               <li className="relative min-w-[170px] flex-1 basis-[170px]">
-                <V3Card active={active === i} className="relative h-full overflow-hidden p-6">
+                <V3Card
+                  active={active === i}
+                  className={cn(
+                    "relative h-full overflow-hidden p-6",
+                    active !== i && "border-v3-border-hover shadow-[var(--shadow-card)]",
+                  )}
+                >
                   <V3GhostNumber
                     value={String(i + 1).padStart(2, "0")}
                     className="absolute -right-2 -top-9 text-[7rem] sm:text-[8rem]"

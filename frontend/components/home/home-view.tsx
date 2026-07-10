@@ -25,19 +25,21 @@ export function HomeView() {
 
   return (
     <div className="relative bg-v3-bg">
-      <div className="v3-home-veil" aria-hidden="true" />
       <section className="relative -mt-20 overflow-hidden border-b border-v3-border pt-20">
+        <div className="v3-home-glow" aria-hidden="true" />
         <HomeWaveBackground />
         <Hero />
+        {!job && (
+          <div className="relative z-[1] mx-auto max-w-[1280px] px-7 pb-20 pt-6">
+            <UploadConsole onStarted={onStarted} />
+          </div>
+        )}
       </section>
 
-      {job ? (
-        <JobProgress jobId={job.id} filename={job.filename} onReset={onReset} />
-      ) : (
-        <div className="mx-auto max-w-[1280px] px-7 pb-11 pt-3">
-          <UploadConsole onStarted={onStarted} />
-        </div>
-      )}
+      {/* JobProgress fica FORA da faixa de atmosfera (glow/waveform): ele inclui a grade
+          de resultados quando o job termina, que pode crescer bastante, e nao pode esticar
+          o glow/waveform junto (o centro deles ia deslizar pra dentro da grade de clipes). */}
+      {job && <JobProgress jobId={job.id} filename={job.filename} onReset={onReset} />}
 
       <StatsStrip />
       <Recent />
