@@ -6,7 +6,7 @@ import { Hero } from "./hero";
 import { HowItWorks } from "./how-it-works";
 import { Recent } from "./recent";
 import { StatsStrip } from "./stats-strip";
-import { HomeWaveBackground } from "./home-wave-background";
+import { HomeParticlesBackground } from "./home-particles-background";
 import { UploadConsole } from "../upload-console";
 import { JobProgress } from "../job-progress";
 
@@ -27,7 +27,7 @@ export function HomeView() {
     <div className="relative bg-v3-bg">
       <section className="relative -mt-20 overflow-hidden border-b border-v3-border pt-20">
         <div className="v3-home-glow" aria-hidden="true" />
-        <HomeWaveBackground />
+        <HomeParticlesBackground />
         <Hero />
         {!job && (
           <div className="relative z-[1] mx-auto max-w-[1280px] px-7 pb-20 pt-6">
@@ -36,9 +36,9 @@ export function HomeView() {
         )}
       </section>
 
-      {/* JobProgress fica FORA da faixa de atmosfera (glow/waveform): ele inclui a grade
+      {/* JobProgress fica FORA da faixa de atmosfera (glow/particulas): ele inclui a grade
           de resultados quando o job termina, que pode crescer bastante, e nao pode esticar
-          o glow/waveform junto (o centro deles ia deslizar pra dentro da grade de clipes). */}
+          o glow/particulas junto (o centro deles ia deslizar pra dentro da grade de clipes). */}
       {job && <JobProgress jobId={job.id} filename={job.filename} onReset={onReset} />}
 
       <StatsStrip />

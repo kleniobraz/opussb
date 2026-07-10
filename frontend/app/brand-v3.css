@@ -43,9 +43,9 @@
   background: radial-gradient(60% 55% at 50% 55%, color-mix(in srgb, var(--v3-accent) 24%, transparent), transparent 70%);
 }
 
-/* Hero da Home: canvas da waveform preenche o container relativo do hero (mesmo papel do
-   antigo .hero-shader, mas sem overlay pesado; a propria waveform ja e bem sutil). */
-.v3-hero-wave {
+/* Hero da Home: canvas das particulas conectadas preenche o container relativo do hero
+   (mesmo papel do antigo .hero-shader, mas sem overlay pesado; o efeito ja e bem sutil). */
+.v3-hero-canvas {
   position: absolute;
   inset: 0;
   z-index: 0;
