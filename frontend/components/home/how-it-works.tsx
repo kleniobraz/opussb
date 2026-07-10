@@ -2,13 +2,15 @@
 
 import { Fragment, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
+import { V3Card } from "../ui/v3-card";
+import { V3GhostNumber } from "../ui/v3-ghost-number";
 
 const STEPS = [
   { name: "Extrai o áudio", desc: "Separa a trilha de voz do vídeo enviado." },
   { name: "Transcreve a fala", desc: "Gera a transcrição com marcação de tempo." },
   { name: "Corta os momentos", desc: "Pontua e seleciona os melhores trechos." },
   { name: "Reformata 9:16", desc: "Ajusta enquadramento e aplica legendas." },
-  { name: "Entrega os clipes", desc: "Prontos pra baixar e publicar.", dark: true },
+  { name: "Entrega os clipes", desc: "Prontos pra baixar e publicar." },
 ];
 
 // Faixa "Como funciona": entra no scroll (IntersectionObserver) e destaca um passo por vez.
@@ -55,36 +57,47 @@ export function HowItWorks() {
   }, [inView]);
 
   return (
-    <section
-      ref={rootRef}
-      className={cn("howb", reveal && "howb--reveal", inView && "howb--in")}
-      aria-label="Como funciona"
-    >
-      <div className="howb-inner">
-        <p className="howb-eyebrow">Como funciona</p>
-        <h2 className="howb-title">
+    <section ref={rootRef} className="relative overflow-hidden bg-v3-bg px-7 py-24" aria-label="Como funciona">
+      <div
+        className={cn(
+          "relative mx-auto max-w-[1280px] translate-y-0 opacity-100 transition-all duration-700 ease-out",
+          reveal && !inView && "translate-y-6 opacity-0",
+        )}
+      >
+        <p className="font-mono text-xs font-semibold uppercase tracking-[0.24em] text-v3-text-soft">
+          Como funciona
+        </p>
+        <h2 className="mt-3 max-w-xl font-v3-display text-3xl font-black uppercase leading-[1.05] text-white sm:text-4xl">
           Do upload ao clipe
           <br />
           em cinco passos
         </h2>
-        <ol className="howb-track">
+        <ol className="mt-14 flex flex-wrap items-stretch">
           {STEPS.map((s, i) => (
             <Fragment key={i}>
               {i > 0 && (
-                <span className="howb-arrow" aria-hidden="true">
+                <span
+                  className={cn(
+                    "flex items-center px-3 font-mono text-xl transition-colors duration-500",
+                    active !== null && i - 1 === active ? "text-v3-accent" : "text-v3-text-disabled",
+                  )}
+                  aria-hidden="true"
+                >
                   →
                 </span>
               )}
-              <li
-                className={cn(
-                  "howb-step",
-                  s.dark && "howb-step--dark",
-                  active === i && "is-active",
-                )}
-              >
-                <div className="howb-num">{i + 1}</div>
-                <div className="howb-name">{s.name}</div>
-                <div className="howb-desc">{s.desc}</div>
+              <li className="relative min-w-[170px] flex-1 basis-[170px]">
+                <V3Card active={active === i} className="relative h-full overflow-hidden p-6">
+                  <V3GhostNumber
+                    value={String(i + 1).padStart(2, "0")}
+                    className="absolute -right-2 -top-9 text-[7rem] sm:text-[8rem]"
+                  />
+                  <div className="relative">
+                    <p className="font-mono text-xs text-v3-text-disabled">0{i + 1}</p>
+                    <p className="mt-4 font-v3-display text-base font-black uppercase text-white">{s.name}</p>
+                    <p className="mt-2 text-sm leading-relaxed text-v3-text-soft">{s.desc}</p>
+                  </div>
+                </V3Card>
               </li>
             </Fragment>
           ))}

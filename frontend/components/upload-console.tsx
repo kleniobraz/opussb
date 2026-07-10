@@ -11,6 +11,7 @@ import { DropIcon } from "./drop-icon";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Switch } from "./ui/switch";
+import { V3Progress } from "./ui/v3-progress";
 import {
   Select,
   SelectContent,
@@ -180,32 +181,45 @@ export function UploadConsole({ onStarted }: { onStarted: (jobId: string, filena
   }
 
   return (
-    <section className="upload-card">
+    <section className="overflow-hidden rounded-[var(--radius-md)] border border-v3-border bg-v3-surface-2">
       <form onSubmit={onSubmit}>
-        <div className="console-head">
-          <div className="console-head-text">
-            <h3 className="console-title">Gerar novos clipes</h3>
-            <p className="console-sub">Escolha a origem do vídeo e ajuste o formato de saída.</p>
+        <div className="flex flex-wrap items-start justify-between gap-5 border-b border-v3-border p-6">
+          <div className="min-w-0">
+            <h3 className="font-v3-display text-lg font-black uppercase text-white">Gerar novos clipes</h3>
+            <p className="mt-1 text-sm text-v3-text-soft">Escolha a origem do vídeo e ajuste o formato de saída.</p>
           </div>
-          <div className="src-seg" role="group" aria-label="Fonte do vídeo" data-mode={mode}>
-            <span className="src-seg-thumb" aria-hidden="true" />
+          <div
+            className="relative grid w-full grid-cols-2 rounded-full border border-v3-border-hover bg-v3-surface-1 p-1 sm:inline-grid sm:w-auto"
+            role="group"
+            aria-label="Fonte do vídeo"
+          >
+            <span
+              aria-hidden="true"
+              data-mode={mode}
+              className="absolute inset-y-1 left-1 w-[calc(50%-4px)] rounded-full bg-v3-accent transition-transform duration-300 ease-out data-[mode=youtube]:translate-x-full"
+            />
             <button
               type="button"
-              className="src-seg-btn"
-              data-on={mode === "file"}
+              className={cn(
+                "relative z-[1] inline-flex min-w-0 items-center justify-center gap-1.5 rounded-full px-2.5 py-2 font-mono text-[0.68rem] font-bold uppercase tracking-wide transition-colors sm:gap-2 sm:px-4 sm:text-xs",
+                mode === "file" ? "text-v3-on-accent" : "text-v3-text-soft hover:text-white",
+              )}
               aria-pressed={mode === "file"}
               onClick={() => {
                 setMode("file");
                 setError("");
               }}
             >
-              <Upload className="src-seg-ico" aria-hidden="true" />
-              Enviar arquivo
+              <Upload className="size-4 shrink-0" aria-hidden="true" />
+              <span className="truncate">Enviar arquivo</span>
             </button>
             <button
               type="button"
-              className="src-seg-btn"
-              data-on={mode === "youtube"}
+              className={cn(
+                "relative z-[1] inline-flex min-w-0 items-center justify-center gap-1.5 rounded-full px-2.5 py-2 font-mono text-[0.68rem] font-bold uppercase tracking-wide transition-colors sm:gap-2 sm:px-4 sm:text-xs",
+                mode === "youtube" ? "text-v3-on-accent" : "text-v3-text-soft hover:text-white",
+                !YOUTUBE_ENABLED && "cursor-not-allowed opacity-50",
+              )}
               aria-pressed={mode === "youtube"}
               disabled={!YOUTUBE_ENABLED}
               title={!YOUTUBE_ENABLED ? "Em breve" : undefined}
@@ -215,17 +229,24 @@ export function UploadConsole({ onStarted }: { onStarted: (jobId: string, filena
                 setError("");
               }}
             >
-              <YoutubeGlyph className="src-seg-ico" />
-              Link do YouTube
-              {!YOUTUBE_ENABLED && <span className="src-seg-soon">Em breve</span>}
+              <YoutubeGlyph className="size-4 shrink-0" />
+              <span className="truncate">Link do YouTube</span>
+              {!YOUTUBE_ENABLED && (
+                <span className="hidden shrink-0 rounded-full border border-v3-accent/40 bg-v3-accent/15 px-1.5 py-0.5 font-mono text-[0.58rem] font-bold uppercase text-v3-accent sm:inline-flex">
+                  Em breve
+                </span>
+              )}
             </button>
           </div>
         </div>
 
-        <div className="console-input">
+        <div className="p-6">
           {mode === "file" ? (
             <label
-              className={cn("dropzone", drag && "is-dragover")}
+              className={cn(
+                "group flex cursor-pointer flex-col items-center gap-1.5 rounded-[var(--radius-md)] border border-dashed border-v3-border-hover px-6 py-11 text-center transition-colors",
+                drag && "border-v3-accent bg-v3-accent/5",
+              )}
               htmlFor="video-file"
               onDragEnter={(e) => {
                 e.preventDefault();
@@ -242,25 +263,41 @@ export function UploadConsole({ onStarted }: { onStarted: (jobId: string, filena
                 pickFile(e.dataTransfer.files?.[0] ?? null);
               }}
             >
-              <span className="dropzone-icon" aria-hidden="true">
+              <span
+                className={cn(
+                  "mb-2.5 grid size-14 place-items-center rounded-[var(--radius-md)] border border-v3-border-hover text-v3-text-soft transition-colors group-hover:border-v3-accent group-hover:text-v3-accent",
+                  drag && "border-v3-accent text-v3-accent",
+                )}
+                aria-hidden="true"
+              >
                 <DropIcon />
               </span>
-              <span className="dropzone-title">Arraste seu vídeo ou clique para enviar</span>
-              <span className="dropzone-hint">mp4, mov, avi, mkv, webm · até 15GB</span>
-              {file && <span className="dropzone-meta">{file.name}</span>}
+              <span className="font-v3-display text-lg font-bold text-white">
+                Arraste seu vídeo ou clique para enviar
+              </span>
+              <span className="font-mono text-xs text-v3-text-soft">mp4, mov, avi, mkv, webm · até 15GB</span>
+              {file && <span className="mt-1 font-mono text-xs font-semibold text-v3-accent">{file.name}</span>}
               {meta.text && (
-                <span className={cn("dropzone-meta", meta.error && "meta-error")}>{meta.text}</span>
+                <span
+                  className={cn(
+                    "mt-1 font-mono text-xs font-semibold",
+                    meta.error ? "text-[var(--red)]" : "text-v3-accent",
+                  )}
+                >
+                  {meta.text}
+                </span>
               )}
               <input
                 type="file"
                 id="video-file"
                 name="video"
                 accept=".mp4,.mov,.avi,.mkv,.webm"
+                className="sr-only"
                 onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
               />
             </label>
           ) : (
-            <div className="yt-input-wrap">
+            <div className="flex flex-col gap-2">
               <Input
                 type="url"
                 inputMode="url"
@@ -272,33 +309,42 @@ export function UploadConsole({ onStarted }: { onStarted: (jobId: string, filena
                 }}
                 aria-label="Link do YouTube"
               />
-              <span className="dropzone-hint">
+              <span className="font-mono text-xs text-v3-text-soft">
                 Vídeos e lives já encerradas. O servidor baixa e gera os clipes automaticamente.
               </span>
             </div>
           )}
         </div>
 
-        <div className="console-body">
-          <p className="console-eyebrow">Predefinição</p>
-          <div className="presets" role="group" aria-label="Predefinições de formato">
+        <div className="p-6 pt-0">
+          <p className="mb-3 font-mono text-xs font-semibold uppercase tracking-[0.16em] text-v3-text-soft">
+            Predefinição
+          </p>
+          <div className="mb-6 flex flex-wrap gap-2.5" role="group" aria-label="Predefinições de formato">
             {PRESETS.map((p, i) => (
               <button
                 key={p.name}
                 type="button"
-                className={cn("chip", "chip-preset", activePreset === i && "is-active")}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full border px-4 py-2 font-mono text-xs font-semibold uppercase tracking-wide transition-colors",
+                  activePreset === i
+                    ? "border-v3-accent bg-v3-accent text-v3-on-accent"
+                    : "border-v3-border-hover text-v3-text-soft hover:border-v3-accent hover:text-white",
+                )}
                 onClick={() => applyPreset(i)}
               >
-                <p.Icon className="chip-ico" />
+                <p.Icon className="size-3.5" />
                 <span>{p.name}</span>
-                <span className="chip-sub">{p.dur}</span>
+                <span className={cn("font-normal normal-case", activePreset === i ? "text-v3-on-accent/70" : "text-v3-text-soft")}>
+                  {p.dur}
+                </span>
               </button>
             ))}
           </div>
 
-          <div className="console-grid">
+          <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-4">
             <div>
-              <label className="ctrl-label" htmlFor="min-duration">
+              <label className="mb-1.5 block font-mono text-xs uppercase tracking-wide text-v3-text-soft" htmlFor="min-duration">
                 Duração mín. (s)
               </label>
               <Input
@@ -311,7 +357,7 @@ export function UploadConsole({ onStarted }: { onStarted: (jobId: string, filena
               />
             </div>
             <div>
-              <label className="ctrl-label" htmlFor="max-duration">
+              <label className="mb-1.5 block font-mono text-xs uppercase tracking-wide text-v3-text-soft" htmlFor="max-duration">
                 Duração máx. (s)
               </label>
               <Input
@@ -324,7 +370,7 @@ export function UploadConsole({ onStarted }: { onStarted: (jobId: string, filena
               />
             </div>
             <div>
-              <label className="ctrl-label">Formato</label>
+              <label className="mb-1.5 block font-mono text-xs uppercase tracking-wide text-v3-text-soft">Formato</label>
               <Select value={aspect} onValueChange={setAspect}>
                 <SelectTrigger className="w-full">
                   <SelectValue />
@@ -339,7 +385,7 @@ export function UploadConsole({ onStarted }: { onStarted: (jobId: string, filena
               </Select>
             </div>
             <div>
-              <label className="ctrl-label">Idioma</label>
+              <label className="mb-1.5 block font-mono text-xs uppercase tracking-wide text-v3-text-soft">Idioma</label>
               <Select value={language} onValueChange={setLanguage}>
                 <SelectTrigger className="w-full">
                   <SelectValue />
@@ -354,25 +400,21 @@ export function UploadConsole({ onStarted }: { onStarted: (jobId: string, filena
             </div>
           </div>
 
-          <div className="console-foot">
+          <div className="mt-6 flex flex-wrap items-center justify-between gap-5">
             {submitting ? (
               mode === "youtube" ? (
-                <div className="upload-progress">
-                  <div className="upload-progress-head">
-                    <span>Validando o link e baixando do YouTube…</span>
-                    <span className="clip-prep-spin" aria-hidden="true" />
-                  </div>
+                <div className="flex w-full items-center gap-3 font-mono text-sm text-v3-text-soft">
+                  <span>Validando o link e baixando do YouTube…</span>
+                  <span className="clip-prep-spin" aria-hidden="true" />
                 </div>
               ) : (
-                <div className="upload-progress">
-                  <div className="upload-progress-head">
+                <div className="flex w-full flex-col gap-2.5">
+                  <div className="flex items-baseline justify-between font-mono text-sm text-v3-text-soft">
                     <span>{(prog?.pct ?? 0) >= 100 ? "Quase lá, preparando o processamento" : "Enviando vídeo"}</span>
-                    <strong>{prog?.pct ?? 0}%</strong>
+                    <strong className="text-base font-bold text-v3-accent">{prog?.pct ?? 0}%</strong>
                   </div>
-                  <div className="upload-track">
-                    <div className="upload-bar" style={{ width: `${prog?.pct ?? 0}%` }} />
-                  </div>
-                  <div className="upload-progress-meta">
+                  <V3Progress value={prog?.pct ?? 0} />
+                  <div className="flex items-center justify-between font-mono text-xs text-v3-text-soft">
                     <span>{prog ? `${fmtBytes(prog.loaded)} / ${fmtBytes(prog.total)}` : ""}</span>
                     <span>
                       {(prog?.pct ?? 0) >= 100
@@ -386,11 +428,11 @@ export function UploadConsole({ onStarted }: { onStarted: (jobId: string, filena
               )
             ) : (
               <>
-                <label className="flex cursor-pointer items-center gap-3 text-[0.9rem] text-ink-soft">
-                  <Switch checked={captions} onCheckedChange={setCaptions} />
+                <label className="flex cursor-pointer items-center gap-3 text-sm text-v3-text-soft">
+                  <Switch checked={captions} onCheckedChange={setCaptions} className="data-checked:bg-v3-accent" />
                   <span>Gerar legendas embutidas</span>
                 </label>
-                <Button type="submit" variant="gold" size="brand">
+                <Button type="submit" variant="v3Cta" size="brand">
                   <Sparkles className="size-4" aria-hidden="true" />
                   Gerar Clipes
                 </Button>
@@ -399,7 +441,7 @@ export function UploadConsole({ onStarted }: { onStarted: (jobId: string, filena
           </div>
         </div>
       </form>
-      {error && <div className="error px-[24px] pb-3.5">{error}</div>}
+      {error && <div className="px-6 pb-4 font-mono text-sm font-medium text-[var(--red)]">{error}</div>}
     </section>
   );
 }

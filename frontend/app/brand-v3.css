@@ -1,7 +1,9 @@
 /* ═══════════════════════════════════════════════════════════════════════
-   OpusSB · brand-v3.css: fundacao do redesign v3 (design system novo).
+   OpusSB · brand-v3.css: design system v3 (redesign).
    So classes utilitarias bespoke do prefixo v3; os tokens (--v3-*) vivem em
-   globals.css. Nenhuma tela usa este arquivo ainda, e fundacao pra uso futuro.
+   globals.css. Fase 1 (Home) e a primeira tela a consumir este arquivo; o
+   grosso do layout usa Tailwind direto no JSX, aqui so o que Tailwind sozinho
+   nao resolve bem (keyframes, canvas do fundo animado).
    ═══════════════════════════════════════════════════════════════════════ */
 
 /* Glow amarelo de estado ativo, reutilizavel em qualquer elemento. */
@@ -23,5 +25,45 @@
   .v3-glow-active {
     animation: none;
     box-shadow: 0 0 0 1px var(--v3-accent), 0 0 16px var(--v3-glow);
+  }
+}
+
+/* Hero da Home: canvas da waveform preenche o container relativo do hero (mesmo papel do
+   antigo .hero-shader, mas sem overlay pesado; a propria waveform ja e bem sutil). */
+.v3-hero-wave {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* Flutuacao das miniaturas de clipe do hero. Uma keyframe por posicao (em vez de uma so
+   parametrizada por --r) pra dar pra aplicar via utilitario Tailwind arbitrario
+   (animate-[v3HeroFloatX_..]) direto no JSX, sem custom property extra. */
+@keyframes v3HeroFloatFront {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-9px);
+  }
+}
+@keyframes v3HeroFloatMid {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-8deg);
+  }
+  50% {
+    transform: translateY(-9px) rotate(-8deg);
+  }
+}
+@keyframes v3HeroFloatBack {
+  0%,
+  100% {
+    transform: translateY(0) rotate(8deg);
+  }
+  50% {
+    transform: translateY(-9px) rotate(8deg);
   }
 }

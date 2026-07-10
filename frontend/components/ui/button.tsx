@@ -23,9 +23,11 @@ const buttonVariants = cva(
         gold: "bg-[image:var(--grad)] text-on-gold shadow-[var(--gold-glow)] font-bold hover:brightness-105 hover:-translate-y-px active:translate-y-0 disabled:bg-none disabled:bg-surface-3 disabled:text-ink-muted disabled:shadow-none",
         brandGhost:
           "border-[var(--border-strong)] bg-transparent text-foreground font-semibold hover:border-[rgba(245,197,24,0.5)] hover:text-gold",
-        // Variante do redesign v3 (fundacao; ainda nao usada em nenhuma tela)
+        // Variantes do redesign v3 (usadas a partir da Fase 1, Home)
         v3Cta:
           "bg-v3-accent text-v3-on-accent font-mono font-bold uppercase tracking-[0.08em] hover:shadow-[0_0_0_1px_var(--v3-accent),0_0_28px_var(--v3-glow)] focus-visible:shadow-[0_0_0_1px_var(--v3-accent),0_0_28px_var(--v3-glow)]",
+        v3Ghost:
+          "border-v3-border-hover bg-transparent text-v3-text font-mono uppercase tracking-[0.08em] hover:border-v3-accent hover:text-v3-accent",
       },
       size: {
         default:

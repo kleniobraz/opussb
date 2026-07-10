@@ -2,10 +2,11 @@
 
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { cn } from "@/lib/utils";
 import { Hero } from "./hero";
 import { HowItWorks } from "./how-it-works";
 import { Recent } from "./recent";
-import { ShaderBackground } from "../shader-background";
+import { HomeWaveBackground } from "./home-wave-background";
 import { UploadConsole } from "../upload-console";
 import { JobProgress } from "../job-progress";
 
@@ -23,18 +24,19 @@ export function HomeView() {
   }
 
   return (
-    <div>
-      <section className={job ? "hero hero--busy" : "hero"}>
-        <ShaderBackground />
-        <div className="hero-glows" aria-hidden="true">
-          <div className="glow glow-a" style={{ top: "-10%", left: "8%" }} />
-          <div className="glow glow-b" style={{ top: 0, right: "6%" }} />
-        </div>
+    <div className="bg-v3-bg">
+      <section
+        className={cn(
+          "relative -mt-20 overflow-hidden border-b border-v3-border pt-20",
+          job ? "pb-11" : "min-h-screen",
+        )}
+      >
+        <HomeWaveBackground />
         <Hero />
         {job ? (
           <JobProgress jobId={job.id} filename={job.filename} onReset={onReset} />
         ) : (
-          <div className="upload-wrap">
+          <div className="relative z-[1] mx-auto max-w-[1280px] px-7 pb-14 pt-3">
             <UploadConsole onStarted={onStarted} />
           </div>
         )}
