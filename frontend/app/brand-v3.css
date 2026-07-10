@@ -48,6 +48,12 @@
 .v3-hero-canvas {
   position: absolute;
   inset: 0;
+  /* canvas e elemento "replaced": inset:0 sozinho nao estica (ao contrario de uma div),
+     sem width/height explicitos o navegador usa o tamanho intrinseco padrao do canvas
+     (300x150). E por isso que as particulas ficavam presas num retangulo pequeno no
+     canto, mesmo com a secao pai bem maior. width/height:100% forcam o tamanho real. */
+  width: 100%;
+  height: 100%;
   z-index: 0;
   pointer-events: none;
 }
