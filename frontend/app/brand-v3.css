@@ -1,0 +1,27 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   OpusSB · brand-v3.css — fundacao do redesign v3 (design system novo).
+   So classes utilitarias bespoke do prefixo v3; os tokens (--v3-*) vivem em
+   globals.css. Nenhuma tela usa este arquivo ainda, e fundacao pra uso futuro.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* Glow amarelo de estado ativo, reutilizavel em qualquer elemento. */
+.v3-glow-active {
+  animation: v3GlowPulse 2.4s ease-in-out infinite;
+}
+
+@keyframes v3GlowPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 1px var(--v3-accent), 0 0 16px var(--v3-glow);
+  }
+  50% {
+    box-shadow: 0 0 0 1px var(--v3-accent), 0 0 32px var(--v3-glow);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v3-glow-active {
+    animation: none;
+    box-shadow: 0 0 0 1px var(--v3-accent), 0 0 16px var(--v3-glow);
+  }
+}

@@ -2,6 +2,7 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "./brand.css";
+@import "./brand-v3.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -14,7 +15,7 @@
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-sans);
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-mono: var(--font-mono);
   --font-heading: var(--font-sans);
 
   --color-ring: var(--ring);
@@ -52,6 +53,24 @@
   --radius-lg: 20px;
   --radius-xl: 24px;
   --radius-2xl: 28px;
+
+  /* ── Identidade v3 (redesign, video de lancamento) ──
+     Tokens novos, a parte da marca antiga acima. Nao sobrescrevem nenhum
+     valor de --gold/--surface-2/--surface-3/--ink-soft/--ink-muted/--background;
+     ficam disponiveis so pra quem usar o prefixo v3 explicitamente. */
+  --font-v3-display: var(--v3-font-display);
+
+  --color-v3-bg: var(--v3-bg);
+  --color-v3-surface-1: var(--v3-surface-1);
+  --color-v3-surface-2: var(--v3-surface-2);
+  --color-v3-border: var(--v3-border);
+  --color-v3-border-hover: var(--v3-border-hover);
+  --color-v3-accent: var(--v3-accent);
+  --color-v3-on-accent: var(--v3-on-accent);
+  --color-v3-text: var(--v3-text);
+  --color-v3-text-soft: var(--v3-text-soft);
+  --color-v3-text-disabled: var(--v3-text-disabled);
+  --color-v3-ghost: var(--v3-ghost);
 }
 
 :root,
@@ -120,6 +139,23 @@
   --sidebar-accent-foreground: #f4f4f2;
   --sidebar-border: rgba(255, 255, 255, 0.09);
   --sidebar-ring: #f5c518;
+
+  /* ── Identidade v3 (redesign, video de lancamento) ──
+     Paleta a parte, prefixo v3. Enquanto nao for aplicada em nenhuma tela,
+     estes valores so existem como fundacao pra uso futuro. */
+  --v3-bg: #0a0a0a;
+  --v3-surface-1: #101010;
+  --v3-surface-2: #1e1e1e;
+  --v3-border: rgba(255, 255, 255, 0.09);
+  --v3-border-hover: #2a2a2a;
+  --v3-accent: #ffd400;
+  --v3-on-accent: #0a0a0a;
+  --v3-glow: rgba(255, 212, 0, 0.28);
+  --v3-text: #ffffff;
+  --v3-text-soft: #aaaaaa;
+  --v3-text-disabled: #4e4e4e;
+  --v3-ghost: rgba(255, 255, 255, 0.07);
+  --v3-ease-editorial: cubic-bezier(0.83, 0, 0.17, 1);
 }
 
 @layer base {

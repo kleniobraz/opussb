@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Space_Grotesk } from "next/font/google";
+import { Space_Grotesk, Archivo, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { AppProviders } from "@/providers/app-providers";
 
@@ -7,6 +7,20 @@ const spaceGrotesk = Space_Grotesk({
   variable: "--font-sans",
   subsets: ["latin"],
   weight: ["300", "400", "500", "600", "700"],
+  display: "swap",
+});
+
+// Fonte opt-in do redesign v3 (fundacao apenas; Space Grotesk continua a fonte padrao).
+const archivo = Archivo({
+  variable: "--v3-font-display",
+  subsets: ["latin"],
+  axes: ["wdth"], // necessario pro font-stretch 112-115% do spec funcionar
+  display: "swap",
+});
+
+const jetbrainsMono = JetBrains_Mono({
+  variable: "--font-mono",
+  subsets: ["latin"],
   display: "swap",
 });
 
@@ -27,7 +41,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="pt-BR" className={`${spaceGrotesk.variable} dark h-full antialiased`}>
+    <html
+      lang="pt-BR"
+      className={`${spaceGrotesk.variable} ${archivo.variable} ${jetbrainsMono.variable} dark h-full antialiased`}
+    >
       <body className="min-h-full">
         <AppProviders>{children}</AppProviders>
       </body>
