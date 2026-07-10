@@ -1,8 +1,8 @@
 "use client";
 
 // Upload do episódio de podcast (§39): estaciona o job em 'uploaded' (POST /api/podcast/upload)
-// e leva pra tela de aprovação do gancho, de onde o disparo da transcrição acontece. Reaproveita
-// o padrão visual da dropzone do UploadConsole, mas sem os controles de clipe (aspecto/duração/
+// e leva pra tela de aprovação do gancho, de onde o disparo da transcrição acontece. Mesmo
+// entorno visual v3 do UploadConsole da Home, sem os controles de clipe (aspecto/duração/
 // idioma/legenda não existem aqui; o único ajuste é a vinheta que abre o episódio).
 
 import { useState } from "react";
@@ -15,6 +15,7 @@ import { MAX_BYTES, extOk } from "@/lib/upload";
 import { cn } from "@/lib/utils";
 import { DropIcon } from "@/components/drop-icon";
 import { Button } from "@/components/ui/button";
+import { V3Progress } from "@/components/ui/v3-progress";
 import {
   Select,
   SelectContent,
@@ -87,20 +88,21 @@ export function PodcastUpload() {
   }
 
   return (
-    <section className="upload-card">
+    <section className="overflow-hidden rounded-[var(--radius-md)] border border-v3-border bg-v3-surface-2">
       <form onSubmit={onSubmit}>
-        <div className="console-head">
-          <div className="console-head-text">
-            <h3 className="console-title">Enviar episódio</h3>
-            <p className="console-sub">
-              Envie o episódio em 16:9 com frame rate constante e escolha a vinheta de abertura.
-            </p>
-          </div>
+        <div className="border-b border-v3-border p-6">
+          <h3 className="font-v3-display text-lg font-black uppercase text-white">Enviar episódio</h3>
+          <p className="mt-1 text-sm text-v3-text-soft">
+            Envie o episódio em 16:9 com frame rate constante e escolha a vinheta de abertura.
+          </p>
         </div>
 
-        <div className="console-input">
+        <div className="p-6">
           <label
-            className={cn("dropzone", drag && "is-dragover")}
+            className={cn(
+              "group flex cursor-pointer flex-col items-center gap-1.5 rounded-[var(--radius-md)] border border-dashed border-v3-border-hover px-6 py-11 text-center transition-colors",
+              drag && "border-v3-accent bg-v3-accent/5",
+            )}
             htmlFor="podcast-file"
             onDragEnter={(e) => {
               e.preventDefault();
@@ -117,37 +119,57 @@ export function PodcastUpload() {
               pickFile(e.dataTransfer.files?.[0] ?? null);
             }}
           >
-            <span className="dropzone-icon" aria-hidden="true">
+            <span
+              className={cn(
+                "mb-2.5 grid size-14 place-items-center rounded-[var(--radius-md)] border border-v3-border-hover text-v3-text-soft transition-colors group-hover:border-v3-accent group-hover:text-v3-accent",
+                drag && "border-v3-accent text-v3-accent",
+              )}
+              aria-hidden="true"
+            >
               <DropIcon />
             </span>
-            <span className="dropzone-title">Arraste seu vídeo ou clique para enviar</span>
-            <span className="dropzone-hint">mp4, mov, avi, mkv, webm · 16:9 · até 15GB</span>
-            {file && <span className="dropzone-meta">{file.name}</span>}
+            <span className="font-v3-sans text-lg font-bold text-white">
+              Arraste seu vídeo ou clique para enviar
+            </span>
+            <span className="font-mono text-xs text-v3-text-soft">mp4, mov, avi, mkv, webm · 16:9 · até 15GB</span>
+            {file && <span className="mt-1 font-mono text-xs font-semibold text-v3-accent">{file.name}</span>}
             {meta.text && (
-              <span className={cn("dropzone-meta", meta.error && "meta-error")}>{meta.text}</span>
+              <span
+                className={cn(
+                  "mt-1 font-mono text-xs font-semibold",
+                  meta.error ? "text-[var(--red)]" : "text-v3-accent",
+                )}
+              >
+                {meta.text}
+              </span>
             )}
             <input
               type="file"
               id="podcast-file"
               name="video"
               accept=".mp4,.mov,.avi,.mkv,.webm"
+              className="sr-only"
               onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
             />
           </label>
         </div>
 
-        <div className="console-body">
-          <p className="console-eyebrow">Vinheta de abertura</p>
+        <div className="p-6 pt-0">
+          <p className="mb-3 font-mono text-xs font-semibold uppercase tracking-[0.16em] text-v3-text-soft">
+            Vinheta de abertura
+          </p>
           {vinhetasLoading ? (
-            <p className="text-sm text-[var(--ink-muted)]">Carregando vinhetas...</p>
+            <p className="font-mono text-sm text-v3-text-soft">Carregando vinhetas...</p>
           ) : vinhetas.length === 0 ? (
-            <p className="text-sm text-[var(--ink-muted)]">
+            <p className="font-mono text-sm text-v3-text-soft">
               Não há vinheta cadastrada ainda. Fale com o admin pra cadastrar uma antes de enviar.
             </p>
           ) : (
-            <div className="console-grid">
+            <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-4">
               <div>
-                <label className="ctrl-label">Vinheta</label>
+                <label className="mb-1.5 block font-mono text-xs uppercase tracking-wide text-v3-text-soft">
+                  Vinheta
+                </label>
                 <Select value={vinhetaId} onValueChange={setVinhetaId}>
                   <SelectTrigger className="w-full">
                     <SelectValue placeholder="Escolha a vinheta" />
@@ -165,17 +187,15 @@ export function PodcastUpload() {
             </div>
           )}
 
-          <div className="console-foot">
+          <div className="mt-6 flex flex-wrap items-center justify-between gap-5">
             {submitting ? (
-              <div className="upload-progress">
-                <div className="upload-progress-head">
+              <div className="flex w-full flex-col gap-2.5">
+                <div className="flex items-baseline justify-between font-mono text-sm text-v3-text-soft">
                   <span>{(prog?.pct ?? 0) >= 100 ? "Quase lá, preparando o processamento" : "Enviando episódio"}</span>
-                  <strong>{prog?.pct ?? 0}%</strong>
+                  <strong className="text-base font-bold text-v3-accent">{prog?.pct ?? 0}%</strong>
                 </div>
-                <div className="upload-track">
-                  <div className="upload-bar" style={{ width: `${prog?.pct ?? 0}%` }} />
-                </div>
-                <div className="upload-progress-meta">
+                <V3Progress value={prog?.pct ?? 0} />
+                <div className="flex items-center justify-between font-mono text-xs text-v3-text-soft">
                   <span>{prog ? `${fmtBytes(prog.loaded)} / ${fmtBytes(prog.total)}` : ""}</span>
                   <span>
                     {(prog?.pct ?? 0) >= 100
@@ -187,7 +207,7 @@ export function PodcastUpload() {
                 </div>
               </div>
             ) : (
-              <Button type="submit" variant="gold" size="brand" disabled={vinhetas.length === 0}>
+              <Button type="submit" variant="v3Cta" size="brand" disabled={vinhetas.length === 0}>
                 <Sparkles className="size-4" aria-hidden="true" />
                 Enviar episódio
               </Button>
@@ -195,7 +215,7 @@ export function PodcastUpload() {
           </div>
         </div>
       </form>
-      {error && <div className="error px-[24px] pb-3.5">{error}</div>}
+      {error && <div className="px-6 pb-4 font-mono text-sm font-medium text-[var(--red)]">{error}</div>}
     </section>
   );
 }

@@ -1,172 +1,127 @@
 import Link from "next/link";
 import { Play } from "lucide-react";
-import { fmtScore, scoreClass, timeAgo, hashStr, nameFromEmail } from "@/lib/format";
+import { fmtScore, timeAgo, hashStr, nameFromEmail } from "@/lib/format";
 import type { Project } from "@/lib/types";
+import { cn } from "@/lib/utils";
+import { V3Card } from "@/components/ui/v3-card";
 
-// Onda de audio generativa (capa quando nao ha thumbnail real). Determinística pelo seed.
-function ProjectWave({ seed }: { seed: number }) {
-  let h = seed || 1;
-  const bars = [];
-  for (let i = 0; i < 32; i++) {
-    h = (h * 1103515245 + 12345) >>> 0;
-    const amp = 0.16 + ((h % 1000) / 1000) * 0.84;
-    const bh = Math.max(2, Math.round(amp * 46));
-    const y = ((60 - bh) / 2).toFixed(1);
-    bars.push(<rect key={i} x={4 + i * 6} y={y} width={3} height={bh} rx={1.5} />);
-  }
-  return (
-    <svg className="project-wave" viewBox="0 0 200 60" preserveAspectRatio="none" aria-hidden="true">
-      {bars}
-    </svg>
-  );
-}
+// Cartao compartilhado (identidade v3): unico consumidor real hoje e a tela de Podcasts
+// (components/podcast/podcast-list.tsx). Mesmo espirito visual do cartao de Projetos
+// (components/projetos/project-card.tsx), que duplica a logica de capa/status/rota porque
+// Projetos e Podcast tem filtros de job_type diferentes e podem divergir no futuro.
 
-// Podcast (§39) abre a tela própria (aprovação/montagem/player), não a página de clipes.
+// Podcast (§39) abre a tela propria (aprovacao/montagem/player), nao a pagina de clipes. Projetos
+// filtra job_type !== "podcast", mas mantem a funcao completa por consistencia com o resto do app.
 function projectHref(p: Project) {
   return p.job_type === "podcast" || p.status === "aguardando_aprovacao" || p.status === "gancho_aprovado"
     ? `/podcast/${p.id}`
     : `/projetos/${p.id}`;
 }
 
-function ProjectPill({ p }: { p: Project }) {
+function coverGradient(seed: number) {
+  const hue = seed % 360;
+  const hue2 = (hue + 38) % 360;
+  return (
+    `radial-gradient(115% 120% at 82% 12%, hsla(${hue},62%,56%,0.16), transparent 58%),` +
+    `radial-gradient(120% 120% at 12% 92%, hsla(${hue2},55%,50%,0.12), transparent 55%),` +
+    `linear-gradient(150deg, var(--v3-surface-2), var(--v3-surface-1))`
+  );
+}
+
+// Onda de audio generativa (capa quando nao ha thumbnail real), deterministica pelo seed.
+function CoverWave({ seed }: { seed: number }) {
+  let h = seed || 1;
+  const bars: number[] = [];
+  for (let i = 0; i < 26; i++) {
+    h = (h * 1103515245 + 12345) >>> 0;
+    bars.push(0.16 + ((h % 1000) / 1000) * 0.84);
+  }
+  return (
+    <div className="flex h-full w-full items-center justify-center gap-[3px] px-5" aria-hidden="true">
+      {bars.map((amp, i) => (
+        <span
+          key={i}
+          className="w-[3px] flex-1 rounded-full bg-v3-accent/50"
+          style={{ height: `${10 + amp * 60}%` }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function StatusPill({ p }: { p: Project }) {
+  const base =
+    "absolute left-2 top-2 z-[2] inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[0.62rem] font-semibold uppercase tracking-wide backdrop-blur-sm";
   if (p.status === "processing")
     return (
-      <span className="project-pill is-proc">
-        <span className="pill-dot" />
+      <span className={cn(base, "border-v3-accent/50 bg-v3-bg/70 text-v3-accent")}>
+        <span className="size-1.5 animate-pulse rounded-full bg-v3-accent" />
         processando
       </span>
     );
-  if (p.status === "error") return <span className="project-pill is-err">falhou</span>;
-  if (p.status === "uploaded") return <span className="project-pill">aguardando disparo</span>;
+  if (p.status === "error")
+    return <span className={cn(base, "border-[var(--red)]/40 bg-v3-bg/70 text-[var(--red)]")}>falhou</span>;
+  if (p.status === "uploaded")
+    return (
+      <span className={cn(base, "border-v3-border-hover bg-v3-bg/70 text-v3-text-soft")}>
+        aguardando disparo
+      </span>
+    );
   if (p.status === "aguardando_aprovacao")
     return (
-      <span className="project-pill is-proc">
-        <span className="pill-dot" />
+      <span className={cn(base, "border-v3-accent/50 bg-v3-bg/70 text-v3-accent")}>
+        <span className="size-1.5 animate-pulse rounded-full bg-v3-accent" />
         aprovar gancho
       </span>
     );
-  if (p.status === "gancho_aprovado") return <span className="project-pill">gancho aprovado</span>;
+  if (p.status === "gancho_aprovado")
+    return <span className={cn(base, "border-v3-border-hover bg-v3-bg/70 text-v3-text-soft")}>gancho aprovado</span>;
   if (p.job_type === "podcast" && p.status === "done")
-    return <span className="project-pill">episódio montado</span>;
+    return <span className={cn(base, "border-v3-border-hover bg-v3-bg/70 text-v3-text-soft")}>episódio montado</span>;
   if (p.clip_count != null)
     return (
-      <span className="project-pill">
+      <span className={cn(base, "border-v3-border-hover bg-v3-bg/70 text-v3-text-soft")}>
         <Play className="size-3" /> {p.clip_count} {p.clip_count === 1 ? "clipe" : "clipes"}
       </span>
     );
   return null;
 }
 
-function GenCover({ p }: { p: Project }) {
-  const seed = hashStr(p.id || p.title || p.filename);
-  const hue = seed % 360;
-  const hue2 = (hue + 38) % 360;
-  const bg =
-    `radial-gradient(115% 120% at 82% 12%, hsla(${hue},62%,56%,0.20), transparent 58%),` +
-    `radial-gradient(120% 120% at 12% 92%, hsla(${hue2},55%,50%,0.13), transparent 55%),` +
-    `linear-gradient(150deg,#17171b,#0f1012)`;
-  return (
-    <div className="project-thumb project-thumb-gen" style={{ background: bg }}>
-      <ProjectWave seed={seed} />
-      <span className="project-mark-sm" aria-hidden="true">
-        SB Clips
-      </span>
-    </div>
-  );
-}
-
 export function ProjectCard({ p }: { p: Project }) {
+  const href = projectHref(p);
+  const seed = hashStr(p.id || p.title || p.filename);
   return (
-    <Link className="project-card" href={projectHref(p)}>
-      {p.thumbnail_url ? (
-        <div className="project-thumb">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img className="project-thumb-img" src={p.thumbnail_url} alt="" loading="lazy" />
-          {p.avg_score != null && (
-            <span className={`score-badge ${scoreClass(p.avg_score)}`}>{fmtScore(p.avg_score)}</span>
+    <Link href={href} className="group block h-full">
+      <V3Card className="flex h-full flex-col overflow-hidden transition-colors group-hover:border-v3-border-hover">
+        <div className="relative aspect-[16/10] overflow-hidden border-b border-v3-border">
+          {p.thumbnail_url ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={p.thumbnail_url} alt="" loading="lazy" className="h-full w-full object-cover" />
+          ) : (
+            <div className="h-full w-full" style={{ background: coverGradient(seed) }}>
+              <CoverWave seed={seed} />
+            </div>
           )}
-          <ProjectPill p={p} />
-        </div>
-      ) : (
-        <div className="relative">
-          <GenCover p={p} />
           {p.avg_score != null && (
-            <span
-              className={`score-badge ${scoreClass(p.avg_score)}`}
-              style={{ position: "absolute", top: 11, right: 11, zIndex: 2 }}
-            >
+            <span className="absolute right-2 top-2 z-[2] rounded-full bg-v3-bg/80 px-2 py-0.5 font-mono text-[0.7rem] font-bold text-v3-accent">
               {fmtScore(p.avg_score)}
             </span>
           )}
-          <ProjectPill p={p} />
+          <StatusPill p={p} />
         </div>
-      )}
-      <div className="project-body">
-        <p className="project-title">{p.title || p.filename || "Projeto"}</p>
-        <p className="project-meta">
-          {timeAgo(p.created_at)}
-          {p.owner_email ? ` · por ${nameFromEmail(p.owner_email)}` : ""}
-        </p>
-        <span className="project-open">
-          Abrir <span aria-hidden="true">→</span>
-        </span>
-      </div>
-    </Link>
-  );
-}
-
-function FeaturedReel({ p }: { p: Project }) {
-  const n = Math.max(2, Math.min(p.clip_count || 3, 4));
-  const tiles = [];
-  for (let i = 0; i < n; i++) {
-    const seed = hashStr((p.id || "p") + ":" + i);
-    const hue = seed % 360;
-    const hue2 = (hue + 38) % 360;
-    const bg =
-      `radial-gradient(120% 90% at 50% 12%, hsla(${hue},62%,56%,0.22), transparent 60%),` +
-      `radial-gradient(120% 120% at 12% 92%, hsla(${hue2},55%,50%,0.13), transparent 55%),` +
-      `linear-gradient(150deg,#17171b,#0f1012)`;
-    tiles.push(
-      <div className="featured-tile" key={i} style={{ background: bg }}>
-        <ProjectWave seed={seed} />
-      </div>,
-    );
-  }
-  return <div className="featured-reel">{tiles}</div>;
-}
-
-export function FeaturedCard({ p }: { p: Project }) {
-  const good = p.avg_score != null && p.avg_score >= 8;
-  const score = p.avg_score != null ? fmtScore(p.avg_score) : "—";
-  const meta = (p.clip_count != null ? p.clip_count + " clipes · " : "") + timeAgo(p.created_at);
-  const href = projectHref(p);
-  return (
-    <div className="featured-card">
-      <Link className="featured-thumb" href={href}>
-        {p.thumbnail_url ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img className="project-thumb-img" src={p.thumbnail_url} alt="" loading="lazy" />
-        ) : (
-          <FeaturedReel p={p} />
-        )}
-        <span className="featured-tag">Último projeto</span>
-      </Link>
-      <div className="featured-body">
-        <div className="featured-score-row">
-          <span
-            className="featured-score"
-            style={{ color: good ? "var(--green)" : "var(--gold)" }}
-          >
-            {score}
+        <div className="flex flex-1 flex-col p-4">
+          <p className="line-clamp-2 min-h-[2.5em] font-v3-sans text-sm font-bold leading-snug text-white">
+            {p.title || p.filename || "Projeto"}
+          </p>
+          <p className="mt-2 font-mono text-xs text-v3-text-soft">
+            {timeAgo(p.created_at)}
+            {p.owner_email ? ` · por ${nameFromEmail(p.owner_email)}` : ""}
+          </p>
+          <span className="mt-3 inline-flex translate-y-1 items-center gap-1 font-mono text-xs font-semibold uppercase tracking-wide text-v3-accent opacity-0 transition-all duration-150 group-hover:translate-y-0 group-hover:opacity-100">
+            Abrir <span aria-hidden="true">→</span>
           </span>
-          <span className="featured-score-label">nota média dos clipes</span>
         </div>
-        <div className="featured-title">{p.title || p.filename || "Projeto"}</div>
-        <div className="featured-meta">{meta}</div>
-        <Link href={href} className="link-gold btn-cta mt-[22px] inline-block">
-          Abrir projeto →
-        </Link>
-      </div>
-    </div>
+      </V3Card>
+    </Link>
   );
 }
