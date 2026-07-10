@@ -272,7 +272,7 @@ export function UploadConsole({ onStarted }: { onStarted: (jobId: string, filena
               >
                 <DropIcon />
               </span>
-              <span className="font-v3-display text-lg font-bold text-white">
+              <span className="font-v3-sans text-lg font-bold text-white">
                 Arraste seu vídeo ou clique para enviar
               </span>
               <span className="font-mono text-xs text-v3-text-soft">mp4, mov, avi, mkv, webm · até 15GB</span>

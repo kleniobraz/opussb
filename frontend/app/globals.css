@@ -59,6 +59,7 @@
      valor de --gold/--surface-2/--surface-3/--ink-soft/--ink-muted/--background;
      ficam disponiveis so pra quem usar o prefixo v3 explicitamente. */
   --font-v3-display: var(--v3-font-display);
+  --font-v3-sans: var(--v3-font-sans);
 
   --color-v3-bg: var(--v3-bg);
   --color-v3-surface-1: var(--v3-surface-1);

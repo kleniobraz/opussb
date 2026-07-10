@@ -4,7 +4,6 @@ import { useAuth } from "@/providers/auth-provider";
 import { firstNameFromEmail, greetingForHour } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { V3Card } from "../ui/v3-card";
-import { V3Divider } from "../ui/v3-divider";
 
 // Alturas fixas (nao aleatorias) pro equalizador da capa de cada miniatura de clipe.
 const EQ_HEIGHTS = [34, 60, 46, 82, 54, 100, 50, 76, 40, 64, 30];
@@ -62,22 +61,16 @@ export function Hero() {
   return (
     <div className="relative z-[1] mx-auto flex max-w-[1280px] flex-wrap items-center justify-between gap-8 px-7 pb-9 pt-16">
       <div className="min-w-[320px] flex-1">
-        <div className="mb-5 flex items-center gap-3">
-          <V3Divider className="w-6" />
-          <span className="font-mono text-xs font-semibold uppercase tracking-[0.24em] text-v3-text-soft">
-            Central de clipes
-          </span>
-        </div>
         <h1
-          className="font-v3-display font-black leading-[1.02] text-white"
-          style={{ fontSize: "clamp(40px,5.6vw,72px)", letterSpacing: "-0.035em" }}
+          className="font-v3-sans font-bold leading-[1.05] text-white"
+          style={{ fontSize: "clamp(28px,3.4vw,44px)", letterSpacing: "-0.02em" }}
         >
           {greeting},
           <br />
           {name}
           <span className="text-v3-accent">.</span>
         </h1>
-        <p className="mt-4 max-w-[480px] text-base leading-relaxed text-v3-text-soft">
+        <p className="mt-4 max-w-[480px] font-v3-sans text-base leading-relaxed text-v3-text-soft">
           Solte um vídeo longo abaixo e o SB Clips devolve os melhores momentos cortados,
           reformatados e legendados.
         </p>

@@ -110,7 +110,7 @@ export function HomeVideoCard({ p }: { p: Project }) {
           <StatusPill p={p} />
         </div>
         <div className="flex flex-1 flex-col p-4">
-          <p className="line-clamp-2 min-h-[2.5em] font-v3-display text-sm font-bold leading-snug text-white">
+          <p className="line-clamp-2 min-h-[2.5em] font-v3-sans text-sm font-bold leading-snug text-white">
             {p.title || p.filename || "Projeto"}
           </p>
           <p className="mt-2 font-mono text-xs text-v3-text-soft">
@@ -164,7 +164,7 @@ export function HomeFeaturedCard({ p }: { p: Project }) {
           <span className="font-v3-display text-4xl font-black text-v3-accent">{score}</span>
           <span className="font-mono text-xs text-v3-text-soft">nota média dos clipes</span>
         </div>
-        <p className="font-v3-display text-xl font-bold leading-snug text-white">
+        <p className="font-v3-sans text-xl font-bold leading-snug text-white">
           {p.title || p.filename || "Projeto"}
         </p>
         <p className="mt-3 font-mono text-xs text-v3-text-soft">{meta}</p>
