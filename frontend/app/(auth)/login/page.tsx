@@ -21,6 +21,9 @@ function ZohoLogo() {
   );
 }
 
+// Inlinado no build pelo next.config.ts (git describe --tags); nunca editado a mao.
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || "v0.0.0";
+
 // Mensagens pros códigos de erro que o backend devolve no redirect (?error=...).
 const ERROR_MESSAGES: Record<string, string> = {
   dominio: "Esse e-mail não tem acesso. Use uma conta @seubone.com ou @grupoquatro5.com.",
@@ -122,18 +125,17 @@ export default function LoginPage() {
             </span>
           </div>
           <span className="login-topbar-tag">
-            <span className="demo-dot" /> Acesso interno · Grupo SB
+            <span className="demo-dot" /> {APP_VERSION}
           </span>
         </header>
 
         <div className="login-content">
           <div className="login-hero">
             <h1 className="login-headline">
-              Vídeos longos viram <span className="grad-text">clipes que bombam.</span>
+              Do bruto ao publicável, <span className="grad-text">sem sair daqui.</span>
             </h1>
             <p className="login-hero-sub">
-              A central de clipes do Grupo SB. Envie um vídeo longo e receba os melhores momentos
-              em 9:16.
+              Do podcast ao clipe legendado. Tudo num lugar só.
             </p>
           </div>
 
