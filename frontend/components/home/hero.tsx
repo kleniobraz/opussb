@@ -8,11 +8,17 @@ import { V3Card } from "../ui/v3-card";
 // Alturas fixas (nao aleatorias) pro equalizador da capa de cada miniatura de clipe.
 const EQ_HEIGHTS = [34, 60, 46, 82, 54, 100, 50, 76, 40, 64, 30];
 
+// Glow radial (acento v3) atras do equalizador, no lugar do preenchimento chapado de antes.
+// color-mix (nao rgba fixo) pra seguir --v3-accent se a paleta mudar.
+const CLIP_GLOW =
+  "radial-gradient(120% 85% at 50% 10%, color-mix(in srgb, var(--v3-accent) 18%, transparent), transparent 60%)," +
+  "linear-gradient(160deg, var(--v3-surface-2), var(--v3-surface-1))";
+
 function Eq() {
   return (
-    <div className="flex h-[42%] w-[70%] items-center gap-[3px]" aria-hidden="true">
+    <div className="flex h-[42%] w-[70%] items-center gap-[2px]" aria-hidden="true">
       {EQ_HEIGHTS.map((h, i) => (
-        <span key={i} className="flex-1 rounded-[3px] bg-v3-accent" style={{ height: `${h}%` }} />
+        <span key={i} className="flex-1 rounded-[2px] bg-v3-accent" style={{ height: `${h}%` }} />
       ))}
     </div>
   );
@@ -35,17 +41,25 @@ function HeroClip({
     <V3Card
       active={active}
       className={cn(
-        "absolute aspect-[9/16] w-[132px] overflow-hidden rounded-[var(--radius-lg)] motion-reduce:animate-none",
+        "absolute aspect-[9/16] w-12 overflow-hidden rounded-[var(--radius-md)] shadow-[var(--shadow-hero)] motion-reduce:animate-none",
         animationClassName,
         className,
       )}
     >
-      <div className="relative flex h-full w-full items-center justify-center bg-v3-surface-1">
+      <div className="relative flex h-full w-full items-center justify-center" style={{ background: CLIP_GLOW }}>
         <Eq />
-        <span className="absolute right-2 top-2 rounded-full bg-v3-bg/80 px-2 py-0.5 font-mono text-[0.65rem] font-bold text-v3-accent">
+        {active && (
+          // Agulha de progresso (scrub), so no cartao da frente: reforca a leitura de "video tocando".
+          <span
+            className="absolute inset-y-[14%] left-1/2 w-[2px] rounded-full bg-v3-accent motion-reduce:hidden animate-[v3HeroScrub_2.6s_var(--ease)_infinite]"
+            style={{ boxShadow: "0 0 6px 1px var(--v3-glow)" }}
+            aria-hidden="true"
+          />
+        )}
+        <span className="absolute right-1 top-1 rounded-full bg-v3-bg/80 px-1 py-px font-mono text-[0.5rem] font-bold text-v3-accent">
           {score}
         </span>
-        <span className="absolute bottom-2 left-2 rounded-md bg-black/60 px-1.5 py-0.5 font-mono text-[0.6rem] font-semibold text-white">
+        <span className="absolute bottom-1 left-1 rounded-[3px] bg-black/60 px-1 py-px font-mono text-[0.45rem] font-semibold text-white">
           {dur}
         </span>
       </div>
@@ -59,40 +73,31 @@ export function Hero() {
   const greeting = greetingForHour(new Date().getHours());
 
   return (
-    <div className="relative z-[1] mx-auto flex max-w-[1280px] flex-wrap items-center justify-between gap-8 px-7 pb-9 pt-16">
-      <div className="min-w-[320px] flex-1">
-        <h1
-          className="font-v3-sans font-bold leading-[1.05] text-white"
-          style={{ fontSize: "clamp(28px,3.4vw,44px)", letterSpacing: "-0.02em" }}
-        >
-          {greeting},
-          <br />
-          {name}
+    <div className="relative z-[1] mx-auto flex max-w-[1280px] items-center justify-between gap-6 px-7 py-5">
+      <div className="min-w-[240px]">
+        <p className="font-v3-sans text-lg font-bold leading-snug text-white sm:text-xl">
+          {greeting}, {name}
           <span className="text-v3-accent">.</span>
-        </h1>
-        <p className="mt-4 max-w-[480px] font-v3-sans text-base leading-relaxed text-v3-text-soft">
-          Solte um vídeo longo abaixo e o SB Clips devolve os melhores momentos cortados,
-          reformatados e legendados.
         </p>
       </div>
       <div
-        className="relative hidden h-[290px] w-[300px] flex-none animate-[heroVisualIn_0.8s_var(--ease-out)_both] motion-reduce:animate-none lg:block"
+        className="relative hidden h-[104px] w-[108px] flex-none animate-[heroVisualIn_0.8s_var(--ease-out)_both] motion-reduce:animate-none lg:block"
         aria-hidden="true"
       >
         <HeroClip
-          className="left-1 top-[14px] z-[2]"
+          className="left-0 top-[5px] z-[2]"
           animationClassName="animate-[v3HeroFloatMid_7s_var(--ease)_infinite_0.5s]"
           score="8.1"
           dur="0:42"
         />
         <HeroClip
-          className="left-[168px] top-1 z-[1]"
+          className="left-[60px] top-0 z-[1]"
           animationClassName="animate-[v3HeroFloatBack_7.6s_var(--ease)_infinite_1s]"
           score="7.3"
           dur="1:05"
         />
         <HeroClip
-          className="left-[86px] top-[36px] z-[3]"
+          className="left-[31px] top-[13px] z-[3]"
           animationClassName="animate-[v3HeroFloatFront_6s_var(--ease)_infinite]"
           score="9.2"
           dur="0:28"

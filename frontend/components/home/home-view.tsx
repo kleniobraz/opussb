@@ -2,10 +2,10 @@
 
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { cn } from "@/lib/utils";
 import { Hero } from "./hero";
 import { HowItWorks } from "./how-it-works";
 import { Recent } from "./recent";
+import { StatsStrip } from "./stats-strip";
 import { HomeWaveBackground } from "./home-wave-background";
 import { UploadConsole } from "../upload-console";
 import { JobProgress } from "../job-progress";
@@ -25,25 +25,22 @@ export function HomeView() {
 
   return (
     <div className="bg-v3-bg">
-      <section
-        className={cn(
-          "relative -mt-20 overflow-hidden border-b border-v3-border pt-20",
-          job ? "pb-11" : "min-h-screen",
-        )}
-      >
+      <section className="relative -mt-20 overflow-hidden border-b border-v3-border pt-20">
         <HomeWaveBackground />
         <Hero />
-        {job ? (
-          <JobProgress jobId={job.id} filename={job.filename} onReset={onReset} />
-        ) : (
-          <div className="relative z-[1] mx-auto max-w-[1280px] px-7 pb-14 pt-3">
-            <UploadConsole onStarted={onStarted} />
-          </div>
-        )}
       </section>
 
-      <HowItWorks />
+      {job ? (
+        <JobProgress jobId={job.id} filename={job.filename} onReset={onReset} />
+      ) : (
+        <div className="mx-auto max-w-[1280px] px-7 pb-11 pt-3">
+          <UploadConsole onStarted={onStarted} />
+        </div>
+      )}
+
+      <StatsStrip />
       <Recent />
+      <HowItWorks />
     </div>
   );
 }

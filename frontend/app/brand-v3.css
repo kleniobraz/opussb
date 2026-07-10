@@ -67,3 +67,18 @@
     transform: translateY(-9px) rotate(8deg);
   }
 }
+
+/* Agulha de progresso (scrub) do cartao ativo do hero: pulso vertical com glow, sugerindo
+   um clipe tocando. O translateX(-50%) fica aqui (nao em utilitario Tailwind) pra nao
+   disputar a propriedade "transform" com a animacao. */
+@keyframes v3HeroScrub {
+  0%,
+  100% {
+    transform: translateX(-50%) scaleY(0.78);
+    opacity: 0.5;
+  }
+  50% {
+    transform: translateX(-50%) scaleY(1);
+    opacity: 1;
+  }
+}

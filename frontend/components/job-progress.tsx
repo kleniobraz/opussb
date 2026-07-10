@@ -49,7 +49,7 @@ export function JobProgress({
 
   return (
     <>
-      <section className="relative z-[1] mx-auto max-w-[1280px] px-7 pb-11 pt-3">
+      <section className="mx-auto max-w-[1280px] px-7 pb-11 pt-3">
         <V3Card className="p-7">
           <p className="font-mono text-xs font-semibold uppercase tracking-[0.24em] text-v3-text-soft">
             Processando
