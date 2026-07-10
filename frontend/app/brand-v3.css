@@ -103,3 +103,40 @@
     opacity: 1;
   }
 }
+
+/* Marca d'agua no vao central da faixa de saudacao (mesmo espirito do .login-hero-mark,
+   versao discreta e centralizada). Vem ANTES no JSX pra pintar atras do texto e dos
+   cartoes flutuantes (mesmo z-[1], ordem no DOM decide); e absolute pra nao entrar no
+   justify-between e nao empurrar os outros dois filhos do flex. */
+.v3-hero-mark {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%) rotate(-12deg);
+  opacity: 0.14;
+  pointer-events: none;
+  animation: v3HeroMarkFloat 12s ease-in-out infinite;
+}
+.v3-hero-mark .brand-mark {
+  width: clamp(100px, 11vw, 160px);
+  height: clamp(100px, 11vw, 160px);
+  border-radius: clamp(22px, 2.6vw, 34px);
+}
+.v3-hero-mark .brand-mark svg {
+  width: clamp(46px, 5vw, 72px);
+  height: clamp(46px, 5vw, 72px);
+}
+@keyframes v3HeroMarkFloat {
+  0%,
+  100% {
+    transform: translate(-50%, -50%) rotate(-12deg);
+  }
+  50% {
+    transform: translate(-50%, -55%) rotate(-6deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .v3-hero-mark {
+    animation: none;
+  }
+}

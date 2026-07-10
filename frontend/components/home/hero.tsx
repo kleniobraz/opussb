@@ -3,6 +3,7 @@
 import { useAuth } from "@/providers/auth-provider";
 import { firstNameFromEmail, greetingForHour } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { BrandMark } from "../brand-mark";
 import { V3Card } from "../ui/v3-card";
 
 // Alturas fixas (nao aleatorias) pro equalizador da capa de cada miniatura de clipe.
@@ -74,6 +75,9 @@ export function Hero() {
 
   return (
     <div className="relative z-[1] mx-auto flex max-w-[1280px] items-center justify-between gap-6 px-7 py-5">
+      <div className="v3-hero-mark hidden lg:block" aria-hidden="true">
+        <BrandMark />
+      </div>
       <div className="min-w-[240px]">
         <p className="font-v3-sans text-lg font-bold leading-snug text-white sm:text-xl">
           {greeting}, {name}
