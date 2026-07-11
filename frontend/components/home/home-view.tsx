@@ -25,7 +25,7 @@ export function HomeView() {
 
   return (
     <div className="relative bg-v3-bg">
-      <section className="relative -mt-20 overflow-hidden border-b border-v3-border pt-20">
+      <section className="relative overflow-hidden border-b border-v3-border pt-10">
         <div className="v3-home-glow" aria-hidden="true" />
         <ParticlesBackground />
         <Hero />

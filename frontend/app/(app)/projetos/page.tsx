@@ -72,7 +72,7 @@ export default function ProjetosPage() {
 
   return (
     <div className="relative bg-v3-bg">
-      <section className="relative -mt-20 overflow-hidden border-b border-v3-border pb-8 pt-20">
+      <section className="relative overflow-hidden border-b border-v3-border pb-8 pt-8">
         <div className="v3-home-glow" aria-hidden="true" />
         <ParticlesBackground />
         <div className="relative z-[1] mx-auto max-w-[1280px] px-7 pt-8">

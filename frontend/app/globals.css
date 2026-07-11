@@ -6,10 +6,11 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* ── Tema OpusSB: marca sagrada (dark #0a0a0b + dourado #f5c518 + Space Grotesk) ──
-   Os tokens semanticos do shadcn (primary, muted, border, ring...) recebem os valores
-   exatos do design system v2 antigo. Tokens extras da marca (gold-2/3, green, ink-soft,
-   surfaces) ficam expostos como cores Tailwind via @theme. */
+/* ── Tema OpusSB: marca sagrada (dark #0a0a0b + dourado #f5c518 + Inter) ──
+   Fonte unica do app: Inter (corpo e titulos, inclusive os v3 em CAPS/font-black) mais
+   JetBrains Mono pra dados/labels tecnicos. Os tokens semanticos do shadcn (primary, muted,
+   border, ring...) recebem os valores exatos do design system v2 antigo. Tokens extras da
+   marca (gold-2/3, green, ink-soft, surfaces) ficam expostos como cores Tailwind via @theme. */
 
 @theme inline {
   --color-background: var(--background);
@@ -58,8 +59,8 @@
      Tokens novos, a parte da marca antiga acima. Nao sobrescrevem nenhum
      valor de --gold/--surface-2/--surface-3/--ink-soft/--ink-muted/--background;
      ficam disponiveis so pra quem usar o prefixo v3 explicitamente. */
-  --font-v3-display: var(--v3-font-display);
-  --font-v3-sans: var(--v3-font-sans);
+  --font-v3-display: var(--font-sans);
+  --font-v3-sans: var(--font-sans);
 
   --color-v3-bg: var(--v3-bg);
   --color-v3-surface-1: var(--v3-surface-1);

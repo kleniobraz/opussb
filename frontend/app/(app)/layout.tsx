@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/providers/auth-provider";
-import { MiniNavbar } from "@/components/ui/mini-navbar";
+import { Sidebar } from "@/components/sidebar";
+import { MobileSidebar } from "@/components/mobile-sidebar";
 import { HashRedirect } from "@/components/hash-redirect";
 import Preloader from "@/components/ui/preloader";
 import { useShortcuts } from "@/hooks/use-shortcuts";
@@ -51,22 +52,32 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="app-shell flex min-h-screen flex-col">
+    <div className="flex h-screen flex-col overflow-hidden bg-v3-surface-1 lg:flex-row lg:gap-4">
       {showPreloader && <Preloader onComplete={finishPreloader} />}
       <HashRedirect />
-      <MiniNavbar />
-      <main className="flex-1 pt-20">{children}</main>
-      <footer className="app-footer">
-        Cortado com <span aria-hidden="true">💛</span> por{" "}
-        <a
-          href="https://www.instagram.com/kleniobraz/"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="app-footer-link"
-        >
-          Klenio Braz
-        </a>
-      </footer>
+      <Sidebar />
+      <MobileSidebar />
+      {/* O painel arredondado e o "cartao" de conteudo: a sidebar fica fixa (sem rolar),
+          quem rola e o conteudo dentro dele. overflow-hidden aqui so pra recortar os
+          cantos/borda; quem tem overflow-y-auto de verdade e o wrapper interno. */}
+      <main className="flex min-h-0 flex-1 flex-col p-3 lg:py-4 lg:pr-4 lg:pl-0">
+        <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-v3-border bg-v3-bg shadow-[var(--shadow-hero)] lg:rounded-3xl">
+          <div className="h-full overflow-y-auto">
+            {children}
+            <footer className="app-footer">
+              Cortado com <span aria-hidden="true">💛</span> por{" "}
+              <a
+                href="https://www.instagram.com/kleniobraz/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="app-footer-link"
+              >
+                Klenio Braz
+              </a>
+            </footer>
+          </div>
+        </div>
+      </main>
     </div>
   );
 }

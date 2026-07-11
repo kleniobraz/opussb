@@ -1,27 +1,13 @@
 import type { Metadata, Viewport } from "next";
-import { Space_Grotesk, Archivo, Inter, JetBrains_Mono } from "next/font/google";
+import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { AppProviders } from "@/providers/app-providers";
 
-const spaceGrotesk = Space_Grotesk({
+// Fonte unica do app (corpo e titulos, inclusive os v3 em CAPS/font-black).
+const inter = Inter({
   variable: "--font-sans",
   subsets: ["latin"],
-  weight: ["300", "400", "500", "600", "700"],
-  display: "swap",
-});
-
-// Fonte opt-in do redesign v3 (fundacao apenas; Space Grotesk continua a fonte padrao).
-const archivo = Archivo({
-  variable: "--v3-font-display",
-  subsets: ["latin"],
-  axes: ["wdth"], // necessario pro font-stretch 112-115% do spec funcionar
-  display: "swap",
-});
-
-// Teste: Inter pro corpo de texto da v3 (Archivo fica so pros titulos em CAPS).
-const inter = Inter({
-  variable: "--v3-font-sans",
-  subsets: ["latin"],
+  weight: ["300", "400", "500", "600", "700", "900"],
   display: "swap",
 });
 
@@ -50,7 +36,7 @@ export default function RootLayout({
   return (
     <html
       lang="pt-BR"
-      className={`${spaceGrotesk.variable} ${archivo.variable} ${inter.variable} ${jetbrainsMono.variable} dark h-full antialiased`}
+      className={`${inter.variable} ${jetbrainsMono.variable} dark h-full antialiased`}
     >
       <body className="min-h-full">
         <AppProviders>{children}</AppProviders>
