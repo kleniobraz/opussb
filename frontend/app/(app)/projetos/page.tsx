@@ -86,7 +86,7 @@ export default function ProjetosPage() {
               </h1>
             </div>
             <Button asChild variant="v3Ghost" size="sm">
-              <Link href="/">+ Novo vídeo</Link>
+              <Link href="/gerar">+ Novo vídeo</Link>
             </Button>
           </div>
 
@@ -119,7 +119,7 @@ export default function ProjetosPage() {
 
       {/* Grade fora da faixa de atmosfera (glow/particulas): a lista de projetos pode crescer
           bastante, e nao pode esticar o glow/particulas junto (mesmo raciocinio do JobProgress
-          na Home, ver home-view.tsx). */}
+          em /gerar, ver app/(app)/gerar/page.tsx). */}
       <div className="relative z-[1] mx-auto max-w-[1280px] px-7 py-10">
         {isLoading ? (
           <SkelGrid />
@@ -128,10 +128,10 @@ export default function ProjetosPage() {
         ) : !projects.length ? (
           <MessageCard
             title="Nenhum projeto ainda"
-            text="Envie um vídeo na tela inicial para gerar seus primeiros clipes."
+            text="Envie um vídeo em Gerar clipes para criar seus primeiros clipes."
             action={
               <Button asChild variant="v3Cta" size="sm" className="mt-2">
-                <Link href="/">Enviar vídeo</Link>
+                <Link href="/gerar">Enviar vídeo</Link>
               </Button>
             }
           />

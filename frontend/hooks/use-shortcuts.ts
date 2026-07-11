@@ -39,7 +39,7 @@ export function useShortcuts() {
         if (e.key === "c") return router.push("/config");
       }
       if (e.key === "n") {
-        router.push("/");
+        router.push("/gerar");
         setTimeout(() => document.getElementById("video-file")?.focus(), 60);
       }
     }

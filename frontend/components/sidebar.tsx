@@ -12,8 +12,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 
 // Persiste se o usuario fixou a sidebar expandida (pin). O padrao (sem
-// preferencia salva) e colapsada; passar o mouse por cima expande de forma
-// temporaria, sem alterar essa preferencia.
+// preferencia salva) e colapsada; expande/colapsa apenas pelo clique no
+// botao de pin, sem hover-expand.
 const PINNED_KEY = "opussb_sidebar_pinned";
 
 export function Sidebar() {
@@ -21,7 +21,6 @@ export function Sidebar() {
   const router = useRouter();
   const { user, logout } = useAuth();
   const [pinned, setPinned] = useState(false);
-  const [hovering, setHovering] = useState(false);
 
   useEffect(() => {
     try {
@@ -43,10 +42,7 @@ export function Sidebar() {
     });
   }
 
-  // Fixada (pin) sempre expandida; senao, o hover expande por cima do estado
-  // colapsado de base, sem persistir nada.
-  const expanded = pinned || hovering;
-  const collapsed = !expanded;
+  const collapsed = !pinned;
 
   async function doLogout() {
     await logout();
@@ -59,8 +55,6 @@ export function Sidebar() {
 
   return (
     <aside
-      onMouseEnter={() => setHovering(true)}
-      onMouseLeave={() => setHovering(false)}
       className={cn(
         "hidden h-full flex-col border-r border-v3-border bg-v3-bg transition-[width] duration-150 lg:flex",
         collapsed ? "w-20" : "w-64"
@@ -77,7 +71,7 @@ export function Sidebar() {
         </Link>
       </div>
 
-      <nav className="flex flex-1 flex-col gap-1 overflow-y-auto px-3 py-2">
+      <nav className="flex flex-1 flex-col gap-2 overflow-y-auto px-3 py-3">
         {items.map((item) => {
           const active = isActiveNavItem(pathname, item.href);
           const Icon = item.icon;
@@ -98,18 +92,13 @@ export function Sidebar() {
           );
 
           if (collapsed) {
-            // O Tooltip aqui nunca aparece por mouse: o mesmo onMouseEnter que
-            // abriria o balao tambem expande a sidebar inteira (linha ~62),
-            // entao o item troca pro ramo expandido antes do delay do Radix
-            // terminar. Fica so pra navegacao por teclado (Tab foca o link e
-            // o Radix abre o tooltip por foco, sem passar pelo onMouseEnter
-            // do aside).
+            // Tooltip mostra o label quando a sidebar esta colapsada (mouse e foco).
             return (
               <Tooltip key={item.href}>
                 <TooltipTrigger asChild>
                   <Link href={item.href} className={linkClass}>
                     {activeBar}
-                    <Icon className="size-6 shrink-0" strokeWidth={2} />
+                    <Icon className="size-6 shrink-0" strokeWidth={1.5} />
                   </Link>
                 </TooltipTrigger>
                 <TooltipContent side="right">{item.label}</TooltipContent>
@@ -120,7 +109,7 @@ export function Sidebar() {
           return (
             <Link key={item.href} href={item.href} className={linkClass}>
               {activeBar}
-              <Icon className="size-6 shrink-0" strokeWidth={2} />
+              <Icon className="size-6 shrink-0" strokeWidth={1.5} />
               <span className="truncate">{item.label}</span>
             </Link>
           );

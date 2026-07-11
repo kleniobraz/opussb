@@ -28,14 +28,13 @@
   }
 }
 
-/* Foco de luz atras da faixa de saudacao + upload da Home: mesmo espirito do
-   .login-page-veil do login, mas ancorado no CONTEUDO (nao fixo na viewport, a pagina rola
-   bastante). inset:0 (em vez de altura fixa) pra acompanhar a altura real da secao, que
-   agora varia com o conteudo (card de upload vs JobProgress); o centro em 55% da altura
-   fica assim sempre mais ou menos atras do card, nao colado no topo. Pico de opacidade bem
-   mais forte que as rodadas anteriores (24%, contra ~7%), pra ler como um foco de luz de
-   verdade, nao um brilho quase imperceptivel. color-mix (nao rgba fixo) segue --v3-accent
-   se a paleta mudar. */
+/* Foco de luz atras da faixa de cabecalho das telas v3 (Home, /gerar, Projetos, Podcasts,
+   Config, Painel): mesmo espirito do .login-page-veil do login, mas ancorado no CONTEUDO
+   (nao fixo na viewport). inset:0 acompanha a altura real da secao de cabecalho; o conteudo
+   variavel (upload, JobProgress, grades) fica FORA dessa secao de proposito, entao a altura
+   e estavel e o centro em 55% cai no meio do cabecalho. Pico de opacidade forte (24%) pra
+   ler como um foco de luz de verdade, nao um brilho quase imperceptivel. color-mix (nao
+   rgba fixo) segue --v3-accent se a paleta mudar. */
 .v3-home-glow {
   position: absolute;
   inset: 0;

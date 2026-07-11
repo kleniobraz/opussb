@@ -11,8 +11,9 @@ const ITEMS = [
   { key: "clips_generated", label: "Clipes gerados" },
 ] as const;
 
-// Faixa de numeros da Home. Mesma queryKey de Recent (["stats"]), entao o react-query
-// deduplica a requisicao entre os dois componentes.
+// Faixa de numeros da tela Gerar clipes (nasceu na Home, migrou junto com o gerador).
+// A queryKey ["stats"] e a mesma que o onReset do gerador invalida ao terminar um job,
+// entao os numeros atualizam sozinhos.
 export function StatsStrip() {
   const { data } = useQuery({ queryKey: ["stats"], queryFn: api.getStats });
 

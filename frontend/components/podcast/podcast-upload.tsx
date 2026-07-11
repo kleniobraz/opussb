@@ -2,7 +2,7 @@
 
 // Upload do episódio de podcast (§39): estaciona o job em 'uploaded' (POST /api/podcast/upload)
 // e leva pra tela de aprovação do gancho, de onde o disparo da transcrição acontece. Mesmo
-// entorno visual v3 do UploadConsole da Home, sem os controles de clipe (aspecto/duração/
+// entorno visual v3 do UploadConsole de /gerar, sem os controles de clipe (aspecto/duração/
 // idioma/legenda não existem aqui; o único ajuste é a vinheta que abre o episódio).
 
 import { useState } from "react";

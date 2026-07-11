@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { Home, Folder, Podcast, Sparkles, Heart, Settings, Shield } from "lucide-react";
+import { Home, Scissors, Folder, Podcast, Sparkles, Heart, Settings, Shield } from "lucide-react";
 
 export interface NavItem {
   label: string;
@@ -11,6 +11,7 @@ export interface NavItem {
 // pra admin (ver navItemsFor); mesma logica de gate que o MiniNavbar ja tinha.
 const BASE_NAV_ITEMS: NavItem[] = [
   { label: "Home", href: "/", icon: Home },
+  { label: "Gerar clipes", href: "/gerar", icon: Scissors },
   { label: "Projetos", href: "/projetos", icon: Folder },
   { label: "Podcasts", href: "/podcast", icon: Podcast },
   { label: "Revisor IA", href: "/revisor", icon: Sparkles },

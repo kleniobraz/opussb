@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import * as api from "@/lib/api";
 import { usePrefs } from "@/hooks/use-prefs";
@@ -21,6 +22,7 @@ export function ReprocessDialog({
 }) {
   const { prefs } = usePrefs();
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [min, setMin] = useState(prefs.defaultMin);
   const [max, setMax] = useState(prefs.defaultMax);
   const [captions, setCaptions] = useState(prefs.captions);
@@ -48,7 +50,11 @@ export function ReprocessDialog({
       onOpenChange(false);
       if (res?.job_id) {
         toast.success("Reprocessamento iniciado");
-        router.push("/");
+        // A Home nao lista mais os recentes; Projetos mostra o job com a pill "processando".
+        // Invalida a lista antes de navegar: com staleTime de 30s, /projetos serviria o
+        // cache sem o job novo e o usuario concluiria que o reprocesso falhou.
+        queryClient.invalidateQueries({ queryKey: ["projects"] });
+        router.push("/projetos");
       } else {
         toast.success("Reprocessamento solicitado");
       }
