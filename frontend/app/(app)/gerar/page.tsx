@@ -6,7 +6,6 @@ import { ParticlesBackground } from "@/components/backgrounds/particles-backgrou
 import { UploadConsole } from "@/components/upload-console";
 import { JobProgress } from "@/components/job-progress";
 import { StatsStrip } from "@/components/home/stats-strip";
-import { HowItWorks } from "@/components/home/how-it-works";
 
 // Tela do gerador de clipes (antes vivia na Home, ver home-view.tsx). O estado
 // job/onStarted/onReset migrou 1:1 de la.
@@ -52,7 +51,6 @@ export default function GerarPage() {
       )}
 
       <StatsStrip />
-      <HowItWorks />
     </div>
   );
 }

@@ -139,3 +139,99 @@
     animation: none;
   }
 }
+
+/* ── "Como funciona" (Home): esteira de producao ──
+   Mini-visuais das 5 estacoes do pipeline. As classes de animacao so entram no
+   elemento quando a estacao esta ativa (how-it-works.tsx aplica e remove; remover
+   e readicionar a classe reinicia a animacao a cada ciclo da esteira). */
+
+/* Estacao 1 (FFMPEG): barra de equalizador pulsando. O stagger vem de
+   animation-delay negativo inline, uma fase diferente por barra. */
+.v3-pipe-eq {
+  transform-origin: bottom;
+  animation: v3PipeEq 0.9s ease-in-out infinite;
+}
+@keyframes v3PipeEq {
+  0%,
+  100% {
+    transform: scaleY(0.5);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+/* Estacao 2 (WHISPER): typewriter por largura em steps. 13ch e 13 steps = o
+   comprimento exato do timecode "00:12 → 00:37"; mudou o texto, muda aqui junto.
+   Sem a animacao (estacao inativa ou reduced motion) o span fica na largura
+   natural e o texto aparece completo. */
+.v3-pipe-type {
+  animation: v3PipeType 1.3s steps(13, end) 0.15s both;
+}
+@keyframes v3PipeType {
+  from {
+    width: 0;
+  }
+  to {
+    width: 13ch;
+  }
+}
+.v3-pipe-caret {
+  animation: v3PipeCaret 0.8s steps(1, end) infinite;
+}
+@keyframes v3PipeCaret {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* Estacao 4 (YOLO): contorno 16:9 vira 9:16 e volta, morph continuo enquanto a
+   estacao esta ativa. Em repouso o retangulo descansa como 9:16 (33x58 no JSX). */
+.v3-pipe-morph {
+  animation: v3PipeMorph 2.2s var(--ease) infinite;
+}
+@keyframes v3PipeMorph {
+  0%,
+  12% {
+    width: 58px;
+    height: 33px;
+  }
+  50%,
+  62% {
+    width: 33px;
+    height: 58px;
+  }
+  100% {
+    width: 58px;
+    height: 33px;
+  }
+}
+
+/* Estacao 5 (S3): pop de entrada do mini cartao de clipe. */
+.v3-pipe-pop {
+  animation: v3PipePop 0.5s var(--ease-spring) both;
+}
+@keyframes v3PipePop {
+  from {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v3-pipe-eq,
+  .v3-pipe-type,
+  .v3-pipe-morph,
+  .v3-pipe-pop {
+    animation: none;
+  }
+  /* Sem ciclo nao ha "digitando": o cursor some pra nao virar um bloco parado. */
+  .v3-pipe-caret {
+    animation: none;
+    opacity: 0;
+  }
+}

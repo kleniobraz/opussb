@@ -4,6 +4,7 @@ import Link from "next/link";
 import type { LucideIcon } from "lucide-react";
 import { Scissors, Folder, Podcast, Sparkles, Heart } from "lucide-react";
 import { Hero } from "./hero";
+import { HowItWorks } from "./how-it-works";
 import { ParticlesBackground } from "../backgrounds/particles-background";
 import { V3Card } from "../ui/v3-card";
 
@@ -74,6 +75,8 @@ export function HomeView() {
           })}
         </div>
       </section>
+
+      <HowItWorks />
     </div>
   );
 }

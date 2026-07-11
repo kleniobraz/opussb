@@ -11,7 +11,8 @@ const EQ_HEIGHTS = [34, 60, 46, 82, 54, 100, 50, 76, 40, 64, 30];
 
 // Glow radial (acento v3) atras do equalizador, no lugar do preenchimento chapado de antes.
 // color-mix (nao rgba fixo) pra seguir --v3-accent se a paleta mudar.
-const CLIP_GLOW =
+// Exportado: o mini cartao da esteira "Como funciona" (how-it-works.tsx) usa o mesmo fundo.
+export const CLIP_GLOW =
   "radial-gradient(120% 85% at 50% 10%, color-mix(in srgb, var(--v3-accent) 18%, transparent), transparent 60%)," +
   "linear-gradient(160deg, var(--v3-surface-2), var(--v3-surface-1))";
 
