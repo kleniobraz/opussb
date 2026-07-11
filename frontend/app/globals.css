@@ -62,6 +62,7 @@
   --font-v3-display: var(--font-sans);
   --font-v3-sans: var(--font-sans);
 
+  --color-v3-frame: var(--v3-frame);
   --color-v3-bg: var(--v3-bg);
   --color-v3-surface-1: var(--v3-surface-1);
   --color-v3-surface-2: var(--v3-surface-2);
@@ -145,6 +146,9 @@
   /* ── Identidade v3 (redesign, video de lancamento) ──
      Paleta a parte, prefixo v3. Enquanto nao for aplicada em nenhuma tela,
      estes valores so existem como fundacao pra uso futuro. */
+  /* Camada mais externa: moldura ao redor da sidebar e do painel de conteudo,
+     sempre preta pura pra sobrar degrau visivel ate o card mais claro. */
+  --v3-frame: #000000;
   --v3-bg: #0a0a0a;
   --v3-surface-1: #101010;
   --v3-surface-2: #1e1e1e;

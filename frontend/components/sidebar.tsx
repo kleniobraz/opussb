@@ -11,35 +11,42 @@ import { navItemsFor, isActiveNavItem } from "@/components/nav-items";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
-// Persiste a preferencia de coluna colapsada (mesmo padrao do editor pra
-// timelineH: chave prefixada, leitura protegida por try/catch).
-const COLLAPSE_KEY = "opussb_sidebar_collapsed";
+// Persiste se o usuario fixou a sidebar expandida (pin). O padrao (sem
+// preferencia salva) e colapsada; passar o mouse por cima expande de forma
+// temporaria, sem alterar essa preferencia.
+const PINNED_KEY = "opussb_sidebar_pinned";
 
 export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const { user, logout } = useAuth();
-  const [collapsed, setCollapsed] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const [hovering, setHovering] = useState(false);
 
   useEffect(() => {
     try {
-      setCollapsed(localStorage.getItem(COLLAPSE_KEY) === "1");
+      setPinned(localStorage.getItem(PINNED_KEY) === "1");
     } catch {
-      // localStorage indisponivel: mantem expandida
+      // localStorage indisponivel: mantem o padrao (colapsada)
     }
   }, []);
 
-  function toggleCollapsed() {
-    setCollapsed((prev) => {
+  function togglePinned() {
+    setPinned((prev) => {
       const next = !prev;
       try {
-        localStorage.setItem(COLLAPSE_KEY, next ? "1" : "0");
+        localStorage.setItem(PINNED_KEY, next ? "1" : "0");
       } catch {
         // ignora
       }
       return next;
     });
   }
+
+  // Fixada (pin) sempre expandida; senao, o hover expande por cima do estado
+  // colapsado de base, sem persistir nada.
+  const expanded = pinned || hovering;
+  const collapsed = !expanded;
 
   async function doLogout() {
     await logout();
@@ -52,9 +59,11 @@ export function Sidebar() {
 
   return (
     <aside
+      onMouseEnter={() => setHovering(true)}
+      onMouseLeave={() => setHovering(false)}
       className={cn(
-        "hidden h-full flex-col border-r border-v3-border bg-v3-surface-1 transition-[width] duration-200 lg:flex",
-        collapsed ? "w-[72px]" : "w-64"
+        "hidden h-full flex-col border-r border-v3-border bg-v3-bg transition-[width] duration-150 lg:flex",
+        collapsed ? "w-20" : "w-64"
       )}
     >
       <div className={cn("flex items-center gap-2.5 px-4 py-5", collapsed && "justify-center px-0")}>
@@ -73,19 +82,34 @@ export function Sidebar() {
           const active = isActiveNavItem(pathname, item.href);
           const Icon = item.icon;
           const linkClass = cn(
-            "flex items-center gap-3 rounded-[var(--radius-sm)] py-2.5 text-sm font-medium transition-colors",
-            collapsed ? "justify-center px-0" : "px-3",
+            "relative flex items-center gap-3 rounded-[var(--radius-sm)] text-sm font-medium transition-colors",
+            collapsed ? "justify-center px-0 py-3" : "px-3 py-2.5",
             active
-              ? "bg-v3-accent/12 text-v3-accent"
+              ? "bg-v3-accent/14 text-v3-accent"
               : "text-v3-text-soft hover:bg-v3-ghost hover:text-v3-text"
+          );
+          // Barra fina de acento na lateral do item ativo, reforca o destaque
+          // agora que o icone e o protagonista na coluna colapsada.
+          const activeBar = active && (
+            <span
+              aria-hidden="true"
+              className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full bg-v3-accent"
+            />
           );
 
           if (collapsed) {
+            // O Tooltip aqui nunca aparece por mouse: o mesmo onMouseEnter que
+            // abriria o balao tambem expande a sidebar inteira (linha ~62),
+            // entao o item troca pro ramo expandido antes do delay do Radix
+            // terminar. Fica so pra navegacao por teclado (Tab foca o link e
+            // o Radix abre o tooltip por foco, sem passar pelo onMouseEnter
+            // do aside).
             return (
               <Tooltip key={item.href}>
                 <TooltipTrigger asChild>
                   <Link href={item.href} className={linkClass}>
-                    <Icon className="size-5 shrink-0" strokeWidth={2} />
+                    {activeBar}
+                    <Icon className="size-6 shrink-0" strokeWidth={2} />
                   </Link>
                 </TooltipTrigger>
                 <TooltipContent side="right">{item.label}</TooltipContent>
@@ -95,7 +119,8 @@ export function Sidebar() {
 
           return (
             <Link key={item.href} href={item.href} className={linkClass}>
-              <Icon className="size-5 shrink-0" strokeWidth={2} />
+              {activeBar}
+              <Icon className="size-6 shrink-0" strokeWidth={2} />
               <span className="truncate">{item.label}</span>
             </Link>
           );
@@ -104,11 +129,11 @@ export function Sidebar() {
 
       <div className="border-t border-v3-border p-3">
         <button
-          onClick={toggleCollapsed}
+          onClick={togglePinned}
           className="mb-2 flex w-full items-center justify-center gap-2 rounded-[var(--radius-sm)] py-2 text-v3-text-soft transition-colors hover:bg-v3-ghost hover:text-v3-text"
-          aria-label={collapsed ? "Expandir menu" : "Recolher menu"}
+          aria-label={pinned ? "Recolher menu" : "Fixar menu expandido"}
         >
-          {collapsed ? <ChevronsRight className="size-4" /> : <ChevronsLeft className="size-4" />}
+          {pinned ? <ChevronsLeft className="size-4" /> : <ChevronsRight className="size-4" />}
         </button>
 
         <div className={cn("flex items-center gap-2.5", collapsed && "justify-center")}>

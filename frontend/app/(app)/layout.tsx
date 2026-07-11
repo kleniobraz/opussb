@@ -52,7 +52,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-v3-surface-1 lg:flex-row lg:gap-4">
+    <div className="flex h-screen flex-col overflow-hidden bg-v3-frame lg:flex-row lg:gap-4">
       {showPreloader && <Preloader onComplete={finishPreloader} />}
       <HashRedirect />
       <Sidebar />
@@ -61,7 +61,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           quem rola e o conteudo dentro dele. overflow-hidden aqui so pra recortar os
           cantos/borda; quem tem overflow-y-auto de verdade e o wrapper interno. */}
       <main className="flex min-h-0 flex-1 flex-col p-3 lg:py-4 lg:pr-4 lg:pl-0">
-        <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-v3-border bg-v3-bg shadow-[var(--shadow-hero)] lg:rounded-3xl">
+        <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-v3-border bg-v3-surface-1 shadow-[var(--shadow-hero)] lg:rounded-3xl">
           <div className="h-full overflow-y-auto">
             {children}
             <footer className="app-footer">

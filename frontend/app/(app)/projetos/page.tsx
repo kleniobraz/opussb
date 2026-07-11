@@ -71,7 +71,7 @@ export default function ProjetosPage() {
   const showToolbar = !isLoading && !isError && projects.length > 0;
 
   return (
-    <div className="relative bg-v3-bg">
+    <div className="relative bg-v3-surface-1">
       <section className="relative overflow-hidden border-b border-v3-border pb-8 pt-8">
         <div className="v3-home-glow" aria-hidden="true" />
         <ParticlesBackground />
