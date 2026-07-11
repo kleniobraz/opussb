@@ -344,7 +344,7 @@ export function UploadConsole({ onStarted }: { onStarted: (jobId: string, filena
 
           <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-4">
             <div>
-              <label className="mb-1.5 block font-mono text-xs uppercase tracking-wide text-v3-text-soft" htmlFor="min-duration">
+              <label className="mb-2 block font-mono text-xs uppercase tracking-wide text-v3-text-soft" htmlFor="min-duration">
                 Duração mín. (s)
               </label>
               <Input
@@ -357,7 +357,7 @@ export function UploadConsole({ onStarted }: { onStarted: (jobId: string, filena
               />
             </div>
             <div>
-              <label className="mb-1.5 block font-mono text-xs uppercase tracking-wide text-v3-text-soft" htmlFor="max-duration">
+              <label className="mb-2 block font-mono text-xs uppercase tracking-wide text-v3-text-soft" htmlFor="max-duration">
                 Duração máx. (s)
               </label>
               <Input
@@ -370,7 +370,7 @@ export function UploadConsole({ onStarted }: { onStarted: (jobId: string, filena
               />
             </div>
             <div>
-              <label className="mb-1.5 block font-mono text-xs uppercase tracking-wide text-v3-text-soft">Formato</label>
+              <label className="mb-2 block font-mono text-xs uppercase tracking-wide text-v3-text-soft">Formato</label>
               <Select value={aspect} onValueChange={setAspect}>
                 <SelectTrigger className="w-full">
                   <SelectValue />
@@ -385,7 +385,7 @@ export function UploadConsole({ onStarted }: { onStarted: (jobId: string, filena
               </Select>
             </div>
             <div>
-              <label className="mb-1.5 block font-mono text-xs uppercase tracking-wide text-v3-text-soft">Idioma</label>
+              <label className="mb-2 block font-mono text-xs uppercase tracking-wide text-v3-text-soft">Idioma</label>
               <Select value={language} onValueChange={setLanguage}>
                 <SelectTrigger className="w-full">
                   <SelectValue />

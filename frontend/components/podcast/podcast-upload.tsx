@@ -167,7 +167,7 @@ export function PodcastUpload() {
           ) : (
             <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-4">
               <div>
-                <label className="mb-1.5 block font-mono text-xs uppercase tracking-wide text-v3-text-soft">
+                <label className="mb-2 block font-mono text-xs uppercase tracking-wide text-v3-text-soft">
                   Vinheta
                 </label>
                 <Select value={vinhetaId} onValueChange={setVinhetaId}>
