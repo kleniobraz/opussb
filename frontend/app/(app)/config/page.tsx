@@ -21,7 +21,42 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { StatCard } from "@/components/stat-card";
+import { V3Card } from "@/components/ui/v3-card";
+import { ParticlesBackground } from "@/components/backgrounds/particles-background";
 import type { Session } from "@/lib/types";
+
+// Reskin das abas pro estilo pill mono do v3 (mesmo espirito dos chips de ordenacao de
+// projetos/page.tsx), sem editar tabs.tsx (componente generico usado em outras telas). O
+// prefixo `!` garante que a cor vença o data-state=active padrao do Radix (que ja chega com
+// bg/texto proprios) independente da ordem de geracao das classes no Tailwind.
+const TAB_TRIGGER_CLS =
+  "rounded-full border !border-v3-border-hover !bg-transparent px-3.5 py-1.5 font-mono text-xs font-semibold uppercase tracking-wide !text-v3-text-soft transition-colors hover:!border-v3-accent hover:!text-white data-active:!border-v3-accent data-active:!bg-v3-accent data-active:!text-v3-on-accent data-active:!shadow-none";
+const TABS_LIST_CLS =
+  "h-auto w-full flex-wrap items-center justify-start gap-2 rounded-none !bg-transparent !p-0";
+
+function Eyebrow({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="font-mono text-xs font-semibold uppercase tracking-[0.2em] text-v3-text-soft">
+      {children}
+    </p>
+  );
+}
+
+function ResultsTitle({ children }: { children: React.ReactNode }) {
+  return (
+    <h2 className="mb-6 mt-2 font-v3-display text-xl font-black uppercase text-white">
+      {children}
+    </h2>
+  );
+}
+
+function CtrlLabel({ htmlFor, children }: { htmlFor?: string; children: React.ReactNode }) {
+  return (
+    <Label htmlFor={htmlFor} className="mb-1.5 block font-mono text-xs uppercase tracking-wide text-v3-text-soft">
+      {children}
+    </Label>
+  );
+}
 
 function PrefsPanel() {
   const { prefs, isLoaded, save } = usePrefs();
@@ -62,14 +97,12 @@ function PrefsPanel() {
   }
 
   return (
-    <section className="card-block">
-      <p className="eyebrow">Preferências de geração</p>
-      <h2 className="results-title">Padrões de clipe</h2>
+    <V3Card className="p-7">
+      <Eyebrow>Preferências de geração</Eyebrow>
+      <ResultsTitle>Padrões de clipe</ResultsTitle>
       <div className="flex gap-3.5">
         <div className="flex-1">
-          <Label className="ctrl-label" htmlFor="cfg-min">
-            Duração mínima (s)
-          </Label>
+          <CtrlLabel htmlFor="cfg-min">Duração mínima (s)</CtrlLabel>
           <Input
             id="cfg-min"
             type="number"
@@ -80,9 +113,7 @@ function PrefsPanel() {
           />
         </div>
         <div className="flex-1">
-          <Label className="ctrl-label" htmlFor="cfg-max">
-            Duração máxima (s)
-          </Label>
+          <CtrlLabel htmlFor="cfg-max">Duração máxima (s)</CtrlLabel>
           <Input
             id="cfg-max"
             type="number"
@@ -94,7 +125,7 @@ function PrefsPanel() {
         </div>
       </div>
       <div className="mt-4">
-        <Label className="ctrl-label">Formato padrão</Label>
+        <CtrlLabel>Formato padrão</CtrlLabel>
         <Select value={aspect} onValueChange={setAspect}>
           <SelectTrigger className="w-full">
             <SelectValue />
@@ -107,7 +138,7 @@ function PrefsPanel() {
         </Select>
       </div>
       <div className="mt-4">
-        <Label className="ctrl-label">Idioma da transcrição</Label>
+        <CtrlLabel>Idioma da transcrição</CtrlLabel>
         <Select value={language} onValueChange={setLanguage}>
           <SelectTrigger className="w-full">
             <SelectValue />
@@ -120,17 +151,17 @@ function PrefsPanel() {
           </SelectContent>
         </Select>
       </div>
-      <label className="mt-4 flex cursor-pointer items-center gap-3 text-[0.9rem] text-ink-soft">
-        <Switch checked={captions} onCheckedChange={setCaptions} />
+      <label className="mt-4 flex cursor-pointer items-center gap-3 text-sm text-v3-text-soft">
+        <Switch checked={captions} onCheckedChange={setCaptions} className="data-checked:bg-v3-accent" />
         <span>Gerar legendas por padrão</span>
       </label>
-      <label className="mt-3 flex cursor-pointer items-center gap-3 text-[0.9rem] text-ink-soft">
-        <Switch checked={autoplay} onCheckedChange={setAutoplay} />
+      <label className="mt-3 flex cursor-pointer items-center gap-3 text-sm text-v3-text-soft">
+        <Switch checked={autoplay} onCheckedChange={setAutoplay} className="data-checked:bg-v3-accent" />
         <span>Tocar prévia automaticamente</span>
       </label>
       <div>
         <Button
-          variant="gold"
+          variant="v3Cta"
           size="brand"
           className="mt-6"
           onClick={onSave}
@@ -139,7 +170,7 @@ function PrefsPanel() {
           Salvar preferências
         </Button>
       </div>
-    </section>
+    </V3Card>
   );
 }
 
@@ -147,20 +178,25 @@ function SessionRow({ s, onRevoke }: { s: Session; onRevoke: () => void }) {
   const mobile = /iOS|Android/i.test(s.os || "");
   const meta = [s.location, s.last_active].filter(Boolean).join(" · ");
   return (
-    <div className="session-row">
-      <span className="session-ic" aria-hidden="true">
-        {mobile ? <Smartphone /> : <Monitor />}
+    <div className="flex items-center gap-3.5 border-b border-v3-border py-3.5 last:border-b-0">
+      <span
+        className="grid size-9 shrink-0 place-items-center rounded-[var(--radius-sm)] border border-v3-border-hover text-v3-accent"
+        aria-hidden="true"
+      >
+        {mobile ? <Smartphone className="size-4" /> : <Monitor className="size-4" />}
       </span>
-      <div className="session-info">
-        <p className="session-dev">
+      <div className="min-w-0 flex-1">
+        <p className="truncate font-v3-sans text-sm font-bold text-white">
           {(s.browser || "Navegador") + (s.os ? " · " + s.os : "")}
         </p>
-        {meta && <p className="session-meta">{meta}</p>}
+        {meta && <p className="mt-0.5 truncate font-mono text-xs text-v3-text-soft">{meta}</p>}
       </div>
       {s.current ? (
-        <span className="session-current">esta sessão</span>
+        <span className="shrink-0 font-mono text-xs font-semibold uppercase tracking-wide text-v3-accent">
+          esta sessão
+        </span>
       ) : (
-        <Button variant="brandGhost" size="sm" onClick={onRevoke}>
+        <Button variant="v3Ghost" size="sm" onClick={onRevoke}>
           Encerrar
         </Button>
       )}
@@ -201,13 +237,13 @@ function SecurityPanel() {
   const list = sessions.data?.sessions ?? [];
 
   return (
-    <div className="config-cards">
-      <section className="card-block">
-        <p className="eyebrow">Segurança</p>
-        <h2 className="results-title">Trocar senha</h2>
+    <div className="flex flex-col gap-6">
+      <V3Card className="p-7">
+        <Eyebrow>Segurança</Eyebrow>
+        <ResultsTitle>Trocar senha</ResultsTitle>
         <form onSubmit={onSubmit} className="flex flex-col gap-4">
-          <div className="grid gap-2">
-            <Label htmlFor="cfg-cur">Senha atual</Label>
+          <div>
+            <CtrlLabel htmlFor="cfg-cur">Senha atual</CtrlLabel>
             <Input
               id="cfg-cur"
               type="password"
@@ -217,8 +253,8 @@ function SecurityPanel() {
               required
             />
           </div>
-          <div className="grid gap-2">
-            <Label htmlFor="cfg-new">Nova senha (mín. 8)</Label>
+          <div>
+            <CtrlLabel htmlFor="cfg-new">Nova senha (mín. 8)</CtrlLabel>
             <Input
               id="cfg-new"
               type="password"
@@ -229,8 +265,8 @@ function SecurityPanel() {
               required
             />
           </div>
-          <div className="grid gap-2">
-            <Label htmlFor="cfg-new2">Repita a nova senha</Label>
+          <div>
+            <CtrlLabel htmlFor="cfg-new2">Repita a nova senha</CtrlLabel>
             <Input
               id="cfg-new2"
               type="password"
@@ -241,24 +277,24 @@ function SecurityPanel() {
               required
             />
           </div>
-          <Button type="submit" variant="gold" size="brand" className="w-full" disabled={saving}>
+          <Button type="submit" variant="v3Cta" size="brand" className="w-full" disabled={saving}>
             {saving ? "Salvando…" : "Salvar nova senha"}
           </Button>
-          {err && <div className="error">{err}</div>}
+          {err && <p className="font-mono text-sm font-medium text-[var(--red)]">{err}</p>}
         </form>
-      </section>
+      </V3Card>
 
-      <section className="card-block">
-        <p className="eyebrow">Segurança</p>
-        <h2 className="results-title">Sessões ativas</h2>
-        <p className="modal-text">
+      <V3Card className="p-7">
+        <Eyebrow>Segurança</Eyebrow>
+        <ResultsTitle>Sessões ativas</ResultsTitle>
+        <p className="text-sm text-v3-text-soft">
           Onde sua conta está conectada. Encerre qualquer sessão que você não reconhece.
         </p>
-        <div className="sessions">
+        <div className="mt-4">
           {sessions.isLoading ? (
-            <div className="skel" style={{ height: 56 }} />
+            <div className="h-14 animate-pulse rounded-[var(--radius-md)] bg-v3-surface-1" />
           ) : sessions.isError ? (
-            <p className="editor-hint">Não consegui carregar as sessões agora.</p>
+            <p className="font-mono text-xs text-v3-text-soft">Não consegui carregar as sessões agora.</p>
           ) : (
             list.map((s, i) => (
               <SessionRow
@@ -276,7 +312,8 @@ function SecurityPanel() {
           )}
         </div>
         <Button
-          variant="brandGhost"
+          variant="v3Ghost"
+          className="mt-5"
           onClick={() =>
             revokeAll.mutate(undefined, {
               onSuccess: () => toast.success("Outras sessões encerradas"),
@@ -287,7 +324,7 @@ function SecurityPanel() {
         >
           Sair de todos os outros dispositivos
         </Button>
-      </section>
+      </V3Card>
     </div>
   );
 }
@@ -296,68 +333,85 @@ function AccountPanel() {
   const { user } = useAuth();
   const { data } = useQuery({ queryKey: ["stats"], queryFn: api.getStats });
   return (
-    <div className="config-cards">
-      <section className="card-block">
-        <p className="eyebrow">Conta</p>
-        <h2 className="results-title">Sua conta</h2>
-        <p className="account-email">{user?.email ?? "—"}</p>
-        <p className="eyebrow account-prod-eyebrow">Sua produção</p>
-        <div className="stats-grid">
+    <div className="flex flex-col gap-6">
+      <V3Card className="p-7">
+        <Eyebrow>Conta</Eyebrow>
+        <ResultsTitle>Sua conta</ResultsTitle>
+        <p className="font-mono text-sm text-white">{user?.email ?? "—"}</p>
+        <p className="mb-4 mt-7 font-mono text-xs font-semibold uppercase tracking-[0.2em] text-v3-text-soft">
+          Sua produção
+        </p>
+        <div className="flex flex-wrap gap-4">
           <StatCard
-            icon={<Film className="ic" />}
+            icon={<Film />}
             label="Vídeos processados"
             value={data?.videos_processed ?? null}
           />
           <StatCard
-            icon={<Scissors className="ic" />}
+            icon={<Scissors />}
             label="Clipes gerados"
             value={data?.clips_generated ?? null}
           />
           <StatCard
-            icon={<Star className="ic" />}
+            icon={<Star />}
             label="Nota média"
             value={data?.avg_score ?? null}
             decimals
             accent
           />
         </div>
-      </section>
-      <section className="card-block">
-        <p className="eyebrow">Equipe</p>
-        <h2 className="results-title">Equipe</h2>
-        <p className="modal-text">Em breve: convidar membros e definir papéis.</p>
-      </section>
+      </V3Card>
+      <V3Card className="p-7">
+        <Eyebrow>Equipe</Eyebrow>
+        <ResultsTitle>Equipe</ResultsTitle>
+        <p className="text-sm text-v3-text-soft">Em breve: convidar membros e definir papéis.</p>
+      </V3Card>
     </div>
   );
 }
 
 export default function ConfigPage() {
   return (
-    <>
-      <section className="page-hero">
-        <div className="page-hero-inner">
-          <p className="eyebrow">Conta</p>
-          <h1 className="page-title">Configurações</h1>
+    <div className="relative bg-v3-bg">
+      <section className="relative -mt-20 overflow-hidden border-b border-v3-border pb-8 pt-20">
+        <div className="v3-home-glow" aria-hidden="true" />
+        <ParticlesBackground />
+        <div className="relative z-[1] mx-auto max-w-[1180px] px-7 pt-8">
+          <p className="font-mono text-xs font-semibold uppercase tracking-[0.24em] text-v3-text-soft">
+            Conta
+          </p>
+          <h1 className="mt-2 font-v3-display text-4xl font-black uppercase text-white sm:text-5xl lg:text-6xl">
+            Configurações
+          </h1>
         </div>
       </section>
-      <div className="view-pad-narrow">
+
+      {/* Fora da faixa de atmosfera (glow/particulas), mesmo raciocinio de projetos/page.tsx:
+          o conteudo das abas e variavel, nao pode esticar a secao do glow junto. */}
+      <div className="relative z-[1] mx-auto max-w-[1180px] px-7 py-10">
         <Tabs defaultValue="prefs">
-          <TabsList className="mb-6">
-            <TabsTrigger value="prefs">Padrões de clipe</TabsTrigger>
-            <TabsTrigger value="security">Segurança</TabsTrigger>
-            <TabsTrigger value="account">Conta e equipe</TabsTrigger>
+          <TabsList className={TABS_LIST_CLS}>
+            <TabsTrigger value="prefs" className={TAB_TRIGGER_CLS}>
+              Padrões de clipe
+            </TabsTrigger>
+            <TabsTrigger value="security" className={TAB_TRIGGER_CLS}>
+              Segurança
+            </TabsTrigger>
+            <TabsTrigger value="account" className={TAB_TRIGGER_CLS}>
+              Conta e equipe
+            </TabsTrigger>
           </TabsList>
-          <TabsContent value="prefs">
+          <TabsContent value="prefs" className="mt-6">
             <PrefsPanel />
           </TabsContent>
-          <TabsContent value="security">
+          <TabsContent value="security" className="mt-6">
             <SecurityPanel />
           </TabsContent>
-          <TabsContent value="account">
+          <TabsContent value="account" className="mt-6">
             <AccountPanel />
           </TabsContent>
         </Tabs>
       </div>
-    </>
+    </div>
   );
 }

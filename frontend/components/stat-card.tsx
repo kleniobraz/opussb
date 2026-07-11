@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 
 // Card de estatistica com count-up (0 -> valor). Respeita prefers-reduced-motion.
+// Estilo v3 (Fase 4, tela de Configuracoes): numero grande em JetBrains Mono, mesmo
+// espirito da StatsStrip da Home (components/home/stats-strip.tsx).
 export function StatCard({
   icon,
   label,
@@ -43,14 +45,22 @@ export function StatCard({
   const fmt = (v: number) => (decimals ? v.toFixed(1) : String(Math.round(v)));
 
   return (
-    <div className="stat-card">
-      <span className={cn("stat-ic", accent && "is-gold")} aria-hidden="true">
+    <div className="flex min-w-[150px] flex-1 flex-col rounded-[var(--radius-md)] border border-v3-border bg-v3-surface-1 px-5 py-4">
+      <span
+        className={cn(
+          "mb-3 grid size-9 place-items-center rounded-[var(--radius-sm)] border border-v3-border-hover text-v3-text-soft [&_svg]:size-[18px]",
+          accent && "border-v3-accent/40 bg-v3-accent/10 text-v3-accent",
+        )}
+        aria-hidden="true"
+      >
         {icon}
       </span>
-      <p className={cn("stat-value", accent && "is-gold")}>
+      <p className={cn("font-mono text-4xl font-black tabular-nums text-white", accent && "text-v3-accent")}>
         {value == null ? "—" : fmt(display)}
       </p>
-      <p className="stat-label">{label}</p>
+      <p className="mt-2 font-mono text-xs font-semibold uppercase tracking-[0.16em] text-v3-text-soft">
+        {label}
+      </p>
     </div>
   );
 }
