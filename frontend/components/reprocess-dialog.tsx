@@ -68,7 +68,7 @@ export function ReprocessDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[420px] border-[var(--border)] bg-[var(--surface)]">
+      <DialogContent className="max-w-[420px]">
         <DialogHeader>
           <DialogTitle>Reprocessar projeto</DialogTitle>
         </DialogHeader>

@@ -16,6 +16,13 @@ export const CLIP_GLOW =
   "radial-gradient(120% 85% at 50% 10%, color-mix(in srgb, var(--v3-accent) 18%, transparent), transparent 60%)," +
   "linear-gradient(160deg, var(--v3-surface-2), var(--v3-surface-1))";
 
+// Versao translucida do CLIP_GLOW pros cartoes de vidro do hero: o linear-gradient
+// opaco cobriria o veu do .v3-glass; com color-mix o desenho continua o mesmo, mas
+// deixa as particulas vazarem desfocadas atras do cartao.
+const CLIP_GLOW_GLASS =
+  "radial-gradient(120% 85% at 50% 10%, color-mix(in srgb, var(--v3-accent) 18%, transparent), transparent 60%)," +
+  "linear-gradient(160deg, color-mix(in srgb, var(--v3-surface-2) 55%, transparent), color-mix(in srgb, var(--v3-surface-1) 40%, transparent))";
+
 function Eq() {
   return (
     <div className="flex h-[42%] w-[70%] items-center gap-[2px]" aria-hidden="true">
@@ -40,15 +47,18 @@ function HeroClip({
   active?: boolean;
 }) {
   return (
+    // Sem shadow-[var(--shadow-hero)]: sob o vidro o utilitario vira codigo morto
+    // (o box-shadow do .v3-glass, fora de @layer, sobrepoe e ja inclui sombra).
     <V3Card
+      glass
       active={active}
       className={cn(
-        "absolute aspect-[9/16] w-12 overflow-hidden rounded-[var(--radius-md)] shadow-[var(--shadow-hero)] motion-reduce:animate-none",
+        "absolute aspect-[9/16] w-12 overflow-hidden rounded-[var(--radius-md)] motion-reduce:animate-none",
         animationClassName,
         className,
       )}
     >
-      <div className="relative flex h-full w-full items-center justify-center" style={{ background: CLIP_GLOW }}>
+      <div className="relative flex h-full w-full items-center justify-center" style={{ background: CLIP_GLOW_GLASS }}>
         <Eq />
         {active && (
           // Agulha de progresso (scrub), so no cartao da frente: reforca a leitura de "video tocando".

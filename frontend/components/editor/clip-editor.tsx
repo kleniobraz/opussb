@@ -1246,7 +1246,9 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
       <audio ref={musicAudioRef} src={musicSrc ?? undefined} loop preload="auto" className="hidden" />
 
       <Sheet open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <SheetContent side="right" className="editor-settings-sheet">
+        {/* solid: abre sobre o video em playback; vidro perderia contraste em cena
+            clara e re-filtraria cada frame do preview (custo continuo a toa). */}
+        <SheetContent side="right" solid className="editor-settings-sheet">
           <SheetHeader>
             <SheetTitle>Ajustes do clipe</SheetTitle>
           </SheetHeader>

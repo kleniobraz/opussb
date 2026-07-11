@@ -23,39 +23,47 @@ const SHORTCUTS: { label: string; href: string; icon: LucideIcon; desc: string }
 export function HomeView() {
   return (
     <div className="relative bg-v3-surface-1">
-      <section className="relative overflow-hidden border-b border-v3-border pb-8 pt-10">
+      {/* pb generoso: reserva a faixa de particulas que o card de vidro logo abaixo
+          sobrepoe. Sem border-b de proposito: uma linha cruzando atras do vidro ficava
+          estranha; a transicao da faixa pro conteudo passa a ser o proprio card. */}
+      <section className="relative overflow-hidden pb-24 pt-10">
         <div className="v3-home-glow" aria-hidden="true" />
         <ParticlesBackground />
         <Hero />
       </section>
 
-      <section className="mx-auto max-w-[1280px] px-7 py-12" aria-label="Acesso rápido">
-        <p className="font-mono text-xs font-semibold uppercase tracking-[0.24em] text-v3-text-soft">
+      {/* Margem negativa + z-[1]: o card protagonista fica em parte sobre a faixa de
+          particulas, que vazam desfocadas pelo vidro. O overlap e so visual (por fora);
+          a secao do hero mantem a altura estavel. */}
+      <section className="relative z-[1] mx-auto -mt-20 max-w-[1280px] px-7 pb-12" aria-label="Acesso rápido">
+        <Link href="/gerar" className="group block">
+          <V3Card glass active className="flex flex-col gap-5 p-8 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-5">
+              <span className="grid size-12 shrink-0 place-items-center rounded-[var(--radius-sm)] bg-v3-accent/14 text-v3-accent">
+                <Scissors className="size-6" strokeWidth={1.5} />
+              </span>
+              <div>
+                <p className="font-v3-display text-2xl font-black uppercase text-white sm:text-3xl">
+                  Gerar clipes
+                </p>
+                <p className="mt-1 text-sm leading-relaxed text-v3-text-soft">
+                  Envie um vídeo longo e receba os melhores momentos prontos.
+                </p>
+              </div>
+            </div>
+            <span className="inline-flex shrink-0 items-center gap-1 font-mono text-xs font-semibold uppercase tracking-wide text-v3-accent transition-transform duration-150 group-hover:translate-x-1">
+              Começar <span aria-hidden="true">→</span>
+            </span>
+          </V3Card>
+        </Link>
+
+        {/* O rotulo vem DEPOIS do protagonista: com a margem negativa da secao, antes
+            dele o texto subiria pra dentro da faixa de particulas. */}
+        <p className="mt-10 font-mono text-xs font-semibold uppercase tracking-[0.24em] text-v3-text-soft">
           Acesso rápido
         </p>
 
         <div className="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
-          <Link href="/gerar" className="group block sm:col-span-2 lg:col-span-4">
-            <V3Card active className="flex flex-col gap-5 p-8 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-start gap-5">
-                <span className="grid size-12 shrink-0 place-items-center rounded-[var(--radius-sm)] bg-v3-accent/14 text-v3-accent">
-                  <Scissors className="size-6" strokeWidth={1.5} />
-                </span>
-                <div>
-                  <p className="font-v3-display text-2xl font-black uppercase text-white sm:text-3xl">
-                    Gerar clipes
-                  </p>
-                  <p className="mt-1 text-sm leading-relaxed text-v3-text-soft">
-                    Envie um vídeo longo e receba os melhores momentos prontos.
-                  </p>
-                </div>
-              </div>
-              <span className="inline-flex shrink-0 items-center gap-1 font-mono text-xs font-semibold uppercase tracking-wide text-v3-accent transition-transform duration-150 group-hover:translate-x-1">
-                Começar <span aria-hidden="true">→</span>
-              </span>
-            </V3Card>
-          </Link>
-
           {SHORTCUTS.map((s) => {
             const Icon = s.icon;
             return (

@@ -43,9 +43,11 @@ export function MobileSidebar() {
             <Menu />
           </Button>
         </SheetTrigger>
+        {/* Sem override de bg/borda: o SheetContent ja vem de vidro (v3-glass) e um
+            fundo solido aqui esconderia o efeito. */}
         <SheetContent
           side="right"
-          className="flex w-[min(82vw,320px)] flex-col gap-1 border-l border-v3-border bg-v3-surface-1 p-[18px] sm:max-w-none"
+          className="flex w-[min(82vw,320px)] flex-col gap-1 p-[18px] sm:max-w-none"
         >
           <SheetHeader className="flex-row items-center gap-3 border-b border-v3-border p-0 pb-4">
             <span

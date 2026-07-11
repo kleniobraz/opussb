@@ -39,7 +39,7 @@ export function ClipPlayerDialog({
   }
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[560px] border-[var(--border)] bg-[var(--surface)]">
+      <DialogContent className="max-w-[560px]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-3">
             {title}
