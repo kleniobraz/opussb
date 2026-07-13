@@ -18,7 +18,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "SB Clips · Corte Viral",
+  title: "SB Clips",
   description:
     "A central de clipes do Grupo SB. Envie um vídeo longo e receba os melhores momentos em 9:16.",
   icons: { icon: "/favicon.svg", apple: "/favicon.svg" },

@@ -1,13 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/providers/auth-provider";
 import { Sidebar } from "@/components/sidebar";
 import { MobileSidebar } from "@/components/mobile-sidebar";
 import { HashRedirect } from "@/components/hash-redirect";
 import Preloader from "@/components/ui/preloader";
 import { useShortcuts } from "@/hooks/use-shortcuts";
+import { navItemsFor, isActiveNavItem } from "@/components/nav-items";
 
 // Flag por sessão: a animação de entrada toca uma vez por login (o logout limpa o flag
 // no auth-provider, então cada novo login replaya). Refresh no meio da sessão não repete.
@@ -23,6 +24,7 @@ function FullscreenLoader() {
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const pathname = usePathname();
   const { status, user } = useAuth();
   const [showPreloader, setShowPreloader] = useState(false);
   useShortcuts();
@@ -31,6 +33,14 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     if (status === "guest") router.replace("/login");
     else if (status === "authed" && user?.must_change_password) router.replace("/senha");
   }, [status, user, router]);
+
+  // Titulo da aba por tela, reaproveitando o mesmo mapa rota->label da sidebar
+  // (assim os dois nunca ficam dessincronizados quando um item de menu muda).
+  useEffect(() => {
+    const items = navItemsFor(!!user?.is_admin);
+    const active = items.find((item) => isActiveNavItem(pathname, item.href));
+    document.title = active ? `SB Clips · ${active.label}` : "SB Clips";
+  }, [pathname, user?.is_admin]);
 
   // Ao entrar no app autenticado, dispara o preloader se ainda não tocou nesta sessão.
   useEffect(() => {
