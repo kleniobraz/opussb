@@ -1,5 +1,6 @@
 "use client";
 
+import { notFound } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -12,6 +13,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import type { CaptionReview, CaptionReviewFinding, GlossaryTerm } from "@/lib/types";
+
+// Feature desativada (Revisor IA): a pagina fica de codigo morto reversivel,
+// mas qualquer acesso direto a /revisor cai no not-found do Next.
+// Reverter: remover o notFound() abaixo.
 
 const STATUS_LABEL: Record<string, string> = {
   queued: "Na fila",
@@ -444,6 +449,9 @@ function GlossaryPanel() {
 }
 
 export default function RevisorPage() {
+  notFound();
+
+  // eslint-disable-next-line no-unreachable
   return (
     <>
       <section className="page-hero">

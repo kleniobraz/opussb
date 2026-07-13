@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { LucideIcon } from "lucide-react";
-import { Scissors, Folder, Podcast, Sparkles, Heart } from "lucide-react";
+import { Scissors, Folder, Podcast, Heart } from "lucide-react";
 import { Hero } from "./hero";
 import { HowItWorks } from "./how-it-works";
 import { ParticlesBackground } from "../backgrounds/particles-background";
@@ -16,7 +16,6 @@ import { V3Card } from "../ui/v3-card";
 const SHORTCUTS: { label: string; href: string; icon: LucideIcon; desc: string }[] = [
   { label: "Projetos", href: "/projetos", icon: Folder, desc: "Sua biblioteca de clipes gerados." },
   { label: "Podcasts", href: "/podcast", icon: Podcast, desc: "Monte episódios completos com vinheta." },
-  { label: "Revisor IA", href: "/revisor", icon: Sparkles, desc: "Revisão de legendas queimadas no vídeo." },
   { label: "Favoritos", href: "/favoritos", icon: Heart, desc: "Os clipes que você salvou pra depois." },
 ];
 

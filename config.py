@@ -210,6 +210,10 @@ MAINTENANCE_ALLOWLIST_CONF: str = os.environ.get(
 
 
 # ─── Revisor de legendas (leitura por visão + revisão via Claude) ────────────
+# Chave mestra da feature. Default false de propósito: desativa o revisor sem
+# precisar tocar no .env de produção (hoje sem essa variável). Liga só com
+# CAPTION_REVIEW_ENABLED=true explícito no ambiente.
+CAPTION_REVIEW_ENABLED: bool = os.environ.get("CAPTION_REVIEW_ENABLED", "false").lower() in ("1", "true", "yes")
 # Sonnet 5 nas DUAS chamadas: o teste de viabilidade provou que o Haiku "corrige"
 # o erro silenciosamente (inutiliza a revisão); o Sonnet lê fiel (acentos, typos,
 # texto cortado). thinking desligado bate o custo medido (~$0,09-0,15/revisão).

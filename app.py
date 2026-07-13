@@ -2640,6 +2640,8 @@ def _probe_duration(path: str) -> float | None:
 @app.route("/api/caption-review", methods=["POST"])
 @login_required
 def caption_review_create():
+    if not config.CAPTION_REVIEW_ENABLED:
+        return jsonify({"error": "revisor desativado"}), 404
     user = db.get_user(session["user"])
     if not user:
         session.clear()
@@ -2713,6 +2715,8 @@ def _caption_review_payload(row: dict) -> dict:
 @app.route("/api/caption-review/<review_id>", methods=["GET"])
 @login_required
 def caption_review_status(review_id):
+    if not config.CAPTION_REVIEW_ENABLED:
+        return jsonify({"error": "revisor desativado"}), 404
     row = db.get_caption_review(review_id)
     if not row:
         return jsonify({"error": "Revisão não encontrada."}), 404
@@ -2725,6 +2729,8 @@ def caption_review_status(review_id):
 @app.route("/api/caption-review", methods=["GET"])
 @login_required
 def caption_review_list():
+    if not config.CAPTION_REVIEW_ENABLED:
+        return jsonify({"error": "revisor desativado"}), 404
     return jsonify({"reviews": db.list_caption_reviews(session["user"])})
 
 

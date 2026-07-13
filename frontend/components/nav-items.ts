@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { Home, Scissors, Folder, Podcast, Sparkles, Heart, Settings, Shield } from "lucide-react";
+import { Home, Scissors, Folder, Podcast, Heart, Settings, Shield } from "lucide-react";
 
 export interface NavItem {
   label: string;
@@ -14,7 +14,6 @@ const BASE_NAV_ITEMS: NavItem[] = [
   { label: "Gerar clipes", href: "/gerar", icon: Scissors },
   { label: "Projetos", href: "/projetos", icon: Folder },
   { label: "Podcasts", href: "/podcast", icon: Podcast },
-  { label: "Revisor IA", href: "/revisor", icon: Sparkles },
   { label: "Favoritos", href: "/favoritos", icon: Heart },
   { label: "Configurações", href: "/config", icon: Settings },
 ];
