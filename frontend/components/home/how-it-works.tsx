@@ -141,11 +141,11 @@ function ClipVisual({ on }: VisualProps) {
 }
 
 const STEPS = [
-  { title: "Extrai o áudio", tag: "FFMPEG", Visual: EqVisual },
-  { title: "Transcreve", tag: "WHISPER", Visual: TypeVisual },
-  { title: "Corta os momentos", tag: "CLAUDE", Visual: CutVisual },
-  { title: "Reformata 9:16", tag: "YOLO", Visual: MorphVisual },
-  { title: "Entrega os clipes", tag: "S3", Visual: ClipVisual },
+  { title: "Extrai o áudio", Visual: EqVisual },
+  { title: "Transcreve", Visual: TypeVisual },
+  { title: "Corta os momentos", Visual: CutVisual },
+  { title: "Reformata 9:16", Visual: MorphVisual },
+  { title: "Entrega os clipes", Visual: ClipVisual },
 ] as const;
 
 // "Como funciona" na Home: esteira de producao. Cinco estacoes abertas sobre a faixa
@@ -223,7 +223,7 @@ export function HowItWorks() {
             // Trecho de linha ANTES da estacao i: preenchido quando o dado ja passou por ela.
             const filled = reduced || (active !== null && active >= i);
             return (
-              <Fragment key={s.tag}>
+              <Fragment key={s.title}>
                 {i > 0 && (
                   <span
                     aria-hidden="true"
@@ -264,14 +264,6 @@ export function HowItWorks() {
                       )}
                     >
                       {s.title}
-                    </p>
-                    <p
-                      className={cn(
-                        "mt-1 font-mono text-[10px] font-semibold uppercase tracking-[0.2em] transition-colors duration-300",
-                        on ? "text-v3-accent" : "text-v3-text-disabled",
-                      )}
-                    >
-                      {s.tag}
                     </p>
                   </div>
                 </li>
