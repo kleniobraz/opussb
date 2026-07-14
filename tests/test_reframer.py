@@ -16,8 +16,11 @@ if "cv2" not in sys.modules:
     _cv2_mod.CAP_PROP_FRAME_HEIGHT = 4
     _cv2_mod.CAP_PROP_FPS = 5
     _cv2_mod.CAP_PROP_FRAME_COUNT = 7
+    _cv2_mod.CAP_PROP_POS_FRAMES = 1
+    _cv2_mod.COLOR_BGR2GRAY = 6
     _cv2_mod.VideoCapture = _mock.MagicMock()
     _cv2_mod.resize = _mock.MagicMock()
+    _cv2_mod.cvtColor = _mock.MagicMock()
     sys.modules["cv2"] = _cv2_mod
 
 import numpy as np
@@ -77,6 +80,9 @@ def test_reframe_clip_fluxo_completo(mocker, tmp_path):
     mocker.patch("reframer._get_model", return_value=mock_model)
 
     mocker.patch("reframe_core.cv2.resize", return_value=np.zeros((1920, 1080, 3), dtype=np.uint8))
+    # cvtColor real (não MagicMock): _small_gray/_frame_diff fazem aritmética numpy de verdade em
+    # cima do resultado, precisa ser um ndarray.
+    mocker.patch("reframe_core.cv2.cvtColor", return_value=np.zeros((1080, 1920), dtype=np.uint8))
 
     # ffmpeg do encode único: Popen mockado + checagem de saída ok.
     mock_proc = mocker.MagicMock()
@@ -201,3 +207,47 @@ def test_plano_sem_sujeito_centraliza():
     com = reframe_core.build_locked_trajectory(samples, 90, 30.0, 1920, 600, 660, 0.35, 0.18, cuts=[45])
     assert com[0] == 200                       # plano A travado no sujeito
     assert all(v == 660 for v in com[45:])     # plano B sem sujeito -> center_x (660), não 200
+
+
+# Test 11: _frame_diff — quadros iguais = 0 (sem corte), preto/branco = 1 (diff máximo)
+def test_frame_diff_extremos():
+    black = np.zeros((10, 10), dtype=np.int16)
+    white = np.full((10, 10), 255, dtype=np.int16)
+    assert reframe_core._frame_diff(black, black) == 0.0
+    assert reframe_core._frame_diff(black, white) == 1.0
+
+
+# Test 12: _cuts_from_diff — pico isolado acima do threshold vira corte; ruído abaixo, nada
+def test_cuts_from_diff_threshold():
+    diffs = [(15, 0.01), (30, 0.02), (45, 0.70), (60, 0.01), (75, 0.02)]
+    assert reframe_core._cuts_from_diff(diffs, threshold=0.09, min_gap=15) == [45]
+    sem_corte = [(15, 0.01), (30, 0.03), (45, 0.02), (60, 0.01)]
+    assert reframe_core._cuts_from_diff(sem_corte, threshold=0.09, min_gap=15) == []
+
+
+# Test 13: _cuts_from_diff — min_gap deduplica o MESMO corte vazando pra amostra adjacente
+def test_cuts_from_diff_min_gap_dedup():
+    # corte real "vaza": as amostras 30 E 45 (adjacentes, mesmo sample_every=15) ficam acima do limiar
+    diffs = [(15, 0.01), (30, 0.65), (45, 0.60), (60, 0.02)]
+    assert reframe_core._cuts_from_diff(diffs, threshold=0.09, min_gap=15) == [30]
+
+
+# Test 14: _merge_cuts — união (qualquer fonte confirma o corte), dedup por proximidade
+def test_merge_cuts_uniao_e_dedup():
+    # duas fontes vendo o MESMO corte (frames próximos, dentro do min_gap) -> vira um só
+    assert reframe_core._merge_cuts([45], [46], min_gap=15) == [45]
+    # cortes distantes (fora do min_gap) -> os dois ficam
+    assert reframe_core._merge_cuts([45], [200], min_gap=15) == [45, 200]
+    # SÓ o diff detecta (kind não mudou) -> ainda conta como corte
+    assert reframe_core._merge_cuts([], [45], min_gap=15) == [45]
+
+
+# Test 15: caso mesmo-kind — a causa raiz do bug: geometria sozinha não vê, diff fecha o buraco
+def test_deteccao_mesmo_kind_so_por_diff():
+    # corte real no frame 45 (close-host -> close-convidado): kind IGUAL dos dois lados
+    kinds = [(0, "close"), (15, "close"), (30, "close"), (45, "close"), (60, "close"), (75, "close")]
+    diffs = [(15, 0.02), (30, 0.01), (45, 0.70), (60, 0.02), (75, 0.01)]
+    assert reframe_core._cuts_from_kinds(kinds) == []          # geometria sozinha não vê o corte
+    merged = reframe_core._merge_cuts(reframe_core._cuts_from_kinds(kinds),
+                                      reframe_core._cuts_from_diff(diffs), min_gap=15)
+    assert merged == [45]                                       # diff fecha o buraco

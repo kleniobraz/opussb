@@ -57,6 +57,24 @@ _MERGE_FRAC = 0.10
 # (debounce). 3 absorve o YOLO piscando por ~0,5s (ex.: convidado some 1-2 amostras no plano aberto).
 _CUT_DEBOUNCE = 3
 
+# Troca de câmera por DIFF DE QUADRO INTEIRO (pega o que a geometria não vê: dois planos do MESMO
+# kind, ex. close-host -> close-convidado, onde a contagem de pessoas não muda). Mesma receita do
+# caption_sampler.py (mesmo projeto, já validado em produção pro Revisor de legendas): reduz a um
+# thumbnail cinza pequeno ANTES de comparar, diff médio normalizado 0..1.
+_DIFF_WIDTH = 180
+# Calibrado com tools/eval_reframe.py num multicam real (Carbone/Clubcast, 322s, 60fps, 3 câmeras
+# mesmo estúdio): os 21 cortes reais do vídeo mediram entre 0.187 e 0.211; o maior valor de "chão"
+# (sem corte, incluindo gesticulação normal) foi 0.0445. Margem de mais de 4x sem sobreposição
+# nenhuma entre as duas distribuições. 0.09 fica quase no meio dessa folga. Recalibrar (mesmo
+# script) se um vídeo de conteúdo bem diferente (iluminação, distância de câmera) começar a
+# escapar ou dar falso positivo.
+_CUT_DIFF_THRESHOLD = 0.09
+# Corte real é um PICO isolado no diff (a amostra seguinte já compara pós-corte com pós-corte), não
+# um sinal que precisa persistir feito o debounce acima. min_gap só evita contar o MESMO corte 2x se
+# ele vazar pra amostra adjacente numa transição mais lenta que o gap (unidade: FRAMES, não amostras;
+# comparável a sample_every).
+_CUT_DIFF_MIN_GAP_FRAMES = 15
+
 
 def _merge_boxes(people: list, width: int) -> list:
     """Funde detecções sobrepostas (a MESMA pessoa contada 2x pelo YOLO): centros mais próximos que
@@ -114,6 +132,49 @@ def _cuts_from_kinds(kinds: list, debounce: int = _CUT_DEBOUNCE) -> list:
         else:
             cand, cand_n = None, 0
     return cuts
+
+
+def _small_gray(frame: np.ndarray, width: int = _DIFF_WIDTH) -> np.ndarray:
+    """Downscale + cinza pra diff barato (mesma receita do caption_sampler.py). Reduz ANTES de
+    converter pra cinza, senão o cvtColor roda em cima da resolução original à toa."""
+    h, w = frame.shape[:2]
+    small = cv2.resize(frame, (width, max(1, round(h * width / w))))
+    return cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).astype(np.int16)
+
+
+def _frame_diff(prev_small: np.ndarray, cur_small: np.ndarray) -> float:
+    """Diff médio normalizado 0..1 entre dois quadros já reduzidos por `_small_gray` (mesma métrica
+    do caption_sampler.scan_profile: d_full = mean(abs(a - b)) / 255)."""
+    return float(np.abs(cur_small - prev_small).mean()) / 255.0
+
+
+def _cuts_from_diff(diffs: list, threshold: float = _CUT_DIFF_THRESHOLD,
+                    min_gap: int = _CUT_DIFF_MIN_GAP_FRAMES) -> list:
+    """Fronteiras de plano a partir do diff de quadro inteiro entre amostras consecutivas
+    (`diffs` = [(frame, d)], frame = frame da amostra PÓS-corte, d = `_frame_diff` contra a amostra
+    anterior). Sem debounce de persistência (isso é pra sinal de NÍVEL, tipo o kind do YOLO
+    piscando): um corte real é um PICO isolado, a amostra seguinte já compara pós-corte com
+    pós-corte. `min_gap` só evita contar o MESMO corte 2x se ele vazar pra amostra adjacente."""
+    cuts = []
+    last = -min_gap
+    for frame, d in diffs:
+        if d > threshold and frame - last > min_gap:
+            cuts.append(frame)
+            last = frame
+    return cuts
+
+
+def _merge_cuts(kind_cuts: list, diff_cuts: list, min_gap: int) -> list:
+    """União dos cortes por tipo (`_cuts_from_kinds`) e por diff (`_cuts_from_diff`): qualquer um dos
+    dois confirma o corte (nunca os dois precisam concordar, senão perde exatamente o caso que o diff
+    foi criado pra cobrir: kind igual dos dois lados). Dedup por PROXIMIDADE (não igualdade exata): as
+    duas fontes vendo o MESMO corte perto do mesmo frame vira uma fronteira só."""
+    all_cuts = sorted(set(kind_cuts) | set(diff_cuts))
+    merged = []
+    for c in all_cuts:
+        if not merged or c - merged[-1] > min_gap:
+            merged.append(c)
+    return merged
 
 
 def _motion_bias_wide(prev_frame, frame, width: int):
@@ -197,6 +258,53 @@ def build_locked_trajectory(samples: list, total_frames: int, fps: float,
     return out
 
 
+def sample_camera(cap, model, width: int, *, min_conf: float, detect_cuts: bool = False,
+                  sample_every: int = 15, max_frame: int | None = None) -> dict:
+    """Passada 1 sobre um cv2.VideoCapture JÁ ABERTO (não abre nem fecha; o chamador decide o ciclo
+    de vida). Amostra a cada `sample_every` frames: grab() nos pulados (sem converter BGR),
+    retrieve() só nos amostrados. Detecção por GEOMETRIA (NÃO por cor: as 3 câmeras são do mesmo
+    cenário): após FUNDIR caixas duplicadas (_merge_boxes), a CONTAGEM diz close (1, enquadra nela) /
+    plano aberto (2+, default = convidado à direita, segurando quando ele some um frame) / vazio (0,
+    cai pro centro). As trocas de câmera saem da UNIÃO de duas fontes (_merge_cuts): o histórico de
+    tipos com DEBOUNCE (_cuts_from_kinds, pra não picar no ruído do YOLO) e o diff de quadro inteiro
+    (_cuts_from_diff, pega troca de câmera que a contagem não vê: dois planos do MESMO kind).
+    detect_cuts=False desliga as duas (cuts sempre []). `max_frame` corta a varredura cedo (a
+    ferramenta de avaliação usa isso pra iterar rápido num trecho, sem decodificar o vídeo inteiro);
+    None (produção) varre até o fim. `frame_idx` começa da posição ATUAL do cap, então também
+    funciona se o chamador já deu seek. Extraída de reframe_to_file pra ser reaproveitada por
+    tools/eval_reframe.py sem duplicar a lógica de amostragem."""
+    samples = []
+    kinds = []
+    diffs = []
+    prev_gray = None
+    frame_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+    while max_frame is None or frame_idx < max_frame:
+        if not cap.grab():
+            break
+        if frame_idx % sample_every == 0:
+            ok, frame = cap.retrieve()
+            if ok:
+                people = _merge_boxes(detect_people(frame, model, width, min_conf), width)
+                kind, subject_cx = _classify(people, width)
+                kinds.append((frame_idx, kind))
+                samples.append((frame_idx, subject_cx))
+                if detect_cuts:
+                    gray = _small_gray(frame)
+                    if prev_gray is not None:
+                        diffs.append((frame_idx, _frame_diff(prev_gray, gray)))
+                    prev_gray = gray
+        frame_idx += 1
+
+    if detect_cuts:
+        cuts_kind = _cuts_from_kinds(kinds)
+        cuts_diff = _cuts_from_diff(diffs)
+        cuts = _merge_cuts(cuts_kind, cuts_diff, sample_every)
+    else:
+        cuts_kind, cuts_diff, cuts = [], [], []
+    return {"samples": samples, "kinds": kinds, "diffs": diffs,
+            "cuts_kind": cuts_kind, "cuts_diff": cuts_diff, "cuts": cuts}
+
+
 def reframe_to_file(input_path: str, output_path: str, model, *,
                     deadzone_frac: float, max_pan_frac: float, min_conf: float,
                     video_codec_args: list, subtitles: str | None = None,
@@ -228,32 +336,12 @@ def reframe_to_file(input_path: str, output_path: str, model, *,
         crop_w = width
     center_x = (width - crop_w) // 2
 
-    # Pass 1: amostra a cada N frames. grab() nos pulados (sem converter BGR), retrieve() só nos
-    # amostrados. Detecção por GEOMETRIA (NÃO por cor: as 3 câmeras são do mesmo cenário): após FUNDIR
-    # caixas duplicadas (_merge_boxes), a CONTAGEM diz close (1, enquadra nela) / plano aberto (2+,
-    # default = convidado à direita, segurando quando ele some um frame) / vazio (0, cai pro centro).
-    # As trocas de câmera saem do histórico de tipos com DEBOUNCE (_cuts_from_kinds), pra não picar no
-    # ruído do YOLO. detect_cuts=False desliga a segmentação (volta a um plano só).
-    sample_every = 15
-    samples = []
-    kinds = []
-    frame_idx = 0
-    while True:
-        if not cap.grab():
-            break
-        if frame_idx % sample_every == 0:
-            ok, frame = cap.retrieve()
-            if ok:
-                people = _merge_boxes(detect_people(frame, model, width, min_conf), width)
-                kind, subject_cx = _classify(people, width)
-                kinds.append((frame_idx, kind))
-                samples.append((frame_idx, subject_cx))
-        frame_idx += 1
+    cam = sample_camera(cap, model, width, min_conf=min_conf, detect_cuts=detect_cuts)
     cap.release()
 
-    cuts = _cuts_from_kinds(kinds) if detect_cuts else []
-    per_frame_cx = build_locked_trajectory(samples, total_frames, fps, width, crop_w, center_x,
-                                           deadzone_frac, max_pan_frac, cuts=cuts)
+    cuts = cam["cuts"]
+    per_frame_cx = build_locked_trajectory(cam["samples"], total_frames, fps, width, crop_w,
+                                           center_x, deadzone_frac, max_pan_frac, cuts=cuts)
     _pipe_encode(input_path, output_path, per_frame_cx, fps, width, crop_w, center_x,
                  video_codec_args, subtitles)
     return {"per_frame_cx": per_frame_cx, "fps": fps, "width": width, "crop_w": crop_w, "cuts": cuts}
