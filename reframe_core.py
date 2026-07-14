@@ -57,6 +57,15 @@ _MERGE_FRAC = 0.10
 # (debounce). 3 absorve o YOLO piscando por ~0,5s (ex.: convidado some 1-2 amostras no plano aberto).
 _CUT_DEBOUNCE = 3
 
+# Amostras NOVAS consecutivas (não frames) que precisam confirmar a MESMA direção de excesso da zona
+# morta antes de `_locked_segment` mover a câmera. Sem isso, UMA leitura isolada e ruidosa do YOLO
+# (motion blur, deteccao imprecisa por 1 amostra) engana a zona morta e o crop desliza pra uma posicao
+# errada, onde as leituras seguintes (normais) caem dentro da NOVA zona morta errada e nunca corrigem
+# (medido num caso real: corte de camera em que o crop deslizava de 674 pra 647, passando pelo centro
+# do enquadramento no caminho, por causa de uma unica amostra ruim). 2 absorve o ruido de 1 amostra
+# sem atrasar demais o acompanhamento de movimento real (que se confirma na amostra seguinte).
+_PAN_DEBOUNCE = 2
+
 # Troca de câmera por DIFF DE QUADRO INTEIRO (pega o que a geometria não vê: dois planos do MESMO
 # kind, ex. close-host -> close-convidado, onde a contagem de pessoas não muda). Mesma receita do
 # caption_sampler.py (mesmo projeto, já validado em produção pro Revisor de legendas): reduz a um
@@ -191,7 +200,14 @@ def _locked_segment(samples: list, total_frames: int, fps: float,
     """Câmera travada de UM plano contínuo (sem corte no meio). A partir das amostras do centro do
     sujeito (None = sem detecção -> segura o último), produz o crop_x por frame com ZONA MORTA
     (deadzone_frac: dentro dela não mexe) + PAN LIMITADO (max_pan_frac por segundo: anda devagar, sem
-    salto). Plano sem nenhum sujeito -> corte central fixo."""
+    salto). Plano sem nenhum sujeito -> corte central fixo. DEBOUNCE (`_PAN_DEBOUNCE`): só move a
+    câmera quando a MESMA DIREÇÃO de excesso da zona morta se confirma em amostras NOVAS consecutivas
+    (não frames: uma amostra fica "held" por ~sample_every frames, contar por frame tornaria o
+    debounce inútil), pra uma leitura isolada ruidosa do YOLO não deslizar o crop sozinha (duas
+    amostras excedendo em LADOS OPOSTOS não confirmam uma a outra). EXCEÇÃO: a ÚLTIMA amostra válida
+    do segmento não tem uma "amostra seguinte" pra confirmar (o plano acaba ali) - esperar por uma
+    confirmação que nunca vai chegar só perderia o movimento pra sempre, então ela é tratada como
+    já confirmada (comportamento igual ao de antes do debounce, só na cauda do plano)."""
     if total_frames <= 0:
         return []
     valid = [(f, cx) for f, cx in samples if cx is not None]
@@ -199,13 +215,17 @@ def _locked_segment(samples: list, total_frames: int, fps: float,
         return [center_x] * total_frames
 
     # Centro desejado do sujeito por frame: segura o último válido (sem pular pro centro).
+    # `sample_idx` acompanha, por frame, qual amostra BRUTA de `valid` está em vigor (0-based); é o
+    # que permite ao loop principal saber quando uma amostra NOVA chegou (debounce por amostra).
     desired = np.empty(total_frames, dtype=float)
+    sample_idx = np.empty(total_frames, dtype=int)
     vi, cur = 0, valid[0][1]
     for f in range(total_frames):
         while vi < len(valid) and valid[vi][0] <= f:
             cur = valid[vi][1]
             vi += 1
         desired[f] = cur
+        sample_idx[f] = max(vi - 1, 0)
 
     half_dz = deadzone_frac * crop_w / 2.0
     max_step = max(1.0, max_pan_frac * crop_w / max(fps, 1.0))
@@ -213,20 +233,47 @@ def _locked_segment(samples: list, total_frames: int, fps: float,
     lo, hi = half_w, max(half_w, width - half_w)
     cc = min(max(desired[0], lo), hi)
     out = np.empty(total_frames, dtype=float)
+    last_valid_idx = len(valid) - 1
+    streak = 0
+    streak_dir = 0        # sinal (+1/-1) do excesso que o streak atual está confirmando
+    last_idx = sample_idx[0]
     for f in range(total_frames):
         s = desired[f]
-        if s - cc > half_dz:
-            target = s - half_dz
-        elif cc - s > half_dz:
-            target = s + half_dz
-        else:
-            target = cc
-        delta = target - cc
-        if delta > max_step:
-            delta = max_step
-        elif delta < -max_step:
-            delta = -max_step
-        cc = min(max(cc + delta, lo), hi)
+        if sample_idx[f] != last_idx:
+            # Amostra NOVA neste frame (o hold da amostra anterior acabou): só agora reavalia o
+            # streak de debounce. Fora daqui (frames do meio do hold) o streak NÃO se mexe. Guarda a
+            # DIREÇÃO do excesso, não só se excedeu: um excesso pra direita não confirma um excesso
+            # seguinte pra esquerda (senão duas leituras ruidosas em lados opostos "somariam" streak).
+            if s - cc > half_dz:
+                direction = 1
+            elif cc - s > half_dz:
+                direction = -1
+            else:
+                direction = 0
+            if direction == 0:
+                streak = 0
+            elif direction == streak_dir:
+                streak += 1
+            else:
+                streak = 1
+            streak_dir = direction
+            if sample_idx[f] == last_valid_idx and direction != 0:
+                # Última amostra do segmento: sem confirmação possível, confia direto (ver docstring).
+                streak = _PAN_DEBOUNCE
+            last_idx = sample_idx[f]
+        if streak >= _PAN_DEBOUNCE:
+            if s - cc > half_dz:
+                target = s - half_dz
+            elif cc - s > half_dz:
+                target = s + half_dz
+            else:
+                target = cc
+            delta = target - cc
+            if delta > max_step:
+                delta = max_step
+            elif delta < -max_step:
+                delta = -max_step
+            cc = min(max(cc + delta, lo), hi)
         out[f] = cc - half_w
 
     out = moving_avg(out, max(3, int(round(fps / 3))))

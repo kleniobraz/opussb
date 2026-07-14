@@ -132,14 +132,40 @@ def test_trajetoria_travada_sujeito_parado():
 
 # Test 6: câmera travada — sujeito salta -> segue DEVAGAR (sem pulo pro alvo)
 def test_trajetoria_travada_segue_devagar():
-    samples = [(0, 500), (45, 1100)]   # parado em 500 e salta pra 1100 no frame 45
+    # Parado em 500, salta pra 1100 no frame 45 e a amostra seguinte (frame 60) CONFIRMA a nova
+    # posição (debounce de 2 amostras novas pra mover, ver _PAN_DEBOUNCE): sem a 2a amostra em 1100
+    # essa leitura seria tratada como ruído isolado (test_pan_debounce_ignora_leitura_isolada).
+    samples = [(0, 500), (45, 1100), (60, 1100)]
     out = reframe_core.build_locked_trajectory(samples, total_frames=75, fps=30.0,
                                                width=1920, crop_w=600, center_x=660,
                                                deadzone_frac=0.35, max_pan_frac=0.18)
     assert len(out) == 75
     assert out[0] == 200          # começa travado no sujeito
-    assert out[-1] > 200          # já começou a acompanhar
+    assert out[44] == 200         # ainda não moveu: só 1 amostra em 1100 até aqui (debounce pendente)
+    assert out[-1] > 200          # confirmado na 2a amostra (frame 60), já começou a acompanhar
     assert out[-1] < 500          # mas devagar: longe de ter pulado pro alvo
+
+
+# Test 6b: _PAN_DEBOUNCE, leitura ISOLADA e ruidosa do YOLO (1 amostra fora da zona morta, a
+# seguinte já volta pra posição original) NUNCA move o crop. Reproduz o bug real (corte de 281.75s
+# do vídeo de teste: 1 amostra ruim deslizava o crop de 674 pra 647, passando pelo centro no caminho).
+def test_pan_debounce_ignora_leitura_isolada():
+    samples = [(0, 500), (15, 500), (30, 500), (45, 1100), (60, 500), (75, 500), (90, 500)]
+    out = reframe_core.build_locked_trajectory(samples, total_frames=105, fps=30.0,
+                                               width=1920, crop_w=600, center_x=660,
+                                               deadzone_frac=0.35, max_pan_frac=0.18)
+    assert len(out) == 105
+    assert all(v == 200 for v in out)   # a amostra ruim (frame 45) nunca chega a mover a câmera
+
+
+# Test 6c: _PAN_DEBOUNCE só confirma quando as DUAS amostras excedem no MESMO lado; excessos em
+# lados OPOSTOS (ex.: ruído que pisca pra direita e depois pra esquerda) não se somam.
+def test_pan_debounce_direcao_oposta_nao_confirma():
+    samples = [(0, 500), (15, 500), (30, 800), (45, 200), (60, 500), (75, 500)]
+    out = reframe_core.build_locked_trajectory(samples, total_frames=90, fps=30.0,
+                                               width=1920, crop_w=600, center_x=660,
+                                               deadzone_frac=0.35, max_pan_frac=0.18)
+    assert all(v == 200 for v in out)   # excesso p/ direita (30) e p/ esquerda (45): não confirmam
 
 
 # Test 7: detect_people devolve todas as pessoas (conf, cx, w) ordenadas por cx (esq -> dir)
@@ -193,8 +219,13 @@ def test_trajetoria_reacquire_no_corte():
     samples = [(0, 500), (45, 1400)]
     sem = reframe_core.build_locked_trajectory(samples, 90, 30.0, 1920, 600, 660, 0.35, 0.18)
     com = reframe_core.build_locked_trajectory(samples, 90, 30.0, 1920, 600, 660, 0.35, 0.18, cuts=[45])
-    # sem corte: a câmera arrasta devagar de 200 (pan limitado), ainda longe do novo sujeito
-    assert sem[45] < 400
+    # sem corte: a amostra do frame 45 é a ÚLTIMA do segmento (sem "amostra seguinte" pra confirmar
+    # o debounce) -> tratada como já confirmada, então a câmera JÁ começa a arrastar devagar (pan
+    # limitado) e continua avançando até o fim, em vez de ficar congelada em 200 pra sempre.
+    assert sem[0] == 200
+    assert sem[45] > 200
+    assert sem[45] < sem[60] < sem[-1]    # continua avançando ao longo da cauda, não trava
+    assert sem[-1] < 1100                 # mas devagar: nem perto de ter pulado pro alvo (1400-300)
     # com corte: o novo plano re-trava no sujeito imediatamente (1400 - crop_w/2 = 1100)
     assert com[45] >= 1000
     assert com[0] == 200          # plano A inalterado
