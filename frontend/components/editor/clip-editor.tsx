@@ -1064,8 +1064,7 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
             <p className="empty-title">Edição indisponível</p>
             <p className="empty-text">
               Este clipe foi gerado antes do editor (legenda fixa no vídeo) ou não tem fala.
-              Reprocessar o projeto gera clipes editáveis. Você ainda pode exportar pela página
-              do projeto.
+              Você ainda pode exportar pela página do projeto.
             </p>
             <Link href={`/projetos/${jobId}`} className="link-gold mt-4 inline-block">
               ← Voltar ao projeto

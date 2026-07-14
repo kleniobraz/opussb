@@ -5,12 +5,11 @@ import { useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Download, RotateCcw } from "lucide-react";
+import { Download } from "lucide-react";
 import * as api from "@/lib/api";
 import { useProject } from "@/hooks/use-projects";
 import { useAuth } from "@/providers/auth-provider";
 import { ClipGrid } from "@/components/clip-grid";
-import { ReprocessDialog } from "@/components/reprocess-dialog";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { fmtScore, timeAgo, nameFromEmail } from "@/lib/format";
@@ -22,7 +21,6 @@ export default function ProjetoPage() {
   const { user } = useAuth();
   const { data: p, isLoading, isError } = useProject(id);
   const { data: endScreens } = useQuery({ queryKey: ["endScreens"], queryFn: api.getEndScreens });
-  const [reprocessOpen, setReprocessOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [endSaving, setEndSaving] = useState(false);
   const esFileRef = useRef<HTMLInputElement>(null);
@@ -224,9 +222,6 @@ export default function ProjetoPage() {
           <Button variant="gold" onClick={downloadAll}>
             <Download /> Baixar todos
           </Button>
-          <Button variant="brandGhost" onClick={() => setReprocessOpen(true)}>
-            <RotateCcw /> Reprocessar
-          </Button>
           {canDelete && (
             <Button variant="destructive" onClick={() => setDelOpen(true)}>
               Excluir
@@ -237,7 +232,6 @@ export default function ProjetoPage() {
 
       <ClipGrid clips={p.clips ?? []} />
 
-      <ReprocessDialog projectId={id} open={reprocessOpen} onOpenChange={setReprocessOpen} />
       <ConfirmDialog
         open={delOpen}
         onOpenChange={setDelOpen}
