@@ -229,6 +229,20 @@ def _upload_com_heartbeat(path: str, key: str, job_id: str) -> None:
         pare.set()
 
 
+class _Cancelled(Exception):
+    """Sinaliza que o job foi cancelado externamente (status virou 'error'). Cópia local
+    do padrão de processor.py: os dois módulos são deliberadamente independentes (ver
+    docstring do topo do arquivo), então a checagem não é importada, é replicada."""
+
+
+def _check_cancel(job_id: str) -> None:
+    """Aborta cooperativamente se o job sumiu ou foi marcado como error (cancelado).
+    Chamado entre etapas pra a thread parar e não sobrescrever o cancelamento."""
+    j = db.get_job(job_id)
+    if j is None or j["status"] == "error":
+        raise _Cancelled()
+
+
 def _compose(job_id: str, job: dict, workdir: str) -> None:
     src = job.get("local_path")
     if not src or not os.path.exists(src):
@@ -257,11 +271,13 @@ def _compose(job_id: str, job: dict, workdir: str) -> None:
     os.makedirs(workdir, exist_ok=True)
     nice, threads = config.BURN_NICE, config.BURN_FFMPEG_THREADS
 
+    _check_cancel(job_id)
     db.update_job(job_id, progress=20)
     gancho = os.path.join(workdir, "gancho.mp4")
     _run_ffmpeg(build_matched_cmd(src, gancho, sig, seek=(hook_start, hook_end - hook_start),
                                   threads=threads), nice, "recorte do gancho")
 
+    _check_cancel(job_id)
     db.update_job(job_id, progress=45)
     vin_matched = _ensure_matched_vinheta(vinheta, sig, workdir, threads, nice)
 
@@ -269,6 +285,7 @@ def _compose(job_id: str, job: dict, workdir: str) -> None:
     if sig["nb_v"] > 1 or sig["nb_a"] > 1:
         # Trilha extra (cover art, áudio secundário) quebraria o concat por contagem de
         # streams: remux -c copy só com v:0 (+a:0), segundos de I/O, sem re-encode.
+        _check_cancel(job_id)
         db.update_job(job_id, progress=55)
         corpo = os.path.join(workdir, "corpo_remux.mp4")
         cmd = ["ffmpeg", "-y", "-i", src, "-map", "0:v:0"]
@@ -276,6 +293,7 @@ def _compose(job_id: str, job: dict, workdir: str) -> None:
             cmd += ["-map", "0:a:0"]
         _run_ffmpeg(cmd + ["-c", "copy", corpo], nice, "remux do corpo (trilhas extras)")
 
+    _check_cancel(job_id)
     db.update_job(job_id, progress=65)
     final_local = os.path.join(workdir, "final.mp4")
     if not concat_copy([gancho, vin_matched, corpo], final_local,
@@ -291,10 +309,12 @@ def _compose(job_id: str, job: dict, workdir: str) -> None:
         raise RuntimeError(f"duração do final ({total:.1f}s) não bate com a soma "
                            f"das partes ({esperado:.1f}s)")
 
+    _check_cancel(job_id)
     db.update_job(job_id, progress=85)
     final_key = f"jobs/{job_id}/podcast/final.mp4"
     _upload_com_heartbeat(final_local, final_key, job_id)
 
+    _check_cancel(job_id)
     db.update_job(job_id, podcast_final_key=final_key, status="done", progress=100)
     log.info("[compose] job %s: final de %.1fs montado e no S3 (%s)", job_id, total, final_key)
     # Regra 7 da casa: a fonte só morre DEPOIS do final confirmado no S3 (upload + DB acima).
@@ -310,6 +330,13 @@ def run_podcast_compose(job_id: str) -> None:
     workdir = os.path.join(config.JOB_DIR, job_id, "compose")
     try:
         _compose(job_id, job, workdir)
+    except _Cancelled:
+        # Quem cancelou (POST /api/jobs/<id>/cancel) já gravou status="error" com a
+        # mensagem "Cancelado pelo usuário."; aqui só limpa o workdir da montagem e
+        # NÃO toca status/error (senão sobrescreveria a mensagem original). A fonte
+        # (job["local_path"]) fica intacta, igual o caminho de erro genérico abaixo.
+        log.info("[cancel] job %s cancelado durante a montagem; encerrando e limpando workdir", job_id)
+        shutil.rmtree(workdir, ignore_errors=True)
     except Exception as e:
         log.warning("[compose] job %s falhou: %s", job_id, e)
         db.update_job(job_id, status="error", error=f"montagem falhou: {e}")

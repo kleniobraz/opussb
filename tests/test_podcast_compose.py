@@ -177,6 +177,54 @@ def test_compose_monta_com_emendas_continuas_e_anullsrc(tmp_path, s3_falso):
     assert not os.path.exists(os.path.join(config.JOB_DIR, jid))
 
 
+# ─── Cancelamento cooperativo (bug real: _compose não checava, ressuscitava "done") ──
+
+def test_compose_cancelado_apos_upload_nao_sobrescreve_status(tmp_path, s3_falso, mocker):
+    """Cenário do bug: o cancelamento (POST /cancel) chega EXATAMENTE no intervalo entre
+    o upload caro do final.mp4 terminar e o registro em DB avançar pra 'done'. O checkpoint
+    _check_cancel imediatamente antes da linha do status="done" tem que pegar isso: o
+    upload já feito não é desperdiçado, mas o job NÃO pode virar "done" nem perder a
+    mensagem original "Cancelado pelo usuário." (regressão que o except _Cancelled evita)."""
+    jid = _job_pronto(tmp_path, s3_falso, job_id="TEST-compose-cancel-upload")
+    db.update_job(jid, status="montando")
+    final_key = f"jobs/{jid}/podcast/final.mp4"
+
+    def _upload_e_cancela(local, key):
+        dst = tmp_path / ("up_" + key.replace("/", "_"))
+        shutil.copyfile(local, dst)
+        s3_falso["uploads"][key] = str(dst)
+        if key == final_key:
+            db.update_job(jid, status="error", error="Cancelado pelo usuário.")
+
+    mocker.patch("s3_client.upload_file", side_effect=_upload_e_cancela)
+
+    podcast_compose.run_podcast_compose(jid)
+
+    job = db.get_job(jid)
+    assert job["status"] == "error"
+    assert job["error"] == "Cancelado pelo usuário."          # não "montagem falhou: ..."
+    assert job["podcast_final_key"] is None                   # a linha do "done" nunca rodou
+    assert final_key in s3_falso["uploads"]                    # upload caro não foi refeito nem perdido
+    assert os.path.exists(job["local_path"])                   # regra 7: fonte preservada
+    assert not os.path.exists(os.path.join(config.JOB_DIR, jid, "compose"))
+
+
+def test_compose_cancelado_antes_do_corte_nao_roda_ffmpeg(tmp_path, s3_falso, mocker):
+    """Cancelamento chega ANTES até do primeiro ffmpeg (corte do gancho): a thread tem
+    que parar cedo, não gastar CPU/tempo processando um job já cancelado."""
+    jid = _job_pronto(tmp_path, s3_falso, job_id="TEST-compose-cancel-cedo")
+    db.update_job(jid, status="error", error="Cancelado pelo usuário.")
+
+    espiao = mocker.patch("podcast_compose._run_ffmpeg")
+
+    podcast_compose.run_podcast_compose(jid)
+
+    espiao.assert_not_called()
+    job = db.get_job(jid)
+    assert job["status"] == "error" and job["error"] == "Cancelado pelo usuário."
+    assert not os.path.exists(os.path.join(config.JOB_DIR, jid, "compose"))
+
+
 def test_compose_falha_preserva_fonte_e_vira_error(tmp_path, s3_falso):
     jid = _job_pronto(tmp_path, s3_falso, job_id="TEST-compose-err")
     db.update_job(jid, hook_choice=json.dumps({"index": 0, "start": 2.0, "end": 999.0}))
