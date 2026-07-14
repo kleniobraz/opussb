@@ -10,9 +10,8 @@ opussb.db-shm
 *.egg-info/
 .pytest_cache/
 yolov8n.pt
-# Fontes Inter (4MB de binário) e o .prtextstyle: já instaladas na VPS e
-# documentadas na memória do projeto. Fora do repo pra mantê-lo leve.
-FONTE INTER/
+# A fonte Inter Medium (queima de legenda) agora é rastreada em fonts/inter/ (ver
+# setup_vps.sh); ficar fora do git foi o que causou ela sumir na migração Hetzner->Hostinger.
 *.prtextstyle
 
 # Cookies do YouTube (yt-dlp) - NUNCA commitar

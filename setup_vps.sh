@@ -40,6 +40,19 @@ echo "==> Installing pip dependencies from /opt/opussb/requirements.txt..."
 echo "==> Verifying installed packages..."
 /opt/opussb/venv/bin/python -c "import flask, boto3, cv2, ultralytics; print('VPS setup OK')"
 
+echo "==> Installing Inter Medium font (legenda queimada, captions.py FONT_NAME)..."
+# Rastreada no repo (fonts/inter/) desde 2026-07-14: ficar fora do git foi o que causou ela
+# sumir na migracao Hetzner->Hostinger (asset manual, ninguem lembrou de copiar). Idempotente.
+if [ -f /opt/opussb/fonts/inter/Inter-Medium.ttf ]; then
+    install -d -m 755 /usr/local/share/fonts/inter
+    cp /opt/opussb/fonts/inter/Inter-Medium.ttf /usr/local/share/fonts/inter/
+    fc-cache -f >/dev/null
+    echo "Fonte Inter Medium instalada em /usr/local/share/fonts/inter/."
+else
+    echo "AVISO: /opt/opussb/fonts/inter/Inter-Medium.ttf nao encontrado; legenda queimada vai" >&2
+    echo "cair no fallback de fonte generica do sistema ate isso ser resolvido." >&2
+fi
+
 echo "==> Initialising git repository in /opt/opussb/ (if not already)..."
 if [ ! -d /opt/opussb/.git ]; then
     git -C /opt/opussb init

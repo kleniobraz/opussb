@@ -181,8 +181,12 @@ antigos podem ter só a string da chave; o código trata os dois).
 
 **Estilo SB** (extraído de um `.prtextstyle` do Premiere + painel): fonte **Inter
 Medium** (substitui SF Pro Display, que é proprietária Apple e não pode ir pro
-Linux; Inter instalada em `/usr/local/share/fonts/inter`), **tamanho 70**, **uma
-linha só** sempre, branco, **glow** escuro (halo, simula a sombra blur 155 do
+Linux; arquivo rastreado em `fonts/inter/Inter-Medium.ttf` no repo, licença SIL
+OFL, instalado em `/usr/local/share/fonts/inter` pelo `setup_vps.sh`. **Histórico
+2026-07-14**: por ficar fora do git de propósito, essa fonte sumiu na migração
+Hetzner→Hostinger sem ninguém notar até a legenda queimada sair em DejaVu Sans
+de fallback; passou a ser versionada exatamente pra não repetir isso), **tamanho
+70**, **uma linha só** sempre, branco, **glow** escuro (halo, simula a sombra blur 155 do
 Premiere), tracking apertado, posição alta. Tudo em constantes no topo de
 `captions.py` (`FONT_SIZE`, `TRACKING_PX`, `MARGIN_V`, `GLOW_*`, `MAX_LINES=1`).
 **Armadilha**: o **libass ignora o campo `Spacing` do estilo .ass**; o aperto entre
