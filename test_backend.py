@@ -954,19 +954,40 @@ def test_keyframes_seed():
     check(reframe_core.keyframes_from_trajectory([], 30, 1920, 608) is None, "trajetoria vazia -> None")
 
 
+def test_keyframes_seed_plano_parado_colapsa():
+    print("[keyframe seed: plano parado colapsa pra so borda/corte (Fix 3b)]")
+    import reframe_core
+    # trajetoria totalmente PARADA (zona morta segurando, sem pan real), sem corte: antes do Fix 3b
+    # isso viraria 1 keyframe a cada interval_s (uma escadinha de saltos artificiais quando
+    # reconstruida pelo modo segura-e-salta, Fix 3a); com o filtro de distancia minima
+    # (_SEED_MIN_DELTA_FRAC), so sobra borda (frame 0 e ultimo frame).
+    width, crop_w, fps, n = 1920, 608, 30.0, 90
+    per = [300] * n
+    out = reframe_core.keyframes_from_trajectory(per, fps, width, crop_w, cuts=None, interval_s=0.75)
+    check(out is not None and len(out["kf"]) == 2, "plano parado -> so 2 keyframes (inicio e fim)")
+    check(out["kf"][0]["t"] == 0.0 and out["kf"][-1]["t"] == round((n - 1) / fps, 3),
+          "keyframes sao exatamente a borda (frame 0 e ultimo frame)")
+
+
 def test_rerender_keyframes():
-    print("[crop re-render: interpolacao + validacao + rota PUT/GET (Fase 2a)]")
+    print("[crop re-render: segura-e-salta + validacao + rota PUT/GET (Fase 2a, Fix 3)]")
     import db, json as _json, s3_client, reframe_core
     from werkzeug.security import generate_password_hash
 
-    # 1) trajectory_from_keyframes: round-trip aproximado com keyframes_from_trajectory
-    width, crop_w, fps, n = 1920, 608, 30.0, 90
-    per = [round(i * (width - crop_w) / (n - 1)) for i in range(n)]   # pan linear esq->dir
-    kf = reframe_core.keyframes_from_trajectory(per, fps, width, crop_w, cuts=[], interval_s=0.5)
-    dense = reframe_core.trajectory_from_keyframes(kf["kf"], fps, n, width, crop_w)
+    # 1) trajectory_from_keyframes: SEGURA E SALTA (nao interpola linearmente, decisao do Klenio).
+    # Regra: o valor em vigor no frame f e o do keyframe pts[j] tal que pts[j].t <= f < pts[j+1].t;
+    # no frame EXATO do proximo keyframe o valor ja virou o novo, sem transicao gradual no meio.
+    width, crop_w, fps, n = 1920, 608, 30.0, 60
+    half = crop_w / 2.0
+    kf = [{"t": 0.0, "cx": 0.2}, {"t": 1.0, "cx": 0.6}]   # 2 keyframes, 1s (30 frames) de distancia
+    left0 = int(round(0.2 * width - half))
+    left1 = int(round(0.6 * width - half))
+    dense = reframe_core.trajectory_from_keyframes(kf, fps, n, width, crop_w)
     check(len(dense) == n, "trajectory_from_keyframes devolve 1 valor por frame")
-    err = max(abs(dense[i] - per[i]) for i in range(n))
-    check(err <= 3, f"round-trip keyframes<->trajetoria fiel (err max {err}px <= 3 num pan linear)")
+    check(dense[0] == left0, "segura o valor do 1o keyframe a partir do frame 0")
+    check(dense[29] == left0, "segura o valor do 1o keyframe ATE o frame anterior ao 2o (29 < 30)")
+    check(dense[30] == left1, "salta pro 2o keyframe EXATAMENTE no frame dele (30), sem gradual")
+    check(dense[59] == left1, "segura o valor do ultimo keyframe ate o fim")
     check(all(0 <= v <= width - crop_w for v in dense), "trajetoria clampada a [0, width-crop_w]")
     # lista vazia -> corte central fixo
     cen = reframe_core.trajectory_from_keyframes([], fps, 5, width, crop_w)
@@ -1268,7 +1289,8 @@ def main():
               test_validate_segments, test_parse_clips_json,
               test_captions_roundtrip, test_words_for_clip, test_caption_style, test_youtube_helpers,
               test_snap_clip_bounds, test_thumbnail, test_clip_window, test_download_all, test_end_screen,
-              test_crop_keyframe, test_keyframes_seed, test_rerender_keyframes, test_rerender_gpu,
+              test_crop_keyframe, test_keyframes_seed, test_keyframes_seed_plano_parado_colapsa,
+              test_rerender_keyframes, test_rerender_gpu,
               test_sessions_helpers, test_sessions_ownership, test_sessions_flow,
               test_sessions_extra, test_admin_delete, test_admin_maintenance):
         t()

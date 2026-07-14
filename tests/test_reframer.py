@@ -135,7 +135,11 @@ def test_trajetoria_travada_segue_devagar():
     # Parado em 500, salta pra 1100 no frame 45 e a amostra seguinte (frame 60) CONFIRMA a nova
     # posição (debounce de 2 amostras novas pra mover, ver _PAN_DEBOUNCE): sem a 2a amostra em 1100
     # essa leitura seria tratada como ruído isolado (test_pan_debounce_ignora_leitura_isolada).
-    samples = [(0, 500), (45, 1100), (60, 1100)]
+    # Amostras intermediárias (15, 30) em 500 mantidas de propósito (densidade real de
+    # sample_camera, uma amostra por sample_every): a semeadura por MEDIANA (Fix 1, _SEED_ROBUST_N)
+    # usa as 3 primeiras entradas de `valid`; sem essas intermediárias, a mediana pegaria (500, 1100,
+    # 1100) = 1100, e o teste pararia de validar o que se propõe (começar travado em 500).
+    samples = [(0, 500), (15, 500), (30, 500), (45, 1100), (60, 1100)]
     out = reframe_core.build_locked_trajectory(samples, total_frames=75, fps=30.0,
                                                width=1920, crop_w=600, center_x=660,
                                                deadzone_frac=0.35, max_pan_frac=0.18)
@@ -166,6 +170,22 @@ def test_pan_debounce_direcao_oposta_nao_confirma():
                                                width=1920, crop_w=600, center_x=660,
                                                deadzone_frac=0.35, max_pan_frac=0.18)
     assert all(v == 200 for v in out)   # excesso p/ direita (30) e p/ esquerda (45): não confirmam
+
+
+# Test 6d (Fix 1): semeadura por MEDIANA. A 1a amostra do plano é um outlier ISOLADO (reproduz o
+# bug real do corte de 167s: braço do convidado esticado pra pegar uma taça contamina a caixa do
+# YOLO só na 1a amostra), e as amostras seguintes já são consistentes numa posição diferente. A
+# câmera deve semear pela mediana (posição consistente), não pela 1a leitura isolada.
+def test_locked_segment_seed_mediana_ignora_outlier_isolado():
+    samples = [(0, 500), (15, 900), (30, 900), (45, 900), (60, 900)]
+    out = reframe_core.build_locked_trajectory(samples, total_frames=75, fps=30.0,
+                                               width=1920, crop_w=600, center_x=660,
+                                               deadzone_frac=0.35, max_pan_frac=0.18)
+    # mediana de (500, 900, 900) = 900: nasce direto na posição consistente (900-300=600), sem
+    # precisar corrigir depois (diferente do bug antigo, que semeava em 500-300=200 e ficava preso
+    # ali por várias amostras até a zona morta finalmente estourar).
+    assert out[0] == 600
+    assert all(v == 600 for v in out)
 
 
 # Test 7: detect_people devolve todas as pessoas (conf, cx, w) ordenadas por cx (esq -> dir)
@@ -215,8 +235,10 @@ def test_cuts_from_kinds_debounce():
 
 # Test 8: trajetória SEGMENTADA por corte — re-adquire o sujeito do novo plano (não arrasta)
 def test_trajetoria_reacquire_no_corte():
-    # Plano A: sujeito em 500 (frame 0). Plano B (após corte no frame 45): sujeito em 1400.
-    samples = [(0, 500), (45, 1400)]
+    # Plano A: sujeito em 500 (frames 0, 15, 30). Plano B (após corte no frame 45): sujeito em 1400.
+    # Amostras intermediárias (15, 30) mantidas de propósito, mesma razão do teste acima (densidade
+    # real pra semeadura por MEDIANA do Fix 1 não confundir 1 amostra isolada com a maioria).
+    samples = [(0, 500), (15, 500), (30, 500), (45, 1400)]
     sem = reframe_core.build_locked_trajectory(samples, 90, 30.0, 1920, 600, 660, 0.35, 0.18)
     com = reframe_core.build_locked_trajectory(samples, 90, 30.0, 1920, 600, 660, 0.35, 0.18, cuts=[45])
     # sem corte: a amostra do frame 45 é a ÚLTIMA do segmento (sem "amostra seguinte" pra confirmar
@@ -282,3 +304,59 @@ def test_deteccao_mesmo_kind_so_por_diff():
     merged = reframe_core._merge_cuts(reframe_core._cuts_from_kinds(kinds),
                                       reframe_core._cuts_from_diff(diffs), min_gap=15)
     assert merged == [45]                                       # diff fecha o buraco
+
+
+# Test 16 (Fix 2): _kind_cuts_confirmed_by_diff. Corte por TIPO sem NENHUM respaldo no diff numa
+# janela ao redor do candidato é descartado. Reproduz o bug real de 118,25s: a contagem do YOLO
+# oscilou (wide -> close) só porque a mão/celular do outro participante entrou no canto do quadro,
+# sem NENHUMA troca de câmera (o diff medido nesse trecho real não passou de 0,028).
+def test_kind_cuts_confirmed_by_diff_descarta_sem_respaldo():
+    diffs = [(f, 0.02) for f in range(0, 200, 15)]   # "chão": nada passa de 0.06 na janela toda
+    assert reframe_core._kind_cuts_confirmed_by_diff([90], diffs, window=15, threshold=0.06) == []
+
+
+# Test 17 (Fix 2): _kind_cuts_confirmed_by_diff. Corte por TIPO com diff alto por perto é MANTIDO
+# (a corroboração não pode quebrar a detecção de um corte real por tipo).
+def test_kind_cuts_confirmed_by_diff_mantem_com_respaldo():
+    diffs = [(75, 0.02), (90, 0.19), (105, 0.02)]   # pico real bem na janela do candidato (90)
+    assert reframe_core._kind_cuts_confirmed_by_diff([90], diffs, window=15, threshold=0.06) == [90]
+
+
+# Test 18 (Fix 2): pipeline completo (kind + corroboração + diff), na mesma composição de
+# sample_camera. Corte FALSO por tipo (sem respaldo no diff, kind oscila wide->close->wide de
+# volta, como o bug real de 118,25s: AMBAS as bordas da oscilação são candidatas) some da união;
+# corte só-por-diff (kind igual dos dois lados, o caso que motivou _cuts_from_diff) continua
+# funcionando sozinho, sem precisar de corroboração nenhuma.
+def test_merge_cuts_com_corroboracao_pipeline():
+    kinds = [(0, "close"), (15, "close"), (30, "close"),
+             (45, "wide"), (60, "wide"), (75, "wide"),          # oscilação (sem corte real)
+             (90, "close"), (105, "close"), (120, "close"),
+             (135, "close"), (150, "close"), (165, "close")]     # corte real em 150: kind NÃO muda
+    diffs = [(15, 0.01), (30, 0.02), (45, 0.02), (60, 0.02), (75, 0.02),
+             (90, 0.02), (105, 0.02), (120, 0.02),
+             (135, 0.02), (150, 0.70), (165, 0.02)]
+    cuts_kind = reframe_core._cuts_from_kinds(kinds)
+    assert cuts_kind == [45, 90]     # geometria com debounce acha as 2 bordas da oscilação (falsas)
+    confirmed = reframe_core._kind_cuts_confirmed_by_diff(cuts_kind, diffs, window=15, threshold=0.06)
+    assert confirmed == []            # nenhuma das 2 tem respaldo no diff -> descartadas
+    cuts_diff = reframe_core._cuts_from_diff(diffs, threshold=0.09, min_gap=15)
+    assert cuts_diff == [150]         # corte real, só visível pelo diff (kind não mudou)
+    merged = reframe_core._merge_cuts(confirmed, cuts_diff, min_gap=15)
+    assert merged == [150]            # oscilação falsa sumiu; corte real por diff continua
+
+
+# Test 19 (Fix 2, achado do code-review): uma amostra de diff RESIDUAL de um corte real ja
+# registrado (alta o bastante pra corroborar sozinha, mas nao o bastante pra virar seu proprio corte
+# por causa do min_gap) nao pode "emprestar" corroboracao pra um candidato de tipo diferente e nao
+# relacionado. Sem `exclude_near`, o residuo em 120 (0.08, acima do limiar secundario 0.06 mas
+# absorvido pelo min_gap do corte real de 105) confirmaria por engano o candidato 135, fragmentando
+# um plano continuo logo apos um corte real de verdade em 2 pedacos.
+def test_kind_cuts_confirmed_by_diff_nao_usa_residuo_de_corte_ja_registrado():
+    diffs = [(90, 0.02), (105, 0.70), (120, 0.08), (135, 0.02)]
+    cuts_diff = reframe_core._cuts_from_diff(diffs, threshold=0.09, min_gap=15)
+    assert cuts_diff == [105]     # so o corte real; o residuo em 120 fica absorvido pelo min_gap
+    sem_exclusao = reframe_core._kind_cuts_confirmed_by_diff([135], diffs, window=15, threshold=0.06)
+    assert sem_exclusao == [135]   # confirma o vazamento: sem a exclusao, 135 seria aceito por engano
+    com_exclusao = reframe_core._kind_cuts_confirmed_by_diff([135], diffs, window=15, threshold=0.06,
+                                                             exclude_near=cuts_diff)
+    assert com_exclusao == []      # com a exclusao (uso real em sample_camera), 135 e descartado

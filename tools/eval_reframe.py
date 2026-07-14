@@ -74,7 +74,9 @@ def analyze(video_path: str, model, *, start_s: float, end_s: float,
 def recompute_cuts(cam: dict, *, threshold: float, sample_every: int) -> dict:
     cuts_kind = reframe_core._cuts_from_kinds(cam["kinds"])
     cuts_diff = reframe_core._cuts_from_diff(cam["diffs"], threshold=threshold, min_gap=sample_every)
-    cuts = reframe_core._merge_cuts(cuts_kind, cuts_diff, sample_every)
+    cuts_kind_confirmed = reframe_core._kind_cuts_confirmed_by_diff(cuts_kind, cam["diffs"], sample_every,
+                                                                    exclude_near=cuts_diff)
+    cuts = reframe_core._merge_cuts(cuts_kind_confirmed, cuts_diff, sample_every)
     return {"cuts_kind": cuts_kind, "cuts_diff": cuts_diff, "cuts": cuts}
 
 

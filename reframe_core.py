@@ -6,6 +6,7 @@ Depende só de cv2/numpy/ffmpeg (NÃO importa ultralytics: o modelo YOLO entra c
 ambiente carrega o seu)."""
 import os
 import shutil
+import statistics
 import subprocess
 import tempfile
 import cv2
@@ -66,6 +67,21 @@ _CUT_DEBOUNCE = 3
 # sem atrasar demais o acompanhamento de movimento real (que se confirma na amostra seguinte).
 _PAN_DEBOUNCE = 2
 
+# Quantas amostras INICIAIS do plano entram na MEDIANA que semeia a posição de partida da câmera
+# (em vez da primeira amostra isolada). Motivação (bug real medido no corte de 167s, frame 10020,
+# neste mesmo vídeo de calibração): o convidado esticava o braço pra pegar uma taça de vinho bem no
+# instante da primeira amostra do plano; a caixa do YOLO incluiu o braço, deslocando o centro
+# geométrico (870px) pra longe da posição estável do rosto (~965-990px); a zona morta então TRAVA
+# esse valor contaminado, porque protege a semente de qualquer correção (simulado: preso de 167.0s
+# até ~169.6s, quase 2,6s, até a deriva das amostras seguintes finalmente estourar a zona morta). A
+# mediana das primeiras `_SEED_ROBUST_N` amostras dilui uma leitura isolada ruim sem atrasar demais a
+# resposta a um enquadramento genuinamente diferente logo no início do plano (com N=3, um outlier
+# isolado nunca vence a mediana; dois valores concordantes sim, o que é o comportamento certo). Caso
+# degenerado: um plano com só 1 ou 2 amostras válidas no total usa o que tiver (`statistics.median`
+# de 2 valores é a média dos dois, então um outlier isolado ainda pesa metade ali); não há proteção
+# adicional pra planos tão curtos, é só o melhor que dá pra fazer com pouco dado.
+_SEED_ROBUST_N = 3
+
 # Troca de câmera por DIFF DE QUADRO INTEIRO (pega o que a geometria não vê: dois planos do MESMO
 # kind, ex. close-host -> close-convidado, onde a contagem de pessoas não muda). Mesma receita do
 # caption_sampler.py (mesmo projeto, já validado em produção pro Revisor de legendas): reduz a um
@@ -83,6 +99,47 @@ _CUT_DIFF_THRESHOLD = 0.09
 # ele vazar pra amostra adjacente numa transição mais lenta que o gap (unidade: FRAMES, não amostras;
 # comparável a sample_every).
 _CUT_DIFF_MIN_GAP_FRAMES = 15
+# Diff mínimo (mais baixo que _CUT_DIFF_THRESHOLD acima) que uma amostra numa janela ao redor de um
+# corte candidato de `_cuts_from_kinds` precisa alcançar pra o corte ser aceito como corroborado.
+# Motivação (bug real medido no mesmo vídeo de calibração, frame 7095, t=118.25s): a contagem de
+# pessoas do YOLO oscilou (wide, 2 pessoas -> close, 1 pessoa) só porque a mão/celular do outro
+# participante entrou no canto do quadro por ~4,75s, sem NENHUMA troca de câmera real (fundo idêntico
+# antes/depois, confirmado visualmente extraindo os frames); isso persistiu além do debounce de
+# `_cuts_from_kinds` (3 amostras) e virou corte falso. Medido: o diff nessa janela não passa de 0.028.
+# Já todo corte real de câmera nesse vídeo mede >= 0.187 (ver _CUT_DIFF_THRESHOLD). 0.06 fica bem no
+# meio do vão entre o "chão" (<=0.0445) e um corte real (>=0.187), sem tocar nenhuma das duas
+# distribuições. Só vale pra corte por TIPO: `_cuts_from_diff` já É o próprio pico, não precisa de
+# corroboração de outra fonte.
+_CUT_KIND_DIFF_MIN = 0.06
+
+
+def _kind_cuts_confirmed_by_diff(kind_cuts: list, diffs: list, window: int,
+                                 threshold: float = _CUT_KIND_DIFF_MIN,
+                                 exclude_near: list | None = None) -> list:
+    """Filtra os cortes candidatos de `_cuts_from_kinds` que não têm NENHUM respaldo no diff de
+    quadro inteiro numa janela `+/- window` (frames) ao redor do candidato (ver `_CUT_KIND_DIFF_MIN`
+    pro raciocínio). `window` comparável a `sample_every` (mesma unidade: frames). Um corte por tipo
+    sem nenhum pico de diff por perto é suspeito de ser oscilação de contagem do YOLO, não troca de
+    câmera de verdade.
+
+    `exclude_near` (achado do code-review, caso real construído a partir dos dados de calibração):
+    os cortes JÁ REGISTRADOS por `_cuts_from_diff` (passe a lista completa, não filtre antes). Uma
+    amostra de diff pode ficar elevada (acima de `threshold`, abaixo de `_CUT_DIFF_THRESHOLD`) logo
+    depois de um corte real sem virar seu PRÓPRIO corte (o `min_gap` de `_cuts_from_diff` a absorve
+    no corte anterior). Sem excluir essa amostra "residual" da busca, ela pode corroborar um
+    candidato de TIPO completamente diferente e não relacionado que caia perto dela, fragmentando um
+    plano contínuo em dois logo após um corte real de verdade. Uma amostra dentro de `window` de
+    qualquer corte em `exclude_near` não conta como respaldo pra nenhum outro candidato."""
+    exclude_near = exclude_near or []
+
+    def _has_support(c):
+        for f, d in diffs:
+            if abs(f - c) <= window and d > threshold:
+                if not any(abs(f - e) <= window for e in exclude_near):
+                    return True
+        return False
+
+    return [c for c in kind_cuts if _has_support(c)]
 
 
 def _merge_boxes(people: list, width: int) -> list:
@@ -205,7 +262,7 @@ def _locked_segment(samples: list, total_frames: int, fps: float,
     (não frames: uma amostra fica "held" por ~sample_every frames, contar por frame tornaria o
     debounce inútil), pra uma leitura isolada ruidosa do YOLO não deslizar o crop sozinha (duas
     amostras excedendo em LADOS OPOSTOS não confirmam uma a outra). EXCEÇÃO: a ÚLTIMA amostra válida
-    do segmento não tem uma "amostra seguinte" pra confirmar (o plano acaba ali) - esperar por uma
+    do segmento não tem uma "amostra seguinte" pra confirmar (o plano acaba ali). Esperar por uma
     confirmação que nunca vai chegar só perderia o movimento pra sempre, então ela é tratada como
     já confirmada (comportamento igual ao de antes do debounce, só na cauda do plano)."""
     if total_frames <= 0:
@@ -231,7 +288,9 @@ def _locked_segment(samples: list, total_frames: int, fps: float,
     max_step = max(1.0, max_pan_frac * crop_w / max(fps, 1.0))
     half_w = crop_w / 2.0
     lo, hi = half_w, max(half_w, width - half_w)
-    cc = min(max(desired[0], lo), hi)
+    seed_n = min(_SEED_ROBUST_N, len(valid))
+    seed_cx = statistics.median(cx for _, cx in valid[:seed_n])
+    cc = min(max(seed_cx, lo), hi)
     out = np.empty(total_frames, dtype=float)
     last_valid_idx = len(valid) - 1
     streak = 0
@@ -313,9 +372,12 @@ def sample_camera(cap, model, width: int, *, min_conf: float, detect_cuts: bool 
     cenário): após FUNDIR caixas duplicadas (_merge_boxes), a CONTAGEM diz close (1, enquadra nela) /
     plano aberto (2+, default = convidado à direita, segurando quando ele some um frame) / vazio (0,
     cai pro centro). As trocas de câmera saem da UNIÃO de duas fontes (_merge_cuts): o histórico de
-    tipos com DEBOUNCE (_cuts_from_kinds, pra não picar no ruído do YOLO) e o diff de quadro inteiro
-    (_cuts_from_diff, pega troca de câmera que a contagem não vê: dois planos do MESMO kind).
-    detect_cuts=False desliga as duas (cuts sempre []). `max_frame` corta a varredura cedo (a
+    tipos com DEBOUNCE (_cuts_from_kinds, pra não picar no ruído do YOLO), MAS só depois de exigir
+    corroboração no diff (_kind_cuts_confirmed_by_diff: um corte por tipo sem NENHUM pico de diff por
+    perto é oscilação de contagem, não troca de câmera real), e o diff de quadro inteiro
+    (_cuts_from_diff, pega troca de câmera que a contagem não vê: dois planos do MESMO kind, esses
+    não precisam de corroboração, já são o próprio pico). detect_cuts=False desliga as duas (cuts
+    sempre []). `max_frame` corta a varredura cedo (a
     ferramenta de avaliação usa isso pra iterar rápido num trecho, sem decodificar o vídeo inteiro);
     None (produção) varre até o fim. `frame_idx` começa da posição ATUAL do cap, então também
     funciona se o chamador já deu seek. Extraída de reframe_to_file pra ser reaproveitada por
@@ -345,9 +407,13 @@ def sample_camera(cap, model, width: int, *, min_conf: float, detect_cuts: bool 
     if detect_cuts:
         cuts_kind = _cuts_from_kinds(kinds)
         cuts_diff = _cuts_from_diff(diffs)
-        cuts = _merge_cuts(cuts_kind, cuts_diff, sample_every)
+        cuts_kind_confirmed = _kind_cuts_confirmed_by_diff(cuts_kind, diffs, sample_every,
+                                                           exclude_near=cuts_diff)
+        cuts = _merge_cuts(cuts_kind_confirmed, cuts_diff, sample_every)
     else:
         cuts_kind, cuts_diff, cuts = [], [], []
+    # cuts_kind fica CRU (sem o filtro de corroboração) de propósito: é o valor de diagnóstico
+    # "comportamento antigo" que tools/eval_reframe.py usa pra comparar antes/depois.
     return {"samples": samples, "kinds": kinds, "diffs": diffs,
             "cuts_kind": cuts_kind, "cuts_diff": cuts_diff, "cuts": cuts}
 
@@ -394,12 +460,28 @@ def reframe_to_file(input_path: str, output_path: str, model, *,
     return {"per_frame_cx": per_frame_cx, "fps": fps, "width": width, "crop_w": crop_w, "cuts": cuts}
 
 
+# Distância mínima (fração da largura) que um candidato de amostragem por INTERVALO precisa ter se
+# afastado do último keyframe EFETIVAMENTE mantido pra virar keyframe de fato, em
+# keyframes_from_trajectory. Motivo: desde o Fix 3 (trajectory_from_keyframes passou a SEGURAR E
+# SALTAR, não mais interpolar), um plano com a câmera parada (zona morta segurando, sem pan real)
+# reconstruído a partir de keyframes densos viraria uma escadinha de saltos artificiais a cada
+# interval_s (simulado: um pan de 200px em 3,75s virava 5 degraus de 40px cada quando a amostragem
+# por intervalo não tinha esse filtro). 0,015 (1,5% da largura, ~29px numa fonte 1920px) é pequeno o
+# bastante pra não descartar pan real que o usuário quer ver, e grande o bastante pra colapsar um
+# plano parado pra só os keyframes de borda/corte.
+_SEED_MIN_DELTA_FRAC = 0.015
+
+
 def keyframes_from_trajectory(per_frame_cx: list, fps: float, width: int, crop_w: int,
                               cuts: list | None = None, interval_s: float = 0.75) -> dict | None:
     """Reduz a trajetória auto (per_frame_cx = BORDA ESQUERDA do recorte em px) a uma lista ESPARSA de
     keyframes {t (s), cx (CENTRO horizontal, fração 0..1 da largura)}, pra semear o modo manual do
-    editor de crop (BACKEND §33). Amostra a cada interval_s + ancora nos cortes de câmera (degrau
-    quase instantâneo: frame anterior + frame do corte). cx em fração = resolução-independente. Devolve
+    editor de crop (BACKEND §33). Sempre mantém o frame 0, o último frame e as âncoras de CORTE (frame
+    anterior + frame do corte, preserva o degrau quase instantâneo). Os candidatos de amostragem por
+    INTERVALO (a cada interval_s) só viram keyframe se a posição tiver se afastado o suficiente
+    (_SEED_MIN_DELTA_FRAC) do último keyframe EFETIVAMENTE mantido, não do último candidato (ver
+    motivação na constante acima: sem isso, o modo manual segura-e-salta (Fix 3a) reconstruiria até um
+    plano parado como uma escadinha de saltos). cx em fração = resolução-independente. Devolve
     {"mode":"auto","kf":[...]} ou None se a trajetória for vazia/inválida."""
     n = len(per_frame_cx or [])
     if n == 0 or width <= 0 or crop_w <= 0:
@@ -411,13 +493,25 @@ def keyframes_from_trajectory(per_frame_cx: list, fps: float, width: int, crop_w
         f = max(0, min(f, n - 1))
         return round((per_frame_cx[f] + half) / width, 4)
 
-    idxs = set(range(0, n, max(1, int(round(interval_s * fps)))))
-    idxs.add(n - 1)
+    mandatory = {0, n - 1}
     for c in (cuts or []):
         if 0 < c < n:
-            idxs.add(c - 1)   # último frame do plano anterior
-            idxs.add(c)        # primeiro frame do novo plano (preserva o "degrau" do corte)
-    kf = [{"t": round(f / fps, 3), "cx": cx_frac(f)} for f in sorted(idxs)]
+            mandatory.add(c - 1)   # último frame do plano anterior
+            mandatory.add(c)        # primeiro frame do novo plano (preserva o "degrau" do corte)
+
+    step = max(1, int(round(interval_s * fps)))
+    candidates = set(range(0, n, step)) - mandatory
+
+    idxs = []
+    last_kept_frac = None
+    for f in sorted(mandatory | candidates):
+        frac = cx_frac(f)
+        is_new = (f in mandatory or last_kept_frac is None
+                 or abs(frac - last_kept_frac) >= _SEED_MIN_DELTA_FRAC)
+        if is_new:
+            idxs.append(f)
+            last_kept_frac = frac
+    kf = [{"t": round(f / fps, 3), "cx": cx_frac(f)} for f in idxs]
     return {"mode": "auto", "kf": kf}
 
 
@@ -425,8 +519,11 @@ def trajectory_from_keyframes(kf_list: list, fps: float, total_frames: int,
                               width: int, crop_w: int) -> list:
     """Inverso de keyframes_from_trajectory: expande os keyframes esparsos {t (s), cx (CENTRO, fração
     0..1)} numa lista DENSA per_frame_cx (BORDA ESQUERDA do recorte em px), 1 valor por frame,
-    interpolando LINEARMENTE entre keyframes e segurando as pontas. cx fora de [0, width-crop_w] é
-    clampado (pan-only, sem zoom). Pura/testável. Lista vazia/invalida -> corte central fixo."""
+    SEGURA E SALTA entre keyframes (decisão do Klenio: o editor manual não desliza, o valor em vigor
+    no frame `f` é o do keyframe `pts[j]` tal que `pts[j].t <= f < pts[j+1].t`; no frame EXATO do
+    próximo keyframe o valor já virou o novo, sem interpolação linear no meio). Segura as pontas (antes
+    do primeiro e depois do último keyframe). cx fora de [0, width-crop_w] é clampado (pan-only, sem
+    zoom). Pura/testável. Lista vazia/inválida -> corte central fixo."""
     fps = fps or 30.0
     n = max(0, int(total_frames))
     half = crop_w / 2.0
@@ -445,24 +542,18 @@ def trajectory_from_keyframes(kf_list: list, fps: float, total_frames: int,
     out = []
     j = 0
     for f in range(n):
-        if f <= pts[0][0]:
-            out.append(pts[0][1]); continue
-        if f >= pts[-1][0]:
-            out.append(pts[-1][1]); continue
-        while j < len(pts) - 1 and pts[j + 1][0] < f:
+        while j < len(pts) - 1 and pts[j + 1][0] <= f:
             j += 1
-        fa, va = pts[j]
-        fb, vb = pts[j + 1]
-        frac = 0.0 if fb == fa else (f - fa) / (fb - fa)
-        out.append(int(round(va + (vb - va) * frac)))
+        out.append(pts[j][1])
     return out
 
 
 def reframe_with_keyframes(input_path: str, output_path: str, kf_list: list,
                            video_codec_args: list, subtitles: str | None = None) -> None:
     """Re-render 9:16 (1080x1920) a partir dos keyframes do usuario (crop por keyframe, BACKEND §33),
-    SEM YOLO: abre o 16:9 fonte so pra medir dims/fps/total_frames, interpola a trajetoria densa e
-    recorta horizontalmente (mesmo _pipe_encode do auto). Levanta em falha (o chamador decide)."""
+    SEM YOLO: abre o 16:9 fonte so pra medir dims/fps/total_frames, expande a trajetoria densa
+    (segura e salta, ver trajectory_from_keyframes) e recorta horizontalmente (mesmo _pipe_encode do
+    auto). Levanta em falha (o chamador decide)."""
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open video: {input_path}")
