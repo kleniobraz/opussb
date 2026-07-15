@@ -9,7 +9,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Check, Clapperboard, Download, Play, Square, Volume2 } from "lucide-react";
+import { Check, Clapperboard, Download, Play, Scissors, Square, Volume2 } from "lucide-react";
 import * as api from "@/lib/api";
 import { fmtHMS, fmtSeconds, nameFromEmail, timeAgo } from "@/lib/format";
 import { Button } from "@/components/ui/button";
@@ -90,6 +90,10 @@ export function HookApproval({ jobId }: { jobId: string }) {
   const [composing, setComposing] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [cutting, setCutting] = useState(false);
+  // Compartilhado pelos dois branches que oferecem o corte do início (uploaded e
+  // error-retry): só um deles renderiza por vez, então um estado só basta. Começa
+  // fechado (opção B): a ferramenta de corte só aparece quando o produtor escolhe cortar.
+  const [cortando, setCortando] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const stopAtRef = useRef<number | null>(null);
   const rafRef = useRef<number>(0);
@@ -354,21 +358,45 @@ export function HookApproval({ jobId }: { jobId: string }) {
             O corte do início falhou: {data.error || "erro desconhecido"}. O vídeo original
             continua íntegro no servidor.
           </p>
-          <Button variant="outline" disabled={transcribing} onClick={startTranscribe}>
-            <Clapperboard className="size-4" />
-            {transcribing ? "Disparando..." : "Pular e transcrever sem cortar"}
-          </Button>
-          <p className="text-sm text-muted-foreground">
-            Ou marque o ponto de novo abaixo (o ponto anterior pode estar perto de um
-            trecho sem keyframe pra cortar; tente um pouco antes ou depois):
-          </p>
-          {data.source_available ? (
-            <CorteInicio jobId={jobId} onConfirm={confirmCut} confirming={cutting} />
+
+          {!cortando ? (
+            <>
+              <p className="text-sm text-muted-foreground">
+                O ponto marcado pode ter caído perto de um trecho sem keyframe. Marque de
+                novo um pouco antes ou depois, ou pule sem cortar.
+              </p>
+
+              <div className="flex flex-wrap gap-3">
+                <Button
+                  size="lg"
+                  variant="outline"
+                  disabled={transcribing}
+                  onClick={startTranscribe}
+                >
+                  <Clapperboard className="size-4" />
+                  {transcribing ? "Disparando..." : "Pular e transcrever sem cortar"}
+                </Button>
+                <Button size="lg" variant="outline" onClick={() => setCortando(true)}>
+                  <Scissors className="size-4" />
+                  Cortar o início
+                </Button>
+              </div>
+            </>
           ) : (
-            <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-400">
-              O vídeo original não está mais no servidor; não dá pra marcar o corte de novo.
-              Envie o episódio de novo.
-            </p>
+            <>
+              <Button variant="ghost" size="sm" onClick={() => setCortando(false)}>
+                ← Escolher outra opção
+              </Button>
+
+              {data.source_available ? (
+                <CorteInicio jobId={jobId} onConfirm={confirmCut} confirming={cutting} />
+              ) : (
+                <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-400">
+                  O vídeo original não está mais no servidor; não dá pra marcar o corte de
+                  novo. Envie o episódio de novo.
+                </p>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -439,32 +467,52 @@ export function HookApproval({ jobId }: { jobId: string }) {
       <div className="view-pad">
         {cabecalho("aguardando transcrição")}
         <div className="max-w-2xl space-y-4">
-          <p className="text-sm text-muted-foreground">
-            O episódio foi enviado e está pronto pra transcrever. Se o vídeo começa com
-            timer, vinheta do estúdio de origem ou algo do tipo antes do conteúdo real,
-            marque abaixo onde o episódio realmente começa e corte essa abertura antes de
-            transcrever. Se já começa certo, pule direto.
-          </p>
+          {!cortando ? (
+            <>
+              <p className="text-sm text-muted-foreground">
+                Seu episódio tem uma abertura antes do conteúdo (timer, vinheta do
+                estúdio)? Marque onde ele começa de verdade e corte. Se já começa certo,
+                pule direto.
+              </p>
 
-          {data.intro_cut_at != null && (
-            <p className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-400">
-              Já foram cortados {fmtHMS(data.intro_cut_at)} do início deste episódio. Dá
-              pra cortar de novo se precisar ajustar, ou seguir direto pra transcrição.
-            </p>
-          )}
+              {data.intro_cut_at != null && (
+                <p className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-400">
+                  Já foram cortados {fmtHMS(data.intro_cut_at)} do início deste episódio. Dá
+                  pra cortar de novo se precisar ajustar, ou seguir direto pra transcrição.
+                </p>
+              )}
 
-          <Button variant="outline" disabled={transcribing} onClick={startTranscribe}>
-            <Clapperboard className="size-4" />
-            {transcribing ? "Disparando..." : "Pular, este episódio já começa certo"}
-          </Button>
-
-          {data.source_available ? (
-            <CorteInicio jobId={jobId} onConfirm={confirmCut} confirming={cutting} />
+              <div className="flex flex-wrap gap-3">
+                <Button
+                  size="lg"
+                  variant="outline"
+                  disabled={transcribing}
+                  onClick={startTranscribe}
+                >
+                  <Clapperboard className="size-4" />
+                  {transcribing ? "Disparando..." : "Pular, este episódio já começa certo"}
+                </Button>
+                <Button size="lg" variant="outline" onClick={() => setCortando(true)}>
+                  <Scissors className="size-4" />
+                  Cortar o início
+                </Button>
+              </div>
+            </>
           ) : (
-            <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-400">
-              O vídeo original não está mais no servidor; não dá pra marcar o corte. Pule
-              direto pra transcrição ou envie o episódio de novo.
-            </p>
+            <>
+              <Button variant="ghost" size="sm" onClick={() => setCortando(false)}>
+                ← Escolher outra opção
+              </Button>
+
+              {data.source_available ? (
+                <CorteInicio jobId={jobId} onConfirm={confirmCut} confirming={cutting} />
+              ) : (
+                <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-400">
+                  O vídeo original não está mais no servidor; não dá pra marcar o corte. Pule
+                  direto pra transcrição ou envie o episódio de novo.
+                </p>
+              )}
+            </>
           )}
         </div>
       </div>

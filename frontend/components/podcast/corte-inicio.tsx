@@ -22,7 +22,7 @@ const PREVIEW_LOOKBACK = 2;
 
 function SaltoBotao({ label, delta, onClick }: { label: string; delta: number; onClick: (d: number) => void }) {
   return (
-    <Button type="button" variant="outline" size="sm" onClick={() => onClick(delta)}>
+    <Button type="button" variant="ghost" size="sm" onClick={() => onClick(delta)}>
       {label}
     </Button>
   );
@@ -113,6 +113,7 @@ export function CorteInicio({
   }, []);
 
   const restante = dur != null ? Math.max(dur - cutAt, 0) : null;
+  const semCorte = cutAt <= 0; // armadilha do 0:00: confirmar aqui não corta nada
 
   return (
     <div className="space-y-4">
@@ -139,50 +140,60 @@ export function CorteInicio({
         />
         <div className="flex justify-between text-xs text-muted-foreground">
           <span>0:00</span>
-          <span>navegação grosseira: arraste pra chegar perto, ajuste fino abaixo</span>
+          <span>arraste pra chegar perto do ponto certo</span>
           <span>{dur != null ? fmtHMS(dur) : "..."}</span>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <SaltoBotao label="-1min" delta={-60} onClick={saltar} />
-          <SaltoBotao label="-10s" delta={-10} onClick={saltar} />
-          <Input
-            value={texto}
-            onChange={(e) => setTexto(e.target.value)}
-            onBlur={aplicarTexto}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") e.currentTarget.blur();
-            }}
-            className="w-24 text-center"
-            aria-label="Ponto de corte (H:MM:SS)"
-          />
-          <SaltoBotao label="+10s" delta={10} onClick={saltar} />
-          <SaltoBotao label="+1min" delta={60} onClick={saltar} />
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <Button type="button" variant="outline" size="sm" onClick={togglePlay} disabled={dur == null}>
-            {tocando ? <Pause className="size-4" /> : <Play className="size-4" />}
-            {tocando ? "Pausar" : `Ouvir a partir de ${PREVIEW_LOOKBACK}s antes`}
-          </Button>
-          <Button type="button" variant="outline" size="sm" onClick={() => moverPara(0)}>
-            Voltar pro início
-          </Button>
-        </div>
-
+        {/* Feedback + confirmar logo depois do slider: é a ação principal, não pode ficar
+            perdida atrás dos controles secundários de ajuste fino. */}
         <p className="text-sm">
-          Marcado em <span className="font-medium">{fmtHMS(cutAt)}</span>
-          {restante != null && (
-            <span className="ml-2 text-xs text-muted-foreground">
-              (restam {fmtHMS(restante)} de episódio depois do corte)
-            </span>
-          )}
+          {dur != null && restante != null
+            ? `Vou cortar os primeiros ${fmtHMS(cutAt)} e manter os ${fmtHMS(restante)} restantes do episódio.`
+            : "Carregando o vídeo..."}
         </p>
 
-        <Button disabled={!tocado || confirming} onClick={() => onConfirm(cutAt)}>
-          <Scissors className="size-4" />
-          {confirming ? "Cortando..." : `Confirmar corte em ${fmtHMS(cutAt)}`}
-        </Button>
+        <div className="space-y-1">
+          <Button disabled={!tocado || confirming || semCorte} onClick={() => onConfirm(cutAt)}>
+            <Scissors className="size-4" />
+            {confirming ? "Cortando..." : `Confirmar corte em ${fmtHMS(cutAt)}`}
+          </Button>
+          {tocado && semCorte && (
+            <p className="text-xs text-amber-400">
+              Marque um ponto depois do início pra cortar alguma coisa.
+            </p>
+          )}
+        </div>
+
+        {/* Ajuste fino: secundário de propósito (variant ghost, texto pequeno), a ação
+            principal é arrastar o marcador acima. */}
+        <div className="space-y-2 border-t border-border/50 pt-3">
+          <p className="text-xs text-muted-foreground">Ajuste fino</p>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <SaltoBotao label="-1min" delta={-60} onClick={saltar} />
+            <SaltoBotao label="-10s" delta={-10} onClick={saltar} />
+            <Input
+              value={texto}
+              onChange={(e) => setTexto(e.target.value)}
+              onBlur={aplicarTexto}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+              }}
+              className="w-24 text-center"
+              aria-label="Ponto de corte (H:MM:SS)"
+            />
+            <SaltoBotao label="+10s" delta={10} onClick={saltar} />
+            <SaltoBotao label="+1min" delta={60} onClick={saltar} />
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button type="button" variant="ghost" size="sm" onClick={togglePlay} disabled={dur == null}>
+              {tocando ? <Pause className="size-4" /> : <Play className="size-4" />}
+              {tocando ? "Pausar" : `Ouvir a partir de ${PREVIEW_LOOKBACK}s antes`}
+            </Button>
+            <Button type="button" variant="ghost" size="sm" onClick={() => moverPara(0)}>
+              Voltar pro início
+            </Button>
+          </div>
+        </div>
       </div>
     </div>
   );
