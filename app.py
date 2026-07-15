@@ -33,6 +33,7 @@ import captions
 import caption_reviewer
 import hooks
 import podcast_compose
+import podcast_cut
 
 # Logging pra stderr: print() no worker do gunicorn fica com buffer e some do
 # journalctl. Um handler próprio no logger "opussb" (sem propagar) garante log
@@ -3121,6 +3122,64 @@ def podcast_upload():
     return jsonify({"job_id": job_id, "status": "uploaded"}), 201
 
 
+@app.route("/api/podcast/<job_id>/cut-intro", methods=["POST"])
+@login_required
+def podcast_cut_intro_route(job_id):
+    """Corte manual do início do corpo bruto (§39 Parte 2), ANTES da transcrição: reencoda
+    só o pedacinho até o próximo keyframe e copia o resto em -c copy (nunca o corpo
+    inteiro). Disparo manual e explícito, mesma admissão atômica de podcast_transcribe
+    (reserva a vaga virando 'cortando_inicio' dentro do lock); o local_path do job só
+    troca em caso de sucesso confirmado (podcast_cut.py cuida disso na thread)."""
+    if not config.PODCAST_ENABLED:
+        return jsonify({"error": "Recurso indisponível."}), 404
+    user = db.get_user(session["user"])
+    if not user:
+        session.clear()
+        return jsonify({"error": "Sessão inválida.", "auth": False}), 401
+    job, err = _podcast_job_or_error(job_id)
+    if err:
+        return err
+    if job.get("user_email") != session["user"] and not user.get("is_admin"):
+        return jsonify({"error": "Este projeto é de outro usuário."}), 403
+
+    data = request.get_json(silent=True) or {}
+    cut_at = data.get("cut_at")
+    if not isinstance(cut_at, (int, float)) or isinstance(cut_at, bool) or cut_at < 0:
+        return jsonify({"error": "Informe um ponto de corte válido (cut_at, em segundos, >= 0)."}), 400
+    cut_at = float(cut_at)
+
+    if not job.get("local_path") or not os.path.exists(job["local_path"]):
+        return jsonify({"error": "O arquivo do podcast não está mais no servidor. Envie de novo."}), 409
+
+    total = _probe_duration(job["local_path"])
+    if total is None:
+        return jsonify({"error": "Não consegui ler a duração do arquivo do podcast."}), 400
+    if (total - cut_at) < config.PODCAST_CUT_MIN_REMAINING_SECONDS:
+        return jsonify({
+            "error": f"Esse ponto de corte deixaria só {max(total - cut_at, 0):.0f}s de episódio "
+                     f"(mínimo {config.PODCAST_CUT_MIN_REMAINING_SECONDS:.0f}s). Escolha um ponto mais cedo."
+        }), 400
+
+    with _upload_lock:
+        # Re-checa o status DENTRO do lock: dois disparos simultâneos não podem
+        # reservar a vaga e subir duas threads de corte pro mesmo job.
+        job = db.get_job(job_id)
+        if job["status"] != "uploaded":
+            return jsonify({"error": f"O podcast não está aguardando corte (status: {job['status']})."}), 409
+        reaped = db.reap_stale_jobs(config.JOB_STALE_MINUTES)
+        if reaped:
+            log.info("[watchdog] %d job(s) preso(s) liberado(s) por timeout", reaped)
+        if db.count_active_jobs() >= config.MAX_CONCURRENT_JOBS:
+            return jsonify({
+                "error": "Um vídeo já está em processamento! Aguarde a conclusão antes de cortar "
+                         "o início do podcast."
+            }), 429
+        db.update_job(job_id, status="cortando_inicio")
+
+    threading.Thread(target=podcast_cut.run_podcast_cut_intro, args=(job_id, cut_at), daemon=True).start()
+    return jsonify({"job_id": job_id, "status": "cortando_inicio"}), 202
+
+
 @app.route("/api/podcast/<job_id>/transcribe", methods=["POST"])
 @login_required
 def podcast_transcribe(job_id):
@@ -3203,6 +3262,7 @@ def podcast_hooks_view(job_id):
         "filename": job["filename"],
         "hooks": _job_hooks(job),
         "hook_choice": choice,
+        "intro_cut_at": job.get("intro_cut_at"),
         "source_available": bool(job.get("local_path") and os.path.exists(job["local_path"])),
         "final_available": bool(job.get("podcast_final_key")) and job["status"] == "done",
         "error": job.get("error") if job["status"] == "error" else None,

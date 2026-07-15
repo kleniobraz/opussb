@@ -11,11 +11,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Check, Clapperboard, Download, Play, Square, Volume2 } from "lucide-react";
 import * as api from "@/lib/api";
-import { fmtSeconds, nameFromEmail, timeAgo } from "@/lib/format";
+import { fmtHMS, fmtSeconds, nameFromEmail, timeAgo } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Slider } from "@/components/ui/slider";
+import { CorteInicio } from "@/components/podcast/corte-inicio";
 import type { PodcastHook } from "@/lib/types";
 
 // Folga pra cada lado do gancho: dá pra ESTENDER o início pra trás (o conserto típico
@@ -88,6 +89,7 @@ export function HookApproval({ jobId }: { jobId: string }) {
   const [approving, setApproving] = useState(false);
   const [composing, setComposing] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
+  const [cutting, setCutting] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const stopAtRef = useRef<number | null>(null);
   const rafRef = useRef<number>(0);
@@ -183,6 +185,22 @@ export function HookApproval({ jobId }: { jobId: string }) {
       toast.error(e instanceof api.ApiError ? e.message : "Falha ao iniciar a transcrição.");
     } finally {
       setTranscribing(false);
+    }
+  }
+
+  // Corte manual do início do corpo bruto (ANTES da transcrição): dispara o corte no
+  // servidor (202) e o job vai pra 'cortando_inicio'; o polling do refetchInterval
+  // acompanha até voltar pra 'uploaded' (sucesso) ou virar 'error' (falha).
+  async function confirmCut(cutAt: number) {
+    setCutting(true);
+    try {
+      await api.podcastCutIntro(jobId, cutAt);
+      toast.success("Corte do início iniciado.");
+      qc.invalidateQueries({ queryKey: ["podcastHooks", jobId] });
+    } catch (e) {
+      toast.error(e instanceof api.ApiError ? e.message : "Falha ao iniciar o corte do início.");
+    } finally {
+      setCutting(false);
     }
   }
 
@@ -290,6 +308,22 @@ export function HookApproval({ jobId }: { jobId: string }) {
     );
   }
 
+  // Corte do início rodando no servidor (polling do refetchInterval acompanha).
+  if (data.status === "cortando_inicio") {
+    return (
+      <div className="view-pad">
+        {cabecalho("cortando o início")}
+        <div className="max-w-xl space-y-3">
+          <Progress value={data.progress ?? 10} />
+          <p className="text-sm text-muted-foreground">
+            Cortando o início do episódio. Só o pedacinho até o próximo corte possível é
+            reencodado; o resto do corpo é copiado, então isso deve ser rápido.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   // Montagem falhou mas a escolha do gancho persiste: mostra o erro e deixa re-tentar.
   if (data.status === "error" && data.hook_choice) {
     return (
@@ -303,6 +337,39 @@ export function HookApproval({ jobId }: { jobId: string }) {
             <Clapperboard className="size-4" />
             {composing ? "Disparando..." : "Tentar a montagem de novo"}
           </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // O corte do início falhou (distingue de "falhou antes da aprovação" abaixo por ter
+  // intro_cut_at gravado e NÃO ter hook_choice): o arquivo original está intacto, então
+  // dá pra marcar o corte de novo ou pular direto pra transcrição, sem reenviar o vídeo.
+  if (data.status === "error" && data.intro_cut_at != null && !data.hook_choice) {
+    return (
+      <div className="view-pad">
+        {cabecalho("corte de início falhou")}
+        <div className="max-w-2xl space-y-4">
+          <p className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-400">
+            O corte do início falhou: {data.error || "erro desconhecido"}. O vídeo original
+            continua íntegro no servidor.
+          </p>
+          <Button variant="outline" disabled={transcribing} onClick={startTranscribe}>
+            <Clapperboard className="size-4" />
+            {transcribing ? "Disparando..." : "Pular e transcrever sem cortar"}
+          </Button>
+          <p className="text-sm text-muted-foreground">
+            Ou marque o ponto de novo abaixo (o ponto anterior pode estar perto de um
+            trecho sem keyframe pra cortar; tente um pouco antes ou depois):
+          </p>
+          {data.source_available ? (
+            <CorteInicio jobId={jobId} onConfirm={confirmCut} confirming={cutting} />
+          ) : (
+            <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-400">
+              O vídeo original não está mais no servidor; não dá pra marcar o corte de novo.
+              Envie o episódio de novo.
+            </p>
+          )}
         </div>
       </div>
     );
@@ -363,20 +430,42 @@ export function HookApproval({ jobId }: { jobId: string }) {
   }
 
   // Job estacionado: o vídeo subiu e passou na validação (16:9 + frame rate constante), mas
-  // a transcrição ainda não foi disparada. O produtor aciona quando a fila estiver livre.
+  // a transcrição ainda não foi disparada. O produtor decide aqui se o episódio precisa de
+  // um corte manual do início (timer, "em instantes", vinheta do estúdio de origem etc.,
+  // de duração variável) antes de transcrever; é OPCIONAL, então "pular" fica sempre visível
+  // e não depende de mexer no vídeo.
   if (data.status === "uploaded") {
     return (
       <div className="view-pad">
         {cabecalho("aguardando transcrição")}
-        <div className="max-w-xl space-y-3">
+        <div className="max-w-2xl space-y-4">
           <p className="text-sm text-muted-foreground">
-            O episódio foi enviado e está pronto pra transcrever. Dispare quando a fila
-            estiver livre; a análise de ganchos abre logo em seguida.
+            O episódio foi enviado e está pronto pra transcrever. Se o vídeo começa com
+            timer, vinheta do estúdio de origem ou algo do tipo antes do conteúdo real,
+            marque abaixo onde o episódio realmente começa e corte essa abertura antes de
+            transcrever. Se já começa certo, pule direto.
           </p>
-          <Button disabled={transcribing} onClick={startTranscribe}>
+
+          {data.intro_cut_at != null && (
+            <p className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-400">
+              Já foram cortados {fmtHMS(data.intro_cut_at)} do início deste episódio. Dá
+              pra cortar de novo se precisar ajustar, ou seguir direto pra transcrição.
+            </p>
+          )}
+
+          <Button variant="outline" disabled={transcribing} onClick={startTranscribe}>
             <Clapperboard className="size-4" />
-            {transcribing ? "Disparando..." : "Iniciar transcrição"}
+            {transcribing ? "Disparando..." : "Pular, este episódio já começa certo"}
           </Button>
+
+          {data.source_available ? (
+            <CorteInicio jobId={jobId} onConfirm={confirmCut} confirming={cutting} />
+          ) : (
+            <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-400">
+              O vídeo original não está mais no servidor; não dá pra marcar o corte. Pule
+              direto pra transcrição ou envie o episódio de novo.
+            </p>
+          )}
         </div>
       </div>
     );

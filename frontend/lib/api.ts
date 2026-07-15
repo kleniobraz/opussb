@@ -403,6 +403,15 @@ export const podcastTranscribe = (id: string) =>
     "/api/podcast/" + encodeURIComponent(id) + "/transcribe",
   );
 
+// Corte manual do início do corpo bruto, ANTES da transcrição (cut_at em segundos, corpo
+// original preservado até o corte terminar com sucesso). 202 e o job vai pra
+// 'cortando_inicio'; acompanhar pelo podcastHooks (polling).
+export const podcastCutIntro = (id: string, cutAt: number) =>
+  postJson<{ job_id: string; status: string }>(
+    "/api/podcast/" + encodeURIComponent(id) + "/cut-intro",
+    { cut_at: cutAt },
+  );
+
 export const podcastHooks = (id: string) =>
   getJson<PodcastHooksResponse>("/api/podcast/" + encodeURIComponent(id) + "/hooks");
 // URL do 16:9 original servido com HTTP Range (preview do trim toca direto no <video>).

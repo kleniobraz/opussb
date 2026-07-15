@@ -41,6 +41,34 @@ export function fmtSeconds(s?: number | null): string {
   return m + ":" + (ss < 10 ? "0" : "") + ss;
 }
 
+// Timestamp absoluto pra vídeo longo (corte de início do podcast, até várias horas): igual
+// fmtSeconds quando cabe em M:SS, mas some com hora quando passa de 1h (H:MM:SS). fmtSeconds
+// continua a escolha certa pra durações curtas (ex.: "corte de 42s à frente").
+export function fmtHMS(s?: number | null): string {
+  const sec = Math.max(0, Math.round(s || 0));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const ss = sec % 60;
+  const pad2 = (n: number) => (n < 10 ? "0" + n : String(n));
+  if (h > 0) return h + ":" + pad2(m) + ":" + pad2(ss);
+  return m + ":" + pad2(ss);
+}
+
+// Inverso de fmtHMS: aceita "SS", "M:SS" ou "H:MM:SS" (a hora, se houver, sem limite; minuto
+// e segundo sempre 0 a 59). null se a entrada não é um timestamp válido.
+export function parseHMS(input: string): number | null {
+  const partes = (input || "").trim().split(":");
+  if (partes.length === 0 || partes.length > 3 || partes.some((p) => p.trim() === "")) return null;
+  const valores = partes.map((p) => Number(p.trim()));
+  if (valores.some((v) => Number.isNaN(v))) return null;
+  if (valores.length === 1) return valores[0] >= 0 ? valores[0] : null;
+  const seg = valores[valores.length - 1];
+  const min = valores[valores.length - 2];
+  const hora = valores.length === 3 ? valores[0] : 0;
+  if (hora < 0 || min < 0 || min >= 60 || seg < 0 || seg >= 60) return null;
+  return hora * 3600 + min * 60 + seg;
+}
+
 export function timeAgo(iso?: string | null): string {
   if (!iso) return "";
   const t = new Date(iso).getTime();

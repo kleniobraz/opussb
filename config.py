@@ -115,6 +115,34 @@ COMPOSE_TIMEOUT: int = int(os.environ.get("COMPOSE_TIMEOUT", "900"))
 # de estourar o volume no meio do concat.
 COMPOSE_DISK_FACTOR: float = float(os.environ.get("COMPOSE_DISK_FACTOR", "2.2"))
 
+# Corte manual do início do corpo bruto, ANTES da transcrição (§39 Parte 2): reencoda só o
+# pedacinho até o próximo keyframe e copia o resto em -c copy (nunca reencoda o corpo
+# inteiro). Janela de busca do próximo keyframe (segundos) a partir do ponto marcado.
+# Default provisório e generoso: a amostra medida até agora (2 episódios reais de ~52min
+# da Carbone) tinha GOP fixo de 1s, então 30s sobra muito; calibrar com folga menor numa
+# etapa posterior, contra um arquivo real de 2h+.
+PODCAST_CUT_KEYFRAME_LOOKAHEAD: float = float(os.environ.get("PODCAST_CUT_KEYFRAME_LOOKAHEAD", "30"))
+# Sobra mínima exigida depois do corte (o episódio inteiro não pode desaparecer por um
+# corte grande demais por engano).
+PODCAST_CUT_MIN_REMAINING_SECONDS: float = float(
+    os.environ.get("PODCAST_CUT_MIN_REMAINING_SECONDS", "300"))
+# Guard-rail de disco DEDICADO do corte de início (não reaproveita COMPOSE_DISK_FACTOR):
+# o "resto" (quase o corpo inteiro) e o "final" coexistem no disco entre si E com o fonte
+# original (só apagado depois de tudo confirmado), pico TOTAL no pior caso (corte bem no
+# início, o uso mais comum da feature) tende a ≈3x o fonte, não ≈2x como um comentário
+# antigo sugeria (ver podcast_cut.py). Validação empírica de 2026-07-08 com sintético de
+# 2h34min (montado a partir de um corpo real da Carbone, corte em 120s) mediu pico real de
+# 2.974x: o antigo default de 3.0 tinha margem quase zero. 3.5 dá ~17% de folga sobre o
+# pior caso teórico de 3x.
+PODCAST_CUT_DISK_FACTOR: float = float(os.environ.get("PODCAST_CUT_DISK_FACTOR", "3.5"))
+# Teto POR ffmpeg do corte de início (reencode do pedacinho, cópia do resto, concat). A
+# cópia do resto é I/O de um corpo de possivelmente vários GB. Validação empírica de
+# 2026-07-08 (mesmo sintético de 2h34min) mediu 46.6s pra cópia do resto e 73.7s pro
+# concat (etapa mais lenta); 300s dá quase 4x de folga sobre os 73.7s medidos, cobrindo
+# disco de produção mais contestado que o ambiente isolado do teste, e segue bem longe do
+# watchdog de 30min (que o heartbeat já cobre à parte).
+PODCAST_CUT_TIMEOUT: int = int(os.environ.get("PODCAST_CUT_TIMEOUT", "300"))
+
 # Sobra (handles) cortada de cada lado do clipe, em segundos. O clip_NN_base.mp4 passa a ser
 # a janela [start-H, end+H] (clamped ao vídeo) reenquadrada, e o editor abre/fecha o corte
 # dentro dessa sobra (ajuste fino quando a IA erra o ponto de corte). 0 desliga (corte exato,
