@@ -3129,7 +3129,9 @@ def podcast_cut_intro_route(job_id):
     só o pedacinho até o próximo keyframe e copia o resto em -c copy (nunca o corpo
     inteiro). Disparo manual e explícito, mesma admissão atômica de podcast_transcribe
     (reserva a vaga virando 'cortando_inicio' dentro do lock); o local_path do job só
-    troca em caso de sucesso confirmado (podcast_cut.py cuida disso na thread)."""
+    troca em caso de sucesso confirmado (podcast_cut.py cuida disso na thread). Aceita
+    também status 'error' com intro_cut_at gravado (mesmo padrão de retry do /compose):
+    é o corte de um cut_at anterior que falhou, não outra falha qualquer do pipeline."""
     if not config.PODCAST_ENABLED:
         return jsonify({"error": "Recurso indisponível."}), 404
     user = db.get_user(session["user"])
@@ -3162,9 +3164,14 @@ def podcast_cut_intro_route(job_id):
 
     with _upload_lock:
         # Re-checa o status DENTRO do lock: dois disparos simultâneos não podem
-        # reservar a vaga e subir duas threads de corte pro mesmo job.
+        # reservar a vaga e subir duas threads de corte pro mesmo job. 'error' só é
+        # aceito como retry quando intro_cut_at já está gravado (achado do code-review:
+        # a tela promete "tenta de novo" pro corte que falhou, mas a rota rejeitava
+        # qualquer 'error' com 409; sem o intro_cut_at, é outra falha do pipeline, não
+        # um corte pra tentar de novo, e continua fora).
         job = db.get_job(job_id)
-        if job["status"] != "uploaded":
+        pode_tentar_de_novo = job["status"] == "error" and job.get("intro_cut_at") is not None
+        if job["status"] != "uploaded" and not pode_tentar_de_novo:
             return jsonify({"error": f"O podcast não está aguardando corte (status: {job['status']})."}), 409
         reaped = db.reap_stale_jobs(config.JOB_STALE_MINUTES)
         if reaped:
@@ -3174,7 +3181,7 @@ def podcast_cut_intro_route(job_id):
                 "error": "Um vídeo já está em processamento! Aguarde a conclusão antes de cortar "
                          "o início do podcast."
             }), 429
-        db.update_job(job_id, status="cortando_inicio")
+        db.update_job(job_id, status="cortando_inicio", error=None)
 
     threading.Thread(target=podcast_cut.run_podcast_cut_intro, args=(job_id, cut_at), daemon=True).start()
     return jsonify({"job_id": job_id, "status": "cortando_inicio"}), 202

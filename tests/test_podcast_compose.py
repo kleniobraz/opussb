@@ -215,7 +215,7 @@ def test_compose_cancelado_antes_do_corte_nao_roda_ffmpeg(tmp_path, s3_falso, mo
     jid = _job_pronto(tmp_path, s3_falso, job_id="TEST-compose-cancel-cedo")
     db.update_job(jid, status="error", error="Cancelado pelo usuário.")
 
-    espiao = mocker.patch("podcast_compose._run_ffmpeg")
+    espiao = mocker.patch("podcast_compose.run_ffmpeg")
 
     podcast_compose.run_podcast_compose(jid)
 

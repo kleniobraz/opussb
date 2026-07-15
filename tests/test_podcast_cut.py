@@ -366,6 +366,42 @@ def test_rota_409_status_errado(client, monkeypatch, tmp_path):
     assert r.status_code == 409
 
 
+def test_rota_error_com_intro_cut_at_permite_retry(client, monkeypatch, tmp_path):
+    """Achado do code-review: a tela promete retry pro corte que falhou (usando
+    intro_cut_at pra distinguir essa falha de outra qualquer do pipeline), mas a rota
+    só aceitava status='uploaded' e devolvia 409. Confirma que o retry funciona de
+    verdade (thread real, não mockada, até 'uploaded' de novo) e que o erro anterior
+    não fica pendurado depois do disparo aceito."""
+    monkeypatch.setattr(config, "PODCAST_ENABLED", True)
+    monkeypatch.setattr(config, "PODCAST_CUT_MIN_REMAINING_SECONDS", 1.0)
+    jid = "TEST-cut-retry"
+    _job_pronto_para_corte(tmp_path, jid, dur=10, gop=30)
+    db.update_job(jid, status="error", error="corte de início falhou: teste", intro_cut_at=1.0)
+    _login(client, "t@t")
+
+    r = client.post(f"/api/podcast/{jid}/cut-intro", json={"cut_at": 2.0})
+    assert r.status_code == 202, r.get_json()
+    assert db.get_job(jid)["error"] is None
+
+    assert _espera(lambda: db.get_job(jid)["status"] in ("uploaded", "error"))
+    job = db.get_job(jid)
+    assert job["status"] == "uploaded", job.get("error")
+
+
+def test_rota_409_error_sem_intro_cut_at_nao_e_retry_de_corte(client, monkeypatch, tmp_path):
+    """'error' sozinho não basta pro retry: sem intro_cut_at gravado, é outra falha do
+    pipeline (não um corte que falhou), e continua fora (mesma lógica de escopo que o
+    /compose usa: só 'error'+hook_choice conta como retry legítimo lá)."""
+    monkeypatch.setattr(config, "PODCAST_ENABLED", True)
+    monkeypatch.setattr(config, "PODCAST_CUT_MIN_REMAINING_SECONDS", 1.0)
+    jid = "TEST-cut-error-sem-intro"
+    _job_pronto_para_corte(tmp_path, jid)
+    db.update_job(jid, status="error", error="falhou em outra etapa do pipeline")
+    _login(client, "t@t")
+    r = client.post(f"/api/podcast/{jid}/cut-intro", json={"cut_at": 1.0})
+    assert r.status_code == 409
+
+
 def test_rota_403_nao_e_dono_nem_admin(client, monkeypatch, tmp_path):
     monkeypatch.setattr(config, "PODCAST_ENABLED", True)
     jid = "TEST-cut-rota-dono"
