@@ -954,7 +954,8 @@ def test_keyframes_seed():
     check(reframe_core.keyframes_from_trajectory([], 30, 1920, 608) is None, "trajetoria vazia -> None")
 
 
-def test_keyframes_seed_plano_parado_colapsa():
+def test_plano_parado_colapsa():
+    """Plano sem pan real vira so 2 keyframes (inicio e fim), sem escadinha de saltos."""
     print("[keyframe seed: plano parado colapsa pra so borda/corte (Fix 3b)]")
     import reframe_core
     # trajetoria totalmente PARADA (zona morta segurando, sem pan real), sem corte: antes do Fix 3b
@@ -1289,7 +1290,7 @@ def main():
               test_validate_segments, test_parse_clips_json,
               test_captions_roundtrip, test_words_for_clip, test_caption_style, test_youtube_helpers,
               test_snap_clip_bounds, test_thumbnail, test_clip_window, test_download_all, test_end_screen,
-              test_crop_keyframe, test_keyframes_seed, test_keyframes_seed_plano_parado_colapsa,
+              test_crop_keyframe, test_keyframes_seed, test_plano_parado_colapsa,
               test_rerender_keyframes, test_rerender_gpu,
               test_sessions_helpers, test_sessions_ownership, test_sessions_flow,
               test_sessions_extra, test_admin_delete, test_admin_maintenance):

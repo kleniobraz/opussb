@@ -179,12 +179,9 @@ def test_compose_monta_com_emendas_continuas_e_anullsrc(tmp_path, s3_falso):
 
 # ─── Cancelamento cooperativo (bug real: _compose não checava, ressuscitava "done") ──
 
-def test_compose_cancelado_apos_upload_nao_sobrescreve_status(tmp_path, s3_falso, mocker):
-    """Cenário do bug: o cancelamento (POST /cancel) chega EXATAMENTE no intervalo entre
-    o upload caro do final.mp4 terminar e o registro em DB avançar pra 'done'. O checkpoint
-    _check_cancel imediatamente antes da linha do status="done" tem que pegar isso: o
-    upload já feito não é desperdiçado, mas o job NÃO pode virar "done" nem perder a
-    mensagem original "Cancelado pelo usuário." (regressão que o except _Cancelled evita)."""
+def test_cancela_apos_upload(tmp_path, s3_falso, mocker):
+    """Cancelamento chegando logo após o upload caro do final não deixa o status virar
+    'done' nem perde a mensagem original "Cancelado pelo usuário."."""
     jid = _job_pronto(tmp_path, s3_falso, job_id="TEST-compose-cancel-upload")
     db.update_job(jid, status="montando")
     final_key = f"jobs/{jid}/podcast/final.mp4"
@@ -209,9 +206,8 @@ def test_compose_cancelado_apos_upload_nao_sobrescreve_status(tmp_path, s3_falso
     assert not os.path.exists(os.path.join(config.JOB_DIR, jid, "compose"))
 
 
-def test_compose_cancelado_antes_do_corte_nao_roda_ffmpeg(tmp_path, s3_falso, mocker):
-    """Cancelamento chega ANTES até do primeiro ffmpeg (corte do gancho): a thread tem
-    que parar cedo, não gastar CPU/tempo processando um job já cancelado."""
+def test_cancela_antes_do_corte(tmp_path, s3_falso, mocker):
+    """Cancelamento antes do primeiro ffmpeg para cedo, sem rodar nada à toa."""
     jid = _job_pronto(tmp_path, s3_falso, job_id="TEST-compose-cancel-cedo")
     db.update_job(jid, status="error", error="Cancelado pelo usuário.")
 

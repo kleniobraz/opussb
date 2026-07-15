@@ -172,11 +172,9 @@ def test_pan_debounce_direcao_oposta_nao_confirma():
     assert all(v == 200 for v in out)   # excesso p/ direita (30) e p/ esquerda (45): não confirmam
 
 
-# Test 6d (Fix 1): semeadura por MEDIANA. A 1a amostra do plano é um outlier ISOLADO (reproduz o
-# bug real do corte de 167s: braço do convidado esticado pra pegar uma taça contamina a caixa do
-# YOLO só na 1a amostra), e as amostras seguintes já são consistentes numa posição diferente. A
-# câmera deve semear pela mediana (posição consistente), não pela 1a leitura isolada.
-def test_locked_segment_seed_mediana_ignora_outlier_isolado():
+def test_semeadura_ignora_amostra_ruim():
+    """1a amostra do plano vem contaminada (braço esticado); a mediana das primeiras N
+    ignora e semeia pela posição consistente, não pela 1a leitura isolada."""
     samples = [(0, 500), (15, 900), (30, 900), (45, 900), (60, 900)]
     out = reframe_core.build_locked_trajectory(samples, total_frames=75, fps=30.0,
                                                width=1920, crop_w=600, center_x=660,
@@ -306,28 +304,23 @@ def test_deteccao_mesmo_kind_so_por_diff():
     assert merged == [45]                                       # diff fecha o buraco
 
 
-# Test 16 (Fix 2): _kind_cuts_confirmed_by_diff. Corte por TIPO sem NENHUM respaldo no diff numa
-# janela ao redor do candidato é descartado. Reproduz o bug real de 118,25s: a contagem do YOLO
-# oscilou (wide -> close) só porque a mão/celular do outro participante entrou no canto do quadro,
-# sem NENHUMA troca de câmera (o diff medido nesse trecho real não passou de 0,028).
-def test_kind_cuts_confirmed_by_diff_descarta_sem_respaldo():
+def test_corte_sem_respaldo_descarta():
+    """Corte por tipo sem nenhum pico de diff por perto é descartado (oscilação do
+    YOLO, não troca de câmera de verdade)."""
     diffs = [(f, 0.02) for f in range(0, 200, 15)]   # "chão": nada passa de 0.06 na janela toda
     assert reframe_core._kind_cuts_confirmed_by_diff([90], diffs, window=15, threshold=0.06) == []
 
 
-# Test 17 (Fix 2): _kind_cuts_confirmed_by_diff. Corte por TIPO com diff alto por perto é MANTIDO
-# (a corroboração não pode quebrar a detecção de um corte real por tipo).
-def test_kind_cuts_confirmed_by_diff_mantem_com_respaldo():
+def test_corte_com_respaldo_mantem():
+    """Corte por tipo com diff alto por perto é mantido; a corroboração não pode
+    quebrar a detecção de um corte real."""
     diffs = [(75, 0.02), (90, 0.19), (105, 0.02)]   # pico real bem na janela do candidato (90)
     assert reframe_core._kind_cuts_confirmed_by_diff([90], diffs, window=15, threshold=0.06) == [90]
 
 
-# Test 18 (Fix 2): pipeline completo (kind + corroboração + diff), na mesma composição de
-# sample_camera. Corte FALSO por tipo (sem respaldo no diff, kind oscila wide->close->wide de
-# volta, como o bug real de 118,25s: AMBAS as bordas da oscilação são candidatas) some da união;
-# corte só-por-diff (kind igual dos dois lados, o caso que motivou _cuts_from_diff) continua
-# funcionando sozinho, sem precisar de corroboração nenhuma.
-def test_merge_cuts_com_corroboracao_pipeline():
+def test_uniao_cortes_corroborados():
+    """Pipeline completo (tipo + corroboração + diff): oscilação falsa some da união,
+    corte real só-por-diff continua funcionando sozinho."""
     kinds = [(0, "close"), (15, "close"), (30, "close"),
              (45, "wide"), (60, "wide"), (75, "wide"),          # oscilação (sem corte real)
              (90, "close"), (105, "close"), (120, "close"),
@@ -345,13 +338,11 @@ def test_merge_cuts_com_corroboracao_pipeline():
     assert merged == [150]            # oscilação falsa sumiu; corte real por diff continua
 
 
-# Test 19 (Fix 2, achado do code-review): uma amostra de diff RESIDUAL de um corte real ja
-# registrado (alta o bastante pra corroborar sozinha, mas nao o bastante pra virar seu proprio corte
-# por causa do min_gap) nao pode "emprestar" corroboracao pra um candidato de tipo diferente e nao
-# relacionado. Sem `exclude_near`, o residuo em 120 (0.08, acima do limiar secundario 0.06 mas
-# absorvido pelo min_gap do corte real de 105) confirmaria por engano o candidato 135, fragmentando
-# um plano continuo logo apos um corte real de verdade em 2 pedacos.
-def test_kind_cuts_confirmed_by_diff_nao_usa_residuo_de_corte_ja_registrado():
+def test_diff_residual_nao_confirma():
+    """Amostra de diff residual de um corte ja registrado (alta o bastante pra
+    corroborar sozinha, mas absorvida pelo min_gap) nao pode emprestar corroboracao
+    pra um candidato de tipo diferente e nao relacionado (vazamento achado no
+    code-review, fragmentaria um plano continuo em 2 pedacos por engano)."""
     diffs = [(90, 0.02), (105, 0.70), (120, 0.08), (135, 0.02)]
     cuts_diff = reframe_core._cuts_from_diff(diffs, threshold=0.09, min_gap=15)
     assert cuts_diff == [105]     # so o corte real; o residuo em 120 fica absorvido pelo min_gap

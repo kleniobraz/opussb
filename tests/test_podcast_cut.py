@@ -366,12 +366,9 @@ def test_rota_409_status_errado(client, monkeypatch, tmp_path):
     assert r.status_code == 409
 
 
-def test_rota_error_com_intro_cut_at_permite_retry(client, monkeypatch, tmp_path):
-    """Achado do code-review: a tela promete retry pro corte que falhou (usando
-    intro_cut_at pra distinguir essa falha de outra qualquer do pipeline), mas a rota
-    só aceitava status='uploaded' e devolvia 409. Confirma que o retry funciona de
-    verdade (thread real, não mockada, até 'uploaded' de novo) e que o erro anterior
-    não fica pendurado depois do disparo aceito."""
+def test_corte_falho_retenta(client, monkeypatch, tmp_path):
+    """Com intro_cut_at gravado, status error aceita corte de novo (202, thread real
+    até 'uploaded') e limpa o erro anterior."""
     monkeypatch.setattr(config, "PODCAST_ENABLED", True)
     monkeypatch.setattr(config, "PODCAST_CUT_MIN_REMAINING_SECONDS", 1.0)
     jid = "TEST-cut-retry"
@@ -388,10 +385,8 @@ def test_rota_error_com_intro_cut_at_permite_retry(client, monkeypatch, tmp_path
     assert job["status"] == "uploaded", job.get("error")
 
 
-def test_rota_409_error_sem_intro_cut_at_nao_e_retry_de_corte(client, monkeypatch, tmp_path):
-    """'error' sozinho não basta pro retry: sem intro_cut_at gravado, é outra falha do
-    pipeline (não um corte que falhou), e continua fora (mesma lógica de escopo que o
-    /compose usa: só 'error'+hook_choice conta como retry legítimo lá)."""
+def test_corte_sem_ponto_rejeita(client, monkeypatch, tmp_path):
+    """Sem intro_cut_at gravado, /cut-intro devolve 409 e não trata como retry."""
     monkeypatch.setattr(config, "PODCAST_ENABLED", True)
     monkeypatch.setattr(config, "PODCAST_CUT_MIN_REMAINING_SECONDS", 1.0)
     jid = "TEST-cut-error-sem-intro"
