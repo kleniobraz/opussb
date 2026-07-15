@@ -888,6 +888,10 @@
 .editor-crop-box.is-draggable:hover { background: rgba(245,197,24,0.1); }
 .editor-crop-grip { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 26px; height: 40px; border-radius: 7px; background: rgba(245,197,24,0.85); box-shadow: 0 0 10px rgba(245,197,24,0.5); pointer-events: none; }
 .editor-crop-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+/* Trilha de silencio (so leitura, so marcacao visual): banda cinza-neutro pra nao brigar com o
+   dourado da legenda/keyframe nem com o verde-agua do corte/tela final. */
+.editor-track--silence { height: 18px; background: #0c0c0e; }
+.editor-silence-block { position: absolute; top: 3px; bottom: 3px; background: rgba(126,126,123,0.35); border: 1px solid rgba(126,126,123,0.6); border-radius: 4px; pointer-events: none; }
 .editor-track--key { height: 30px; background: #0c0c0e; }
 .editor-kf { position: absolute; top: 50%; width: 14px; height: 14px; margin-left: -7px; transform: translateY(-50%) rotate(45deg); background: var(--gold); border: 0; border-radius: 3px; box-shadow: 0 0 8px rgba(245,197,24,0.55); cursor: pointer; padding: 0; z-index: 2; }
 .editor-kf:hover { box-shadow: 0 0 12px rgba(245,197,24,0.9); }

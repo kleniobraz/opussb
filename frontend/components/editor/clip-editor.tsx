@@ -19,6 +19,7 @@ import { CropStage } from "./crop-stage";
 import { TranscriptPanel } from "./transcript-panel";
 import { EditorTimeline, ZOOM_MIN, ZOOM_MAX } from "./editor-timeline";
 import type { CropKeyframe, EndScreenOption, Music, Segment } from "@/lib/types";
+import { computeSilenceGaps } from "@/lib/silence";
 
 // Segmento como vive no estado do editor: o {start,end,text} do contrato + um id de
 // cliente NAO persistido. O id deixa a selecao, o karaoke e o split/merge estaveis mesmo
@@ -363,6 +364,9 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
   const restoreTimeRef = useRef<number | null>(null); // preserva o playhead ao trocar de modo/fonte
 
   const editable = data?.editable ?? false;
+  // Gaps de silencio (so leitura, so marcacao visual): calculado a partir do tempo por palavra;
+  // clipe sem `words` (legado/sem fala) devolve lista vazia e a trilha nem aparece.
+  const silenceGaps = useMemo(() => computeSilenceGaps(data?.words), [data?.words]);
   const bust = cropVersion ? `?v=${cropVersion}` : "";
   const previewSrc = (usingBurned ? burnedSrc : baseSrc) + bust;
   const src169 = `/api/clips/${enc}/src169`;
@@ -1115,6 +1119,7 @@ export function ClipEditor({ clipId, title }: { clipId: string; title?: string }
                   hasHandles={hasHandles}
                   cutIn={cutIn}
                   cutOut={cutOut}
+                  silenceGaps={silenceGaps}
                   endScreenLabel={
                     endEffective ? (endScreens.find((o) => o.id === endEffective)?.label ?? "Tela final") : null
                   }

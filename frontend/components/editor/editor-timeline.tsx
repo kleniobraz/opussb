@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import { Maximize2, Minus, Pause, Play, Plus, SkipBack, SkipForward } from "lucide-react";
 import type { EditSeg } from "./clip-editor";
 import type { CropKeyframe } from "@/lib/types";
+import type { SilenceGap } from "@/lib/silence";
 
 const MIN_BLOCK_W = 34; // largura minima clicavel de um bloco, mesmo pra legenda curtissima
 export const ZOOM_MIN = 6;
@@ -51,6 +52,7 @@ export function EditorTimeline({
   hasHandles,
   cutIn,
   cutOut,
+  silenceGaps,
   endScreenLabel,
   endScreenDur,
   endScreenAssetDur,
@@ -79,6 +81,7 @@ export function EditorTimeline({
   hasHandles: boolean; // o clipe tem sobra (handles) editável? legado = false (sem alças)
   cutIn: number; // início do corte (s, relativo à janela)
   cutOut: number; // fim do corte (s, relativo à janela)
+  silenceGaps: SilenceGap[]; // trechos de silêncio (sem `words` = lista vazia, trilha some)
   endScreenLabel: string | null; // tela final anexada no fim (rótulo) ou null = nenhuma
   endScreenDur: number; // duração da tela final usada neste clipe (s); 0 = sem tela
   endScreenAssetDur: number; // duração total do asset da tela (s); teto do encurtar
@@ -373,6 +376,9 @@ export function EditorTimeline({
         {cropActive && (
           <span className="editor-legend-item"><i style={{ background: "var(--gold)" }} />Keyframes</span>
         )}
+        {silenceGaps.length > 0 && (
+          <span className="editor-legend-item"><i style={{ background: "var(--ink-muted)" }} />Silêncio</span>
+        )}
       </div>
 
       <div className="editor-tracks-scroll" ref={scrollRef} onScroll={onTracksScroll}>
@@ -419,6 +425,22 @@ export function EditorTimeline({
             {/* Escurece o trecho ainda nao tocado (do playhead pra frente): da o "antes/depois". */}
             <div className="editor-wave-future" style={{ left: currentTime * pxPerSec }} />
           </div>
+
+          {/* Trilha de silencio (so leitura, so achar visualmente por enquanto: sem clique nem
+              remocao). So aparece quando ha `words` com gaps >= SILENCE_THRESHOLD_S; clipe sem
+              tempo por palavra nao renderiza nada aqui. */}
+          {silenceGaps.length > 0 && (
+            <div className="editor-track editor-track--silence">
+              {silenceGaps.map((g) => (
+                <div
+                  key={g.start}
+                  className="editor-silence-block"
+                  style={{ left: g.start * pxPerSec, width: Math.max(2, (g.end - g.start) * pxPerSec) }}
+                  title={`Silêncio · ${(g.end - g.start).toFixed(2)}s`}
+                />
+              ))}
+            </div>
+          )}
 
           {/* Trilha de keyframes do crop (só no modo enquadramento): losangos no tempo de cada
               keyframe. Clicar seleciona + leva o playhead; o selecionado mostra um × pra remover.
