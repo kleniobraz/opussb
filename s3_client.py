@@ -34,7 +34,7 @@ def _client():
                     endpoint_url=config.S3_ENDPOINT,
                     aws_access_key_id=config.S3_ACCESS_KEY,
                     aws_secret_access_key=config.S3_SECRET_KEY,
-                    region_name="eu-central-1",
+                    region_name="sa-east-1",
                     config=Config(
                         signature_version="s3v4",
                         retries={"max_attempts": 3, "mode": "standard"},
