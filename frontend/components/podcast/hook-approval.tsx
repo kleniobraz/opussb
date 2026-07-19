@@ -376,7 +376,7 @@ export function HookApproval({ jobId }: { jobId: string }) {
                   <Clapperboard className="size-4" />
                   {transcribing ? "Disparando..." : "Pular e transcrever sem cortar"}
                 </Button>
-                <Button size="lg" variant="outline" onClick={() => setCortando(true)}>
+                <Button size="lg" variant="default" onClick={() => setCortando(true)}>
                   <Scissors className="size-4" />
                   Cortar o início
                 </Button>
@@ -492,7 +492,7 @@ export function HookApproval({ jobId }: { jobId: string }) {
                   <Clapperboard className="size-4" />
                   {transcribing ? "Disparando..." : "Pular, este episódio já começa certo"}
                 </Button>
-                <Button size="lg" variant="outline" onClick={() => setCortando(true)}>
+                <Button size="lg" variant="default" onClick={() => setCortando(true)}>
                   <Scissors className="size-4" />
                   Cortar o início
                 </Button>
