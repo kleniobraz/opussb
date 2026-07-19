@@ -784,48 +784,14 @@ def admin_delete():
     return jsonify({"ok": True})
 
 
-# ─── Modo manutenção (flag file lido pelo nginx) — só admin ──────────────────
+# ─── Modo manutenção (flag file lido pelo nginx) — só sessão de admin ────────
 # A EXISTÊNCIA de config.MAINTENANCE_FLAG é o interruptor: o nginx testa o
-# arquivo a cada request (if -f) e serve a tela 503 pra quem está fora da
-# allowlist de IP; /api e /health nunca são bloqueados (BACKEND §43). O botão do
-# painel (estas rotas) e o break-glass por SSH (`maintenance on|off`) operam o
-# MESMO arquivo — criar/remover tem efeito imediato, sem reload do nginx.
-
-def _maintenance_allowlist() -> list[str]:
-    """IPs/CIDRs liberados durante a manutenção, lidos do geo do nginx (a fonte de
-    verdade). Uso INFORMATIVO (anti-lockout no painel): qualquer falha vira lista
-    vazia — o aviso some, o interruptor continua funcionando. errors='replace'
-    porque a conf é editável à mão e um byte não-UTF-8 num comentário não pode
-    derrubar o GET (e, com ele, a aba Sistema inteira)."""
-    entries = []
-    try:
-        with open(config.MAINTENANCE_ALLOWLIST_CONF, encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                m = re.match(r"\s*([0-9a-fA-F.:]+(?:/\d{1,3})?)\s+1\s*;", line)
-                if m:
-                    entries.append(m.group(1))
-    except OSError as e:
-        log.warning("manutenção: não li a allowlist do nginx (%s)", e)
-    return entries
-
-
-def _ip_in_allowlist(ip, entries) -> bool:
-    """True se ip cai em alguma entrada (IP ou CIDR, v4/v6) da allowlist do nginx.
-    Robusto a entrada malformada e a mistura de famílias (v4 vs v6)."""
-    if not ip:
-        return False
-    try:
-        addr = ipaddress.ip_address(ip)
-    except ValueError:
-        return False
-    for e in entries:
-        try:
-            if addr in ipaddress.ip_network(e, strict=False):
-                return True
-        except (ValueError, TypeError):
-            continue
-    return False
-
+# arquivo a cada request (if -f) e, se ligado, só deixa passar quem tem sessão
+# de admin ativa (auth_request -> GET /api/internal/maintenance_gate, rotas
+# internas mais abaixo); /health e a tela/API de login continuam sempre
+# acessíveis (BACKEND §43). O botão do painel (estas rotas) e o break-glass por
+# SSH (`maintenance on|off`) operam o MESMO arquivo — criar/remover tem efeito
+# imediato, sem reload do nginx.
 
 def _write_maintenance_flag(flag: str) -> None:
     """Cria/atualiza o flag. O conteúdo é só auditoria (quem/quando); o nginx olha
@@ -846,17 +812,12 @@ def _write_maintenance_flag(flag: str) -> None:
 @app.route("/api/admin/maintenance")
 @admin_required
 def admin_maintenance_state():
-    """Estado do modo manutenção + contexto anti-lockout (IP do admin e se ele
-    está na allowlist do nginx). Estado = existência do flag, então mudanças
-    feitas por fora (break-glass SSH, outro admin) aparecem aqui na hora."""
-    ip = _client_ip()
-    allow = _maintenance_allowlist()
-    return jsonify({
-        "on": os.path.exists(config.MAINTENANCE_FLAG),
-        "client_ip": ip,
-        "ip_allowed": _ip_in_allowlist(ip, allow),
-        "allowlist": allow,
-    })
+    """Estado do modo manutenção. Desde a troca do gate por IP pra sessão de
+    admin, qualquer admin ativo atravessa (não existe mais risco de
+    auto-trancamento por IP pra reportar aqui). Estado = existência do flag,
+    então mudanças feitas por fora (break-glass SSH, outro admin) aparecem
+    aqui na hora."""
+    return jsonify({"on": os.path.exists(config.MAINTENANCE_FLAG)})
 
 
 @app.route("/api/admin/maintenance", methods=["POST"])
@@ -3568,6 +3529,23 @@ def internal_update_job(job_id):
         return jsonify({"error": "Nenhum campo válido."}), 400
     db.update_job(job_id, **updates)
     return jsonify({"ok": True})
+
+
+@app.route("/api/internal/maintenance_gate")
+def maintenance_gate():
+    """Chamada só pelo nginx (auth_request) durante a manutenção, pra decidir se a
+    sessão do request original é de um admin ativo. Mesma checagem do admin_required
+    (BACKEND §43), sem reusar o decorator: aqui o chamador é o nginx, não o cliente
+    HTTP, então não faz sentido limpar sessão nem devolver mensagem em português."""
+    if not _is_trusted_caller(request.remote_addr):
+        abort(403)
+    email = _session_email()
+    if not email:
+        return jsonify({"allowed": False}), 401
+    user = db.get_user(email)
+    if not user or not user.get("is_admin") or (user.get("status") or "active") != "active":
+        return jsonify({"allowed": False}), 401
+    return jsonify({"allowed": True}), 200
 
 
 if __name__ == "__main__":

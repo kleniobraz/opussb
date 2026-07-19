@@ -224,17 +224,13 @@ ADMIN_EMAILS: list = [e.strip().lower() for e in _ADMIN_EMAILS_RAW.split(",") if
 
 # ─── Manutenção programada (tela 503 do nginx) ──────────────────────────────
 # O nginx testa a EXISTÊNCIA deste arquivo a cada request (if -f): existe = quem
-# está fora da allowlist de IP (geo em MAINTENANCE_ALLOWLIST_CONF) vê a tela de
-# manutenção com 503; /api e /health nunca são bloqueados. O flag vive em
-# /var/lib/opussb (dono www-data) porque o botão do painel admin liga/desliga
-# pelo Flask (gunicorn = www-data), que não escreve em /etc/nginx; o break-glass
-# por SSH (`maintenance on|off`, root) opera o MESMO arquivo. Ver BACKEND §43.
+# não tem sessão de admin ativa vê a tela de manutenção com 503 (gate via
+# auth_request -> GET /api/internal/maintenance_gate); login e /health nunca são
+# bloqueados. O flag vive em /var/lib/opussb (dono www-data) porque o botão do
+# painel admin liga/desliga pelo Flask (gunicorn = www-data), que não escreve em
+# /etc/nginx; o break-glass por SSH (`maintenance on|off`, root) opera o MESMO
+# arquivo. Ver BACKEND §43.
 MAINTENANCE_FLAG: str = os.environ.get("MAINTENANCE_FLAG", "/var/lib/opussb/maintenance.on")
-# O geo do nginx é a fonte de verdade da allowlist; o Flask só a LÊ (parse leve)
-# pra avisar no painel se o IP atual do admin ficaria de fora ao ligar (anti-lockout).
-MAINTENANCE_ALLOWLIST_CONF: str = os.environ.get(
-    "MAINTENANCE_ALLOWLIST_CONF", "/etc/nginx/conf.d/00-sb-maintenance.conf"
-)
 
 
 # ─── Revisor de legendas (leitura por visão + revisão via Claude) ────────────

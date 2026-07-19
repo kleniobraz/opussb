@@ -1189,7 +1189,10 @@ def test_admin_maintenance():
     """Modo manutenção (GET/POST /api/admin/maintenance): gate de admin validado NO
     SERVIDOR (401 sem login, 403 não-admin, 403 admin desativado), estado = existência
     do flag file (o mesmo que o nginx lê e o break-glass SSH opera), POST idempotente
-    com payload {"on": bool} ESTRITO (string não coage)."""
+    com payload {"on": bool} ESTRITO (string não coage). Cobre também o gate de sessão
+    que o nginx chama via auth_request durante a manutenção (GET
+    /api/internal/maintenance_gate): 403 chamador não confiável, 401 sem sessão/
+    não-admin/desativado, 200 admin ativo (inclusive com a manutenção ligada)."""
     print("[admin: modo manutenção]")
     import shutil as _shutil
 
@@ -1198,25 +1201,30 @@ def test_admin_maintenance():
     from werkzeug.security import generate_password_hash
 
     old_flag = _cfg.MAINTENANCE_FLAG
-    old_conf = _cfg.MAINTENANCE_ALLOWLIST_CONF
     tmpdir = tempfile.mkdtemp(prefix="opussb_test_maint_")
     _cfg.MAINTENANCE_FLAG = os.path.join(tmpdir, "maintenance.on")
-    conf_path = os.path.join(tmpdir, "geo.conf")
-    with open(conf_path, "w", encoding="utf-8") as fh:
-        fh.write("geo $sb_ip_allowed {\n    default        0;\n    203.0.113.7    1;   # teste\n}\n")
-    _cfg.MAINTENANCE_ALLOWLIST_CONF = conf_path
     try:
         c = app.app.test_client()
         # sem login -> 401
         check(c.get("/api/admin/maintenance").status_code == 401, "GET sem login -> 401")
 
-        # usuário comum -> 403 (e não cria flag)
+        # gate do nginx: chamador fora do loopback/bridge -> 403, independente de sessão
+        check(c.get("/api/internal/maintenance_gate",
+                    environ_base={"REMOTE_ADDR": "8.8.8.8"}).status_code == 403,
+              "gate: chamador não confiável -> 403")
+        # loopback (como o nginx chamaria via auth_request), sem sessão -> 401
+        check(c.get("/api/internal/maintenance_gate").status_code == 401,
+              "gate: sem sessão -> 401 (nginx bloqueia)")
+
+        # usuário comum -> 403 (e não cria flag); gate também nega
         db.upsert_user("comum.maint@test", generate_password_hash("pw12345678"), must_change=False)
         check(c.post("/api/login", json={"email": "comum.maint@test", "password": "pw12345678"}).status_code == 200,
               "usuário comum loga")
         check(c.get("/api/admin/maintenance").status_code == 403, "GET não-admin -> 403")
         check(c.post("/api/admin/maintenance", json={"on": True}).status_code == 403, "POST não-admin -> 403")
         check(not os.path.exists(_cfg.MAINTENANCE_FLAG), "não-admin não criou o flag")
+        check(c.get("/api/internal/maintenance_gate").status_code == 401,
+              "gate: sessão não-admin -> 401 (nginx bloqueia)")
         c.post("/api/logout")
 
         # admin
@@ -1224,24 +1232,13 @@ def test_admin_maintenance():
         db.set_user_admin("adm.maint@test", True)
         check(c.post("/api/login", json={"email": "adm.maint@test", "password": "pw12345678"}).status_code == 200,
               "admin loga")
+        check(c.get("/api/internal/maintenance_gate").status_code == 200,
+              "gate: sessão admin ativa -> 200 (nginx libera)")
 
         r = c.get("/api/admin/maintenance")
         j = r.get_json()
         check(r.status_code == 200 and j.get("on") is False, "GET inicial -> on:false")
-        check(j.get("allowlist") == ["203.0.113.7"], "allowlist parseada do geo do nginx")
-        check(j.get("ip_allowed") is False, "test client fora da allowlist")
-
-        # _ip_in_allowlist: IP exato, CIDR (v4), fora, None e malformado
-        check(app._ip_in_allowlist("203.0.113.7", ["203.0.113.7"]) is True, "ip exato liberado")
-        check(app._ip_in_allowlist("203.0.113.9", ["203.0.113.0/24"]) is True, "CIDR cobre o ip")
-        check(app._ip_in_allowlist("198.51.100.1", ["203.0.113.0/24"]) is False, "fora do CIDR -> False")
-        check(app._ip_in_allowlist(None, ["203.0.113.7"]) is False, "ip None -> False")
-        check(app._ip_in_allowlist("nao-eh-ip", ["203.0.113.7"]) is False, "ip malformado -> False")
-        # parse reconhece CIDR na conf (allowlist é relida a cada request)
-        with open(conf_path, "w", encoding="utf-8") as fh:
-            fh.write("geo $sb_ip_allowed {\n    default 0;\n    203.0.113.0/24 1;   # rede\n}\n")
-        check(c.get("/api/admin/maintenance").get_json().get("allowlist") == ["203.0.113.0/24"],
-              "parse reconhece entrada CIDR")
+        check(set(j.keys()) == {"on"}, "resposta não carrega mais IP/allowlist (gate agora é por sessão)")
 
         # payload inválido -> 400 (bool estrito: string não coage)
         check(c.post("/api/admin/maintenance", json={}).status_code == 400, "POST sem 'on' -> 400")
@@ -1256,6 +1253,9 @@ def test_admin_maintenance():
             check("adm.maint@test" in fh.read(), "flag registra quem ligou (auditoria)")
         check(c.post("/api/admin/maintenance", json={"on": True}).status_code == 200, "on de novo -> 200 (idempotente)")
         check(c.get("/api/admin/maintenance").get_json().get("on") is True, "GET -> on:true")
+        # com a manutenção ligada, a sessão admin CONTINUA passando no gate (é o requisito central da troca)
+        check(c.get("/api/internal/maintenance_gate").status_code == 200,
+              "gate: admin continua liberado com a manutenção ligada")
 
         # mudanças por FORA (break-glass SSH) aparecem no GET
         os.unlink(_cfg.MAINTENANCE_FLAG)
@@ -1275,10 +1275,11 @@ def test_admin_maintenance():
         check(c.post("/api/admin/maintenance", json={"on": True}).status_code in (401, 403),
               "admin desativado não liga")
         check(not os.path.exists(_cfg.MAINTENANCE_FLAG), "admin desativado não criou o flag")
+        check(c.get("/api/internal/maintenance_gate").status_code == 401,
+              "gate: admin desativado -> 401 (nginx bloqueia)")
         c.post("/api/logout")
     finally:
         _cfg.MAINTENANCE_FLAG = old_flag
-        _cfg.MAINTENANCE_ALLOWLIST_CONF = old_conf
         _shutil.rmtree(tmpdir, ignore_errors=True)
         with db._conn() as cc:
             for em in ("adm.maint@test", "comum.maint@test"):
