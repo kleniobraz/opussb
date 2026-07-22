@@ -66,6 +66,13 @@ def exists(s3_key: str) -> bool:
         return False
 
 
+def head_size(s3_key: str) -> int:
+    """Tamanho (bytes) de um objeto no bucket, via HEAD (sem baixar). Usado pelo
+    guard-rail de disco da extração de áudio do podcast, que precisa saber o tamanho
+    do final.mp4 remoto ANTES de decidir se baixa."""
+    return _client().head_object(Bucket=config.S3_BUCKET, Key=_k(s3_key))["ContentLength"]
+
+
 def get_presigned_url(s3_key: str, expiry_seconds: int = 86400,
                       download_name: str = None) -> str:
     """URL presignada de GET. Com download_name, embute response-content-disposition pra o S3

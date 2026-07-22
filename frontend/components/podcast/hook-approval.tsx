@@ -9,7 +9,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Check, Clapperboard, Download, Play, Scissors, Square, Volume2 } from "lucide-react";
+import { Check, Clapperboard, Download, Music, Play, Scissors, Square, Volume2 } from "lucide-react";
 import * as api from "@/lib/api";
 import { fmtHMS, fmtSeconds, nameFromEmail, timeAgo } from "@/lib/format";
 import { Button } from "@/components/ui/button";
@@ -75,9 +75,13 @@ export function HookApproval({ jobId }: { jobId: string }) {
     // Todo estado que roda sozinho no servidor (fila, transcrição, análise de gancho,
     // montagem) precisa de polling; só os que dependem de ação humana (uploaded,
     // aguardando_aprovacao, gancho_aprovado) ou já terminaram (done, error) ficam parados.
+    // A extração do áudio usa a MESMA query (não abre um segundo polling pro /hooks):
+    // enquanto audio_status for 'extraindo', mantém o intervalo ligado mesmo com o job
+    // principal já parado (ex.: episódio 'done' esperando só o MP3 terminar).
     refetchInterval: (q) => {
       const s = q.state.data?.status;
       const parado = ["uploaded", "aguardando_aprovacao", "gancho_aprovado", "done", "error"];
+      if (q.state.data?.audio_status === "extraindo") return 3000;
       return s && !parado.includes(s) ? 3000 : false;
     },
   });
@@ -88,6 +92,7 @@ export function HookApproval({ jobId }: { jobId: string }) {
   const [playing, setPlaying] = useState(false);
   const [approving, setApproving] = useState(false);
   const [composing, setComposing] = useState(false);
+  const [extractingAudio, setExtractingAudio] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [cutting, setCutting] = useState(false);
   // Compartilhado pelos dois branches que oferecem o corte do início (uploaded e
@@ -175,6 +180,21 @@ export function HookApproval({ jobId }: { jobId: string }) {
       toast.error(e instanceof api.ApiError ? e.message : "Falha ao iniciar a montagem.");
     } finally {
       setComposing(false);
+    }
+  }
+
+  // Dispara a extração do MP3 (idempotente no servidor). O acompanhamento é pelo
+  // audio_status que já vem no polling do /hooks, sem query nova.
+  async function extractAudio() {
+    setExtractingAudio(true);
+    try {
+      await api.podcastAudioExtract(jobId);
+      toast.success("Extração do áudio iniciada.");
+      qc.invalidateQueries({ queryKey: ["podcastHooks", jobId] });
+    } catch (e) {
+      toast.error(e instanceof api.ApiError ? e.message : "Falha ao iniciar a extração do áudio.");
+    } finally {
+      setExtractingAudio(false);
     }
   }
 
@@ -286,11 +306,40 @@ export function HookApproval({ jobId }: { jobId: string }) {
               {round1(c.end - c.start)}s), seguido da vinheta e do episódio completo.
             </p>
           )}
-          <Button asChild>
-            <a href={api.podcastFinalUrl(jobId, true)}>
-              <Download className="size-4" /> Baixar o episódio
-            </a>
-          </Button>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button asChild>
+              <a href={api.podcastFinalUrl(jobId, true)}>
+                <Download className="size-4" /> Baixar o episódio
+              </a>
+            </Button>
+
+            {data.audio_status === "extraindo" ? (
+              <div className="w-48 space-y-1.5">
+                <Progress value={50} />
+                <p className="text-xs text-muted-foreground">Extraindo áudio...</p>
+              </div>
+            ) : data.audio_status === "done" ? (
+              <Button asChild variant="outline">
+                <a href={api.podcastAudioUrl(jobId, true)}>
+                  <Music className="size-4" /> Baixar áudio (MP3)
+                </a>
+              </Button>
+            ) : (
+              <div className="space-y-1">
+                {data.audio_status === "error" && (
+                  <p className="text-xs text-red-400">Falha ao extrair o áudio.</p>
+                )}
+                <Button variant="outline" disabled={extractingAudio} onClick={extractAudio}>
+                  <Music className="size-4" />
+                  {extractingAudio
+                    ? "Iniciando..."
+                    : data.audio_status === "error"
+                      ? "Tentar de novo"
+                      : "Baixar áudio (MP3)"}
+                </Button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     );

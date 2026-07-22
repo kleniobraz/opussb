@@ -431,6 +431,17 @@ export const podcastCompose = (id: string) =>
 export const podcastFinalUrl = (id: string, download = false) =>
   "/api/podcast/" + encodeURIComponent(id) + "/final" + (download ? "?download=1" : "");
 
+// Dispara a extração assíncrona do MP3 do episódio já montado (idempotente: 202 se
+// disparou/já está rodando, 200 se o cache já está pronto). Acompanhar pelo audio_status
+// que vem junto do podcastHooks (mesma query, sem endpoint novo pro front consultar).
+export const podcastAudioExtract = (id: string) =>
+  postJson<{ job_id: string; audio_status: string }>(
+    "/api/podcast/" + encodeURIComponent(id) + "/audio",
+  );
+// URL do MP3 do episódio (302 presignado), mesmo padrão de podcastFinalUrl.
+export const podcastAudioUrl = (id: string, download = false) =>
+  "/api/podcast/" + encodeURIComponent(id) + "/audio" + (download ? "?download=1" : "");
+
 // Revisão: sobe o vídeo (FormData), depois faz polling do status até done/error.
 export function captionReviewCreate(file: File): Promise<{ review_id: string }> {
   const fd = new FormData();

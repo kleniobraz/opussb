@@ -34,6 +34,7 @@ import caption_reviewer
 import hooks
 import podcast_compose
 import podcast_cut
+import podcast_audio
 
 # Logging pra stderr: print() no worker do gunicorn fica com buffer e some do
 # journalctl. Um handler próprio no logger "opussb" (sem propagar) garante log
@@ -69,6 +70,25 @@ _upload_lock = threading.Lock()
 # Serializa a admissão de revisões de legenda (check de vaga + reserva). Lane PRÓPRIA,
 # separada do _upload_lock: uma revisão nunca disputa o slot da geração de clipes.
 _review_lock = threading.Lock()
+
+# Serializa a admissão da extração de áudio do podcast (check de status + reserva). Lane
+# PRÓPRIA, separada do _upload_lock: extrair o MP3 de um episódio já pronto não disputa
+# a vaga com a geração de clipes nem com a montagem do podcast. Lock POR JOB (não global,
+# mesmo padrão de _clip_burn_lock): o ramo de cache-hit dentro do lock faz uma chamada de
+# rede ao S3 (s3_client.exists), e um lock global faria a admissão de um job esperar à
+# toa atrás da checagem de outro job sem relação nenhuma.
+_podcast_audio_locks = {}
+_podcast_audio_locks_guard = threading.Lock()
+
+
+def _podcast_audio_lock(job_id: str) -> threading.Lock:
+    with _podcast_audio_locks_guard:
+        lk = _podcast_audio_locks.get(job_id)
+        if lk is None:
+            lk = threading.Lock()
+            _podcast_audio_locks[job_id] = lk
+        return lk
+
 
 # Limita probes simultâneos do yt-dlp (cada um é um subprocess de até 45s). Com 1 worker /
 # 4 threads, sem isto um usuário poderia prender as 4 threads em probes e travar TODAS as
@@ -3210,15 +3230,46 @@ def _job_hooks(job) -> list:
         return []
 
 
+def _podcast_audio_stale(job: dict) -> bool:
+    """True se `podcast_audio_status` está em 'extraindo' mas `updated_at` já passou do
+    teto de staleness (JOB_STALE_MINUTES): sinal de thread morta (crash/restart do
+    systemd) sem heartbeat recente, não de trabalho legítimo ainda em andamento."""
+    if job.get("podcast_audio_status") != "extraindo":
+        return False
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=config.JOB_STALE_MINUTES)).isoformat()
+    return (job.get("updated_at") or "") < cutoff
+
+
 @app.route("/api/podcast/<job_id>/hooks")
 @login_required
 def podcast_hooks_view(job_id):
     """Dados da tela de aprovação: os ganchos sugeridos + a escolha já gravada (se houver).
     Biblioteca compartilhada: qualquer usuário ativo vê (igual get_project); a APROVAÇÃO é
-    que exige dono/admin."""
+    que exige dono/admin.
+
+    Auto-cura da extração de áudio: esta é a rota de polling que o front já chama a cada
+    poucos segundos enquanto audio_status == "extraindo" (sem nenhum botão pra reenviar o
+    POST nesse meio tempo). Uma thread morta no meio (ex.: restart do systemd) travaria o
+    job em "extraindo" pra sempre sem este efeito colateral de leitura, mesmo precedente
+    de _ensure_burn (GET que gera/cacheia como efeito colateral). A checagem+escrita roda
+    sob o MESMO lock por job da rota POST (com double-check da leitura já dentro do
+    lock): sem isto, um GET decidindo sobre um snapshot velho podia sobrescrever pra
+    'error' um status 'extraindo' fresco que um POST concorrente acabou de redisparar."""
     job, err = _podcast_job_or_error(job_id)
     if err:
         return err
+    if _podcast_audio_stale(job):
+        with _podcast_audio_lock(job_id):
+            job = db.get_job(job_id)
+            if _podcast_audio_stale(job):
+                log.warning("[podcast_audio] job %s: extração presa há mais de %dmin "
+                           "(detectada via polling), marcando como erro",
+                           job_id, config.JOB_STALE_MINUTES)
+                db.update_job(job_id, podcast_audio_status="error",
+                              podcast_audio_error="Extração interrompida (provavelmente "
+                                                  "por reinício do servidor). Tente "
+                                                  "novamente.")
+                job = db.get_job(job_id)
     try:
         choice = json.loads(job["hook_choice"]) if job.get("hook_choice") else None
     except ValueError:
@@ -3233,6 +3284,8 @@ def podcast_hooks_view(job_id):
         "intro_cut_at": job.get("intro_cut_at"),
         "source_available": bool(job.get("local_path") and os.path.exists(job["local_path"])),
         "final_available": bool(job.get("podcast_final_key")) and job["status"] == "done",
+        "audio_status": job.get("podcast_audio_status"),
+        "audio_available": bool(job.get("podcast_audio_key")) and job.get("podcast_audio_status") == "done",
         "error": job.get("error") if job["status"] == "error" else None,
     })
 
@@ -3358,6 +3411,55 @@ def podcast_final(job_id):
     if request.args.get("download"):
         dl = os.path.splitext(job.get("filename") or "podcast")[0] + "_final.mp4"
     return redirect(s3_client.get_presigned_url(key, download_name=dl), code=302)
+
+
+@app.route("/api/podcast/<job_id>/audio", methods=["POST"])
+@login_required
+def podcast_audio_route(job_id):
+    """Dispara a extração ASSÍNCRONA do áudio (MP3) do episódio já montado: thread de
+    fundo + polling (GET desta mesma rota), igual à queima sob demanda dos clipes. Um
+    episódio de horas tornaria a extração síncrona mais lenta que o timeout do nginx
+    (abordagem já tentada e rejeitada por esse motivo), daí a rota só disparar e voltar
+    202. Mesma autorização de podcast_final (biblioteca compartilhada: qualquer usuário
+    ativo pode pedir o áudio de qualquer projeto, sem gate de dono/admin)."""
+    job, err = _podcast_job_or_error(job_id)
+    if err:
+        return err
+    if job["status"] != "done" or not job.get("podcast_final_key"):
+        return jsonify({"error": "O episódio ainda não foi montado."}), 409
+
+    with _podcast_audio_lock(job_id):
+        job = db.get_job(job_id)
+        if job.get("podcast_audio_status") == "done" and job.get("podcast_audio_key") \
+                and s3_client.exists(job["podcast_audio_key"]):
+            return jsonify({"job_id": job_id, "audio_status": "done"}), 200
+        if job.get("podcast_audio_status") == "extraindo":
+            # A auto-cura via polling (podcast_hooks_view) já cobre o caso comum; esta
+            # checagem redundante aqui só cobre quem chama o POST direto sem nunca ter
+            # passado pelo GET.
+            if not _podcast_audio_stale(job):
+                return jsonify({"job_id": job_id, "audio_status": "extraindo"}), 202
+            log.warning("[podcast_audio] job %s: extração presa há mais de %dmin, "
+                       "redisparando", job_id, config.JOB_STALE_MINUTES)
+        db.update_job(job_id, podcast_audio_status="extraindo", podcast_audio_error=None)
+
+    threading.Thread(target=podcast_audio.run_podcast_audio_extract, args=(job_id,),
+                     daemon=True).start()
+    return jsonify({"job_id": job_id, "audio_status": "extraindo"}), 202
+
+
+@app.route("/api/podcast/<job_id>/audio")
+@login_required
+def podcast_audio_download(job_id):
+    """302 pra URL presignada do MP3 já extraído (mesmo padrão de podcast_final)."""
+    job, err = _podcast_job_or_error(job_id)
+    if err:
+        return err
+    key = job.get("podcast_audio_key")
+    if not key or job.get("podcast_audio_status") != "done":
+        return jsonify({"error": "O áudio ainda não foi extraído."}), 409
+    dl_name = _safe_filename(os.path.splitext(job.get("filename") or "podcast")[0]) + ".mp3"
+    return redirect(s3_client.get_presigned_url(key, download_name=dl_name), code=302)
 
 
 def _is_youtube_url(url: str) -> bool:

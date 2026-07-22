@@ -125,6 +125,8 @@ export interface PodcastHooksResponse {
   source_available: boolean; // 16:9 ainda no servidor (preview e aprovação dependem dele)
   final_available?: boolean; // episódio montado no S3 (status 'done')
   error?: string | null; // mensagem quando status 'error' (retry = montar de novo)
+  audio_status?: string | null; // "extraindo" | "done" | "error" | ausente (nunca pedido)
+  audio_available?: boolean; // MP3 já extraído e no S3
 }
 
 // Uma opção da biblioteca de telas finais (outro anexado ao fim do clipe).

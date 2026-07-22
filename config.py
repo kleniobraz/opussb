@@ -115,6 +115,19 @@ COMPOSE_TIMEOUT: int = int(os.environ.get("COMPOSE_TIMEOUT", "900"))
 # de estourar o volume no meio do concat.
 COMPOSE_DISK_FACTOR: float = float(os.environ.get("COMPOSE_DISK_FACTOR", "2.2"))
 
+# Extração de áudio (MP3) do episódio já montado. Roda em thread de FUNDO (a rota só
+# dispara e volta 202), então o acquire pode ser um "with" bloqueante simples, sem
+# timeout+fallback como o BURN (que precisa disso por rodar síncrono dentro do request).
+# Lane PRÓPRIA porque a operação roda sobre o episódio INTEIRO (pode ser horas/GBs);
+# reaproveitar o THUMB_CONCURRENCY (pensado pra 1 frame/leitura curta) deixaria
+# thumbnail/waveform de outros usuários esperando atrás de uma extração longa.
+PODCAST_AUDIO_CONCURRENCY: int = int(os.environ.get("PODCAST_AUDIO_CONCURRENCY", "1"))
+# Guard-rail de disco da extração de áudio: exige livre >= fator x tamanho do final.mp4
+# remoto (pico real ≈ o próprio final.mp4 baixado + o mp3 gerado, que é desprezível perto
+# do vídeo; 1.3 dá margem) antes de baixar dezenas de GB às cegas, mesmo espírito do
+# COMPOSE_DISK_FACTOR (a VPS não tem swap).
+PODCAST_AUDIO_DISK_FACTOR: float = float(os.environ.get("PODCAST_AUDIO_DISK_FACTOR", "1.3"))
+
 # Corte manual do início do corpo bruto, ANTES da transcrição (§39 Parte 2): reencoda só o
 # pedacinho até o próximo keyframe e copia o resto em -c copy (nunca reencoda o corpo
 # inteiro). Janela de busca do próximo keyframe (segundos) a partir do ponto marcado.

@@ -89,6 +89,13 @@ def init_db() -> None:
         # rodar (não só no sucesso), igual hook_choice é gravado antes da montagem: permite
         # o front distinguir erro do corte de erro de outra fase. NULL = nunca cortou.
         _ensure_column(conn, "jobs", "intro_cut_at", "REAL")
+        # Extração de áudio (MP3) do episódio final já montado, sob demanda (thread de
+        # fundo, ver podcast_audio.py). status: None/'extraindo'/'done'/'error'. key aponta
+        # pro cache no S3 (jobs/{job_id}/podcast/audio.mp3); error guarda a mensagem
+        # quando status='error'. NULL sempre em jobs de clipes.
+        _ensure_column(conn, "jobs", "podcast_audio_status", "TEXT")
+        _ensure_column(conn, "jobs", "podcast_audio_key", "TEXT")
+        _ensure_column(conn, "jobs", "podcast_audio_error", "TEXT")
         # Índices: list_jobs filtra por dono e ordena por created_at; count_active e
         # reap_stale filtram por status. Baratos e ajudam conforme o histórico cresce.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs(user_email, created_at)")
@@ -907,6 +914,20 @@ def heartbeat_job(job_id: str, expected_status: str) -> None:
         conn.execute(
             "UPDATE jobs SET updated_at = ? WHERE job_id = ? AND status = ?",
             (_now(), job_id, expected_status),
+        )
+
+
+def heartbeat_podcast_audio(job_id: str) -> None:
+    """Mesmo espírito de heartbeat_job, mas checa `podcast_audio_status` em vez de
+    `jobs.status`: durante a extração de áudio do podcast, jobs.status fica fixo em
+    'done' o tempo todo (quem rastreia o andamento é essa coluna à parte). Sem este
+    heartbeat, um download do final.mp4 (dezenas de GB) ou a espera na fila do semáforo
+    ficaria indistinguível de uma thread morta pro checador de staleness da rota do
+    áudio, arriscando um redisparo duplicado sobre o MESMO workdir."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE jobs SET updated_at = ? WHERE job_id = ? AND podcast_audio_status = ?",
+            (_now(), job_id, "extraindo"),
         )
 
 
