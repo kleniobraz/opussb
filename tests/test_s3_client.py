@@ -1,3 +1,7 @@
+import time
+
+import pytest
+
 import s3_client
 
 
@@ -57,3 +61,51 @@ def test_get_presigned_url_accelerate_usa_client_separado(mocker):
         ExpiresIn=86400,
     )
     mock_normal.generate_presigned_url.assert_not_called()
+
+
+# ─── download_file: watchdog de stall (achado em produção 2026-07-24) ────────
+
+def test_download_file_feliz_no_stall(mocker, tmp_path):
+    """Download que segue progredindo (Callback chamado) termina normal, sem exceção."""
+    mock_s3 = mocker.MagicMock()
+
+    def _download(Bucket, Key, Filename, Callback=None):
+        for _ in range(3):
+            time.sleep(0.05)
+            Callback(1024)
+
+    mock_s3.download_file.side_effect = _download
+    mocker.patch("s3_client._client", return_value=mock_s3)
+
+    s3_client.download_file("jobs/abc/final.mp4", str(tmp_path / "out.mp4"), stall_timeout=0.3)
+
+    mock_s3.download_file.assert_called_once()
+
+
+def test_download_file_sem_progresso_desiste(mocker, tmp_path):
+    """Sem NENHUM byte novo por stall_timeout, desiste com DownloadStalledError mesmo com
+    a chamada real do boto3 ainda 'presa' (nunca retorna, igual o achado em produção)."""
+    mock_s3 = mocker.MagicMock()
+
+    def _download(Bucket, Key, Filename, Callback=None):
+        Callback(1024)  # um pouco de progresso, depois trava de vez
+        time.sleep(5)  # bem mais que o stall_timeout do teste
+
+    mock_s3.download_file.side_effect = _download
+    mocker.patch("s3_client._client", return_value=mock_s3)
+
+    t0 = time.monotonic()
+    with pytest.raises(s3_client.DownloadStalledError, match="sem progresso"):
+        s3_client.download_file("jobs/abc/final.mp4", str(tmp_path / "out.mp4"), stall_timeout=0.3)
+    # Desistiu perto do teto pedido, não esperou os 5s da chamada presa.
+    assert time.monotonic() - t0 < 2.0
+
+
+def test_download_file_propaga_erro_real_do_boto3(mocker, tmp_path):
+    """Uma falha de verdade do boto3 (não um stall) ainda propaga normal pro chamador."""
+    mock_s3 = mocker.MagicMock()
+    mock_s3.download_file.side_effect = RuntimeError("acesso negado")
+    mocker.patch("s3_client._client", return_value=mock_s3)
+
+    with pytest.raises(RuntimeError, match="acesso negado"):
+        s3_client.download_file("jobs/abc/final.mp4", str(tmp_path / "out.mp4"), stall_timeout=1.0)

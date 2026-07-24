@@ -1,6 +1,7 @@
 import os
 import logging
 import threading
+import time
 
 import boto3
 from botocore.config import Config
@@ -8,6 +9,14 @@ from botocore.exceptions import ClientError
 import config
 
 log = logging.getLogger("opussb.s3")
+
+
+class DownloadStalledError(RuntimeError):
+    """download_file sem NENHUM byte novo por config.S3_DOWNLOAD_STALL_TIMEOUT segundos.
+    Achado em produção 2026-07-24: um download de 7,6GB (extração de MP3 do podcast) travou
+    sem se mover, sem exceção nenhuma do boto3 (retry/read_timeout internos não salvaram
+    dessa vez, causa exata não confirmada), e pendurou o app inteiro (1 worker/4 threads do
+    gunicorn, site caiu pro time inteiro). Esse watchdog é a garantia de FORA do boto3."""
 
 # Cliente boto3 cacheado: criar um client tem custo (sessão + resolução de endpoint)
 # e antes a gente recriava em TODA chamada (upload/download/exists/presign), inclusive
@@ -76,10 +85,56 @@ def upload_file(local_path: str, s3_key: str) -> None:
     log.info("upload ok: %s", _k(s3_key))
 
 
-def download_file(s3_key: str, local_path: str) -> None:
-    """Baixa um objeto do bucket para um caminho local (usado pela queima sob
-    demanda, que parte da base sem legenda guardada no S3)."""
-    _client().download_file(config.S3_BUCKET, _k(s3_key), local_path)
+def download_file(s3_key: str, local_path: str, stall_timeout: float = None) -> None:
+    """Baixa um objeto do bucket para um caminho local. Usado pela queima sob demanda (base
+    sem legenda), pela montagem/corte do podcast e pela extração de MP3 (todos passam por
+    AQUI, então o watchdog abaixo protege todos de uma vez, não só quem chamar de novo).
+
+    Roda o download real numa thread própria e mede o tempo desde o ÚLTIMO byte recebido
+    (via Callback do boto3, não uma medida de tamanho de arquivo no disco): sem NENHUM
+    progresso por stall_timeout segundos (default config.S3_DOWNLOAD_STALL_TIMEOUT), desiste
+    e levanta DownloadStalledError, mesmo que o boto3 nunca tenha lançado exceção nenhuma
+    sozinho. A thread travada fica órfã (daemon; não tem cancelamento limpo de um
+    download_file em andamento no boto3) e pode, em tese, continuar escrevendo em
+    local_path se um dia destravar sozinha; inofensivo na prática porque todo chamador
+    (podcast_compose/podcast_cut/podcast_audio/app.py) limpa o workdir inteiro no fim, sucesso
+    ou erro, então o pior caso é um arquivo órfão apagado junto, nunca corrupção do próximo
+    download."""
+    if stall_timeout is None:
+        stall_timeout = config.S3_DOWNLOAD_STALL_TIMEOUT
+    progresso = {"ultimo": time.monotonic()}
+    trava = threading.Lock()
+
+    def _callback(bytes_amount):
+        with trava:
+            progresso["ultimo"] = time.monotonic()
+
+    resultado = {}
+
+    def _run():
+        try:
+            _client().download_file(config.S3_BUCKET, _k(s3_key), local_path, Callback=_callback)
+        except Exception as e:
+            resultado["erro"] = e
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    # Checa o progresso em fatias de no máximo 5s (produção) OU do próprio stall_timeout,
+    # o que for menor: sem isso, um stall_timeout curto (ex.: teste) só seria detectado no
+    # próximo múltiplo de 5s, bem depois do teto pedido.
+    fatia = min(5.0, stall_timeout)
+    while True:
+        t.join(timeout=fatia)
+        if not t.is_alive():
+            break
+        with trava:
+            parado_ha = time.monotonic() - progresso["ultimo"]
+        if parado_ha > stall_timeout:
+            raise DownloadStalledError(
+                f"download de {s3_key} sem progresso por mais de {stall_timeout:.0f}s"
+            )
+    if "erro" in resultado:
+        raise resultado["erro"]
 
 
 def exists(s3_key: str) -> bool:

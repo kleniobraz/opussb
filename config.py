@@ -19,6 +19,13 @@ S3_SECRET_KEY: str = os.environ["S3_SECRET_KEY"]
 # nunca tocar os objetos de producao (isolamento leve). Aplicado so na borda do s3_client, entao
 # app.py/processor.py seguem construindo keys SEM prefixo. Se setado, deve terminar em "/".
 S3_KEY_PREFIX: str = os.environ.get("S3_KEY_PREFIX", "")
+# Teto de PROGRESSO (não de duração total) pra qualquer download_file: sem nenhum byte novo
+# por esse tempo, s3_client.download_file desiste (DownloadStalledError) em vez de pendurar
+# o worker pra sempre. Achado em produção 2026-07-24: download de 7,6GB travou sem se mover
+# e derrubou o site inteiro (1 worker/4 threads do gunicorn). 180s dá folga generosa pra
+# transferência lenta de verdade (a VPS baixa do bucket a ~98MB/s quando funciona), sem
+# deixar um travamento genuíno se arrastar por minutos a mais.
+S3_DOWNLOAD_STALL_TIMEOUT: float = float(os.environ.get("S3_DOWNLOAD_STALL_TIMEOUT", "180"))
 
 # RunPod
 RUNPOD_API_KEY: str = os.environ["RUNPOD_API_KEY"]
