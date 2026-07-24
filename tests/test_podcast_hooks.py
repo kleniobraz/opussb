@@ -319,7 +319,7 @@ def _roda_thread1(job_id, tmp_path, mocker):
     import processor
     os.makedirs(os.path.join(config.JOB_DIR, job_id), exist_ok=True)
     mocker.patch("processor._s3_upload_with_retry")
-    mocker.patch("s3_client.get_presigned_url", return_value="https://s3/audio.mp3")
+    mocker.patch("s3_client.get_presigned_url_accelerate", return_value="https://s3/audio.mp3")
     post = mocker.patch("processor.requests.post",
                         return_value=SimpleNamespace(raise_for_status=lambda: None))
     processor.run_thread1(job_id)

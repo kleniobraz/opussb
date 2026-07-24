@@ -50,7 +50,10 @@ def run_thread1(job_id: str) -> None:
         db.update_job(job_id, status="uploading_audio", progress=25)
         audio_s3_key = f"jobs/{job_id}/audio/audio.mp3"
         _s3_upload_with_retry(audio_path, audio_s3_key)
-        audio_s3_url = s3_client.get_presigned_url(audio_s3_key, expiry_seconds=86400)
+        # Accelerate SÓ nesta URL (o RunPod baixa de fora do Brasil, longe do bucket em SP;
+        # mitigação do download intermitente achado em produção 2026-07-24). Toda outra
+        # geração de URL do app segue em get_presigned_url normal, sem accelerate.
+        audio_s3_url = s3_client.get_presigned_url_accelerate(audio_s3_key, expiry_seconds=86400)
         db.update_job(job_id, audio_s3_url=audio_s3_url, status="transcribing", progress=35)
 
         # Podcast não tem min/max (NULL) e o nó de scoring do N8N interpola esses campos

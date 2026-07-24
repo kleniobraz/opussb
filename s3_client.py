@@ -15,6 +15,8 @@ log = logging.getLogger("opussb.s3")
 # então um singleton guardado sob lock atende os 4 threads do gunicorn com segurança.
 _client_singleton = None
 _client_lock = threading.Lock()
+_accel_client_singleton = None
+_accel_client_lock = threading.Lock()
 
 
 def _k(s3_key: str) -> str:
@@ -41,6 +43,30 @@ def _client():
                     ),
                 )
     return _client_singleton
+
+
+def _accel_client():
+    """Client separado com S3 Transfer Acceleration, SEM endpoint_url explícito (o boto3
+    só resolve o host bucket.s3-accelerate.amazonaws.com sozinho quando não há endpoint_url
+    fixo pra sobrepor essa resolução). Usado SÓ por get_presigned_url_accelerate: mitigação
+    do download intermitente do RunPod (worker fora do Brasil, longe do bucket em SP,
+    achado em produção 2026-07-24). O resto do app segue em _client(), sem accelerate."""
+    global _accel_client_singleton
+    if _accel_client_singleton is None:
+        with _accel_client_lock:
+            if _accel_client_singleton is None:
+                _accel_client_singleton = boto3.client(
+                    "s3",
+                    aws_access_key_id=config.S3_ACCESS_KEY,
+                    aws_secret_access_key=config.S3_SECRET_KEY,
+                    region_name="sa-east-1",
+                    config=Config(
+                        signature_version="s3v4",
+                        retries={"max_attempts": 3, "mode": "standard"},
+                        s3={"use_accelerate_endpoint": True},
+                    ),
+                )
+    return _accel_client_singleton
 
 
 def upload_file(local_path: str, s3_key: str) -> None:
@@ -84,6 +110,17 @@ def get_presigned_url(s3_key: str, expiry_seconds: int = 86400,
     return _client().generate_presigned_url(
         "get_object",
         Params=params,
+        ExpiresIn=expiry_seconds,
+    )
+
+
+def get_presigned_url_accelerate(s3_key: str, expiry_seconds: int = 86400) -> str:
+    """URL presignada de GET via o endpoint accelerate do S3. Uso ÚNICO hoje: o áudio que o
+    RunPod baixa pra transcrever (ver processor.run_thread1). NÃO chamar pra outros usos,
+    o bucket precisa ter Transfer Acceleration habilitado (já está, verificado 2026-07-24)."""
+    return _accel_client().generate_presigned_url(
+        "get_object",
+        Params={"Bucket": config.S3_BUCKET, "Key": _k(s3_key)},
         ExpiresIn=expiry_seconds,
     )
 
