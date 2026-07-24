@@ -3164,6 +3164,17 @@ def podcast_cut_intro_route(job_id):
         # qualquer 'error' com 409; sem o intro_cut_at, é outra falha do pipeline, não
         # um corte pra tentar de novo, e continua fora).
         job = db.get_job(job_id)
+        # Corte-sobre-corte proibido (achado em produção, job Thiago Medeiros): 'uploaded'
+        # com intro_cut_at já gravado só acontece DEPOIS de um corte bem-sucedido (é
+        # justamente esse par de valores que _cortar_inicio grava junto no sucesso). Cortar
+        # de novo em cima do arquivo já cortado reencoda/copia por cima de uma emenda
+        # anterior e quebra a matemática de duração da validação. Ajustar o ponto exige
+        # reenviar o episódio e cortar uma vez só.
+        if job["status"] == "uploaded" and job.get("intro_cut_at") is not None:
+            return jsonify({
+                "error": "Este episódio já teve o início cortado. Pra ajustar o ponto de "
+                         "corte, envie o episódio de novo e corte uma vez só."
+            }), 409
         pode_tentar_de_novo = job["status"] == "error" and job.get("intro_cut_at") is not None
         if job["status"] != "uploaded" and not pode_tentar_de_novo:
             return jsonify({"error": f"O podcast não está aguardando corte (status: {job['status']})."}), 409

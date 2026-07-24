@@ -366,6 +366,25 @@ def test_rota_409_status_errado(client, monkeypatch, tmp_path):
     assert r.status_code == 409
 
 
+def test_rota_409_corte_ja_feito(client, monkeypatch, tmp_path):
+    """Corte-sobre-corte (bug real de produção, job Thiago Medeiros): com intro_cut_at
+    JÁ gravado e status 'uploaded' (um corte anterior teve sucesso, é esse par de valores
+    que _cortar_inicio grava junto no sucesso), a rota recusa um novo corte em vez de
+    rodar a thread de novo em cima do arquivo já cortado."""
+    monkeypatch.setattr(config, "PODCAST_ENABLED", True)
+    monkeypatch.setattr(config, "PODCAST_CUT_MIN_REMAINING_SECONDS", 1.0)
+    jid = "TEST-cut-ja-feito"
+    _job_pronto_para_corte(tmp_path, jid)
+    db.update_job(jid, intro_cut_at=1.0)  # simula corte anterior bem-sucedido (status segue 'uploaded')
+    _login(client, "t@t")
+
+    r = client.post(f"/api/podcast/{jid}/cut-intro", json={"cut_at": 2.0})
+    assert r.status_code == 409
+    job = db.get_job(jid)
+    assert job["status"] == "uploaded"
+    assert job["intro_cut_at"] == 1.0  # não foi sobrescrito por uma tentativa nova
+
+
 def test_corte_falho_retenta(client, monkeypatch, tmp_path):
     """Com intro_cut_at gravado, status error aceita corte de novo (202, thread real
     até 'uploaded') e limpa o erro anterior."""

@@ -631,6 +631,32 @@ export function HookApproval({ jobId }: { jobId: string }) {
   // um corte manual do início (timer, "em instantes", vinheta do estúdio de origem etc.,
   // de duração variável) antes de transcrever; é OPCIONAL, então "pular" fica sempre visível
   // e não depende de mexer no vídeo.
+  //
+  // Já com intro_cut_at gravado (um corte anterior teve sucesso) NÃO reoferece "cortar de
+  // novo": corte-sobre-corte quebra a matemática de duração da emenda (achado em produção,
+  // job Thiago Medeiros, e o backend já recusa a chamada). Pra ajustar o ponto, a saída é
+  // reenviar o episódio e cortar uma vez só.
+  if (data.status === "uploaded" && data.intro_cut_at != null) {
+    return (
+      <div className="view-pad">
+        {cabecalho("aguardando transcrição")}
+        <div className="mx-auto max-w-[1180px] space-y-4">
+          <p className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-400">
+            Já foram cortados {fmtHMS(data.intro_cut_at)} do início deste episódio.
+          </p>
+          <p className="text-sm text-muted-foreground">
+            Precisa ajustar o ponto de corte? Envie o episódio de novo e corte uma vez só,
+            depois de cortado não dá mais pra recortar este mesmo envio.
+          </p>
+          <Button disabled={transcribing} onClick={startTranscribe}>
+            <SkipForward className="size-4" />
+            {transcribing ? "Disparando..." : "Seguir pra transcrição"}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   if (data.status === "uploaded") {
     return (
       <div className="view-pad">
@@ -638,22 +664,13 @@ export function HookApproval({ jobId }: { jobId: string }) {
         {/* mesma largura de .view-pad-narrow (1180px), igual ao wrapper do CorteInicio */}
         <div className="mx-auto max-w-[1180px] space-y-4">
           {!cortando ? (
-            <>
-              {data.intro_cut_at != null && (
-                <p className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-400">
-                  Já foram cortados {fmtHMS(data.intro_cut_at)} do início deste episódio. Dá
-                  pra cortar de novo se precisar ajustar, ou seguir direto pra transcrição.
-                </p>
-              )}
-
-              <EscolhaInicio
-                jobId={jobId}
-                sourceAvailable={data.source_available}
-                pulando={transcribing}
-                onPular={startTranscribe}
-                onCortar={() => setCortando(true)}
-              />
-            </>
+            <EscolhaInicio
+              jobId={jobId}
+              sourceAvailable={data.source_available}
+              pulando={transcribing}
+              onPular={startTranscribe}
+              onCortar={() => setCortando(true)}
+            />
           ) : (
             <>
               <Button variant="ghost" size="sm" onClick={() => setCortando(false)}>
