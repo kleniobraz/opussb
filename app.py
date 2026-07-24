@@ -3446,10 +3446,19 @@ def podcast_audio_route(job_id):
     episódio de horas tornaria a extração síncrona mais lenta que o timeout do nginx
     (abordagem já tentada e rejeitada por esse motivo), daí a rota só disparar e voltar
     202. Mesma autorização de podcast_final (biblioteca compartilhada: qualquer usuário
-    ativo pode pedir o áudio de qualquer projeto, sem gate de dono/admin)."""
+    ativo pode pedir o áudio de qualquer projeto, sem gate de dono/admin).
+
+    Kill switch de emergência (config.PODCAST_AUDIO_ENABLED, default OFF): achado em
+    produção 2026-07-24 que essa extração pode travar o app inteiro (mesma classe do
+    download_file, mas em outro ponto do caminho, ainda não isolado). Fica fora do ar até
+    o conserto real; a rota de download (GET, abaixo) continua liberada pra quem já tem
+    o MP3 pronto."""
     job, err = _podcast_job_or_error(job_id)
     if err:
         return err
+    if not config.PODCAST_AUDIO_ENABLED:
+        return jsonify({"error": "Extração de áudio temporariamente desativada (investigando "
+                                 "um problema). Tente novamente mais tarde."}), 503
     if job["status"] != "done" or not job.get("podcast_final_key"):
         return jsonify({"error": "O episódio ainda não foi montado."}), 409
 

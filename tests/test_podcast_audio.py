@@ -129,6 +129,7 @@ def _login(client, email):
 
 def test_audio_route_exige_episodio_montado(client, monkeypatch):
     monkeypatch.setattr(config, "PODCAST_ENABLED", True)
+    monkeypatch.setattr(config, "PODCAST_AUDIO_ENABLED", True)
     db.create_podcast_job("TEST-audio-pre", "epis.mp4", "/tmp/x.mp4", "t@t", "vtest")
     db.update_job("TEST-audio-pre", status="gancho_aprovado")
     _login(client, "t@t")
@@ -143,10 +144,23 @@ def test_audio_route_flag_off_404(client, monkeypatch):
     assert client.get("/api/podcast/qualquer/audio").status_code == 404
 
 
+def test_audio_route_kill_switch_off_por_padrao_503(client, monkeypatch):
+    """Kill switch de emergência (2026-07-24): sem setar PODCAST_AUDIO_ENABLED, o POST
+    recusa com 503 mesmo com o job pronto pra extrair (depois do gate de PODCAST_ENABLED/
+    job existir, antes de qualquer outra checagem de estado)."""
+    monkeypatch.setattr(config, "PODCAST_ENABLED", True)
+    jid, _ = _job_montado("TEST-audio-kill-switch")
+    _login(client, "t@t")
+    r = client.post(f"/api/podcast/{jid}/audio")
+    assert r.status_code == 503
+    assert "desativada" in r.get_json()["error"]
+
+
 def test_audio_route_admissao_nao_duplica_disparo(client, monkeypatch, mocker):
     """Dois disparos seguidos (corrida) no mesmo job: só a 1ª chamada dispara a
     extração de fato; a 2ª encontra 'extraindo' fresco e devolve 202 sem redisparar."""
     monkeypatch.setattr(config, "PODCAST_ENABLED", True)
+    monkeypatch.setattr(config, "PODCAST_AUDIO_ENABLED", True)
     extrai = mocker.patch("podcast_audio.run_podcast_audio_extract")
     jid, _ = _job_montado("TEST-audio-race")
     _login(client, "t@t")
@@ -165,6 +179,7 @@ def test_audio_route_redispara_apos_staleness(client, monkeypatch, mocker):
     """updated_at antigo (> JOB_STALE_MINUTES) com status 'extraindo' é tratado como
     thread morta (ex.: restart do systemd): a rota redispara em vez de travar pra sempre."""
     monkeypatch.setattr(config, "PODCAST_ENABLED", True)
+    monkeypatch.setattr(config, "PODCAST_AUDIO_ENABLED", True)
     extrai = mocker.patch("podcast_audio.run_podcast_audio_extract")
     jid, _ = _job_montado("TEST-audio-stale")
     db.update_job(jid, podcast_audio_status="extraindo")
@@ -184,6 +199,7 @@ def test_audio_route_extraindo_recente_nao_redispara(client, monkeypatch, mocker
     """Contraprova do teste de staleness: 'extraindo' com updated_at FRESCO não
     redispara (thread legitimamente em andamento)."""
     monkeypatch.setattr(config, "PODCAST_ENABLED", True)
+    monkeypatch.setattr(config, "PODCAST_AUDIO_ENABLED", True)
     extrai = mocker.patch("podcast_audio.run_podcast_audio_extract")
     jid, _ = _job_montado("TEST-audio-fresco")
     db.update_job(jid, podcast_audio_status="extraindo")
@@ -197,6 +213,7 @@ def test_audio_route_extraindo_recente_nao_redispara(client, monkeypatch, mocker
 
 def test_audio_route_cache_hit_200_sem_nova_thread(client, monkeypatch, mocker):
     monkeypatch.setattr(config, "PODCAST_ENABLED", True)
+    monkeypatch.setattr(config, "PODCAST_AUDIO_ENABLED", True)
     extrai = mocker.patch("podcast_audio.run_podcast_audio_extract")
     jid, _ = _job_montado("TEST-audio-cache")
     db.update_job(jid, podcast_audio_status="done",
@@ -214,6 +231,7 @@ def test_audio_route_feliz_idle_extraindo_done(client, monkeypatch, tmp_path, s3
     """Caminho feliz completo: idle -> POST dispara 'extraindo' -> a thread real
     (ffmpeg + S3 mockado) termina e o status vira 'done'."""
     monkeypatch.setattr(config, "PODCAST_ENABLED", True)
+    monkeypatch.setattr(config, "PODCAST_AUDIO_ENABLED", True)
     jid, final_key = _job_montado("TEST-audio-feliz")
     s3_falso["objetos"] = {final_key: _final_sintetico(tmp_path)}
 
@@ -243,6 +261,7 @@ def test_audio_route_feliz_idle_extraindo_done(client, monkeypatch, tmp_path, s3
 
 def test_audio_download_route_409_antes_de_extrair(client, monkeypatch):
     monkeypatch.setattr(config, "PODCAST_ENABLED", True)
+    monkeypatch.setattr(config, "PODCAST_AUDIO_ENABLED", True)
     jid, _ = _job_montado("TEST-audio-download-409")
     _login(client, "t@t")
     assert client.get(f"/api/podcast/{jid}/audio").status_code == 409
@@ -326,6 +345,7 @@ def test_hooks_view_auto_cura_extracao_travada(client, monkeypatch):
     """O front nunca re-POSTa enquanto audio_status=='extraindo' (só barra de
     progresso); a auto-cura tem que acontecer na rota de POLLING que ele já chama."""
     monkeypatch.setattr(config, "PODCAST_ENABLED", True)
+    monkeypatch.setattr(config, "PODCAST_AUDIO_ENABLED", True)
     jid, _ = _job_montado("TEST-audio-hooks-travado")
     db.update_job(jid, podcast_audio_status="extraindo")
     _envelhecer(jid)
@@ -344,6 +364,7 @@ def test_hooks_view_extraindo_fresco_nao_e_auto_curado(client, monkeypatch):
     """Contraprova: 'extraindo' com updated_at FRESCO é trabalho legítimo em
     andamento, o GET não pode marcar como erro."""
     monkeypatch.setattr(config, "PODCAST_ENABLED", True)
+    monkeypatch.setattr(config, "PODCAST_AUDIO_ENABLED", True)
     jid, _ = _job_montado("TEST-audio-hooks-fresco")
     db.update_job(jid, podcast_audio_status="extraindo")
     _login(client, "t@t")
@@ -363,6 +384,7 @@ def test_hooks_view_get_nao_sobrescreve_post_concorrente_redisparado(client, mon
     'error' às cegas, e um 'tentar de novo' subsequente do usuário disputaria o mesmo
     workdir com a extração redisparada pelo POST (ainda rodando)."""
     monkeypatch.setattr(config, "PODCAST_ENABLED", True)
+    monkeypatch.setattr(config, "PODCAST_AUDIO_ENABLED", True)
     extrai = mocker.patch("podcast_audio.run_podcast_audio_extract")
     jid, _ = _job_montado("TEST-audio-corrida-get-post")
     db.update_job(jid, podcast_audio_status="extraindo")

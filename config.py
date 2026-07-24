@@ -134,6 +134,12 @@ PODCAST_AUDIO_CONCURRENCY: int = int(os.environ.get("PODCAST_AUDIO_CONCURRENCY",
 # do vídeo; 1.3 dá margem) antes de baixar dezenas de GB às cegas, mesmo espírito do
 # COMPOSE_DISK_FACTOR (a VPS não tem swap).
 PODCAST_AUDIO_DISK_FACTOR: float = float(os.environ.get("PODCAST_AUDIO_DISK_FACTOR", "1.3"))
+# Kill switch de emergência (default DESLIGADO de propósito): a extração trava o app inteiro
+# quando o download do final.mp4 (ou outro ponto sem teto no caminho) engasga, mesma classe
+# do incidente de 2026-07-24 (achado: o timeout de download_file não cobre esse caminho
+# inteiro). Fica off até o conserto real entrar; ligar exige por PODCAST_AUDIO_ENABLED=true
+# no .env de propósito, não é so tirar do codigo.
+PODCAST_AUDIO_ENABLED: bool = os.environ.get("PODCAST_AUDIO_ENABLED", "false").lower() in ("1", "true", "yes")
 
 # Corte manual do início do corpo bruto, ANTES da transcrição (§39 Parte 2): reencoda só o
 # pedacinho até o próximo keyframe e copia o resto em -c copy (nunca reencoda o corpo
