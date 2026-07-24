@@ -96,6 +96,11 @@ def init_db() -> None:
         _ensure_column(conn, "jobs", "podcast_audio_status", "TEXT")
         _ensure_column(conn, "jobs", "podcast_audio_key", "TEXT")
         _ensure_column(conn, "jobs", "podcast_audio_error", "TEXT")
+        # FPS exato do vídeo de origem do podcast, lido no upload via podcast_compose.
+        # probe_av_signature (mesmo probe da montagem). NULL = job antigo sem a coluna
+        # ou vídeo que o probe não leu; é dado auxiliar da tela "Cortar o início"
+        # (navegação quadro a quadro), nunca crítico pro pipeline.
+        _ensure_column(conn, "jobs", "fps", "REAL")
         # Índices: list_jobs filtra por dono e ordena por created_at; count_active e
         # reap_stale filtram por status. Baratos e ajudam conforme o histórico cresce.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs(user_email, created_at)")
@@ -585,18 +590,20 @@ def create_job(job_id: str, filename: str, min_duration: int, max_duration: int,
 
 
 def create_podcast_job(job_id: str, filename: str, local_path: str,
-                       user_email: str | None, vinheta_id: str) -> None:
+                       user_email: str | None, vinheta_id: str,
+                       fps: float | None = None) -> None:
     """Entrada do pipeline de podcast (§39): o job nasce ESTACIONADO em 'uploaded',
     status que count_active_jobs e reap_stale_jobs ignoram (não compete com a fila de
     clipes nem é morto pelo watchdog; as próximas fases do pipeline é que o movem).
-    Sem min/max (não corta clipes) e captions=0 (o export 16:9 sai sem legenda)."""
+    Sem min/max (não corta clipes) e captions=0 (o export 16:9 sai sem legenda).
+    fps é opcional (None quando o probe não conseguiu ler o vídeo)."""
     with _conn() as conn:
         conn.execute(
             """INSERT INTO jobs
                (job_id, filename, status, progress, local_path, user_email,
-                job_type, vinheta_id, captions, created_at, updated_at)
-               VALUES (?, ?, 'uploaded', 0, ?, ?, 'podcast', ?, 0, ?, ?)""",
-            (job_id, filename, local_path, user_email, vinheta_id, _now(), _now()),
+                job_type, vinheta_id, captions, fps, created_at, updated_at)
+               VALUES (?, ?, 'uploaded', 0, ?, ?, 'podcast', ?, 0, ?, ?, ?)""",
+            (job_id, filename, local_path, user_email, vinheta_id, fps, _now(), _now()),
         )
 
 

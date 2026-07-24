@@ -28,6 +28,17 @@ const buttonVariants = cva(
           "bg-v3-accent text-v3-on-accent font-mono font-bold uppercase tracking-[0.08em] hover:shadow-[0_0_0_1px_var(--v3-accent),0_0_28px_var(--v3-glow)] focus-visible:shadow-[0_0_0_1px_var(--v3-accent),0_0_28px_var(--v3-glow)]",
         v3Ghost:
           "border-v3-border-hover bg-transparent text-v3-text font-mono uppercase tracking-[0.08em] hover:border-v3-accent hover:text-v3-accent",
+        // Variantes do design system oficial (SeuBone Design System, importado via MCP),
+        // por enquanto so na tela de corte de inicio do podcast. border-[var(--sbds-amarelo)]
+        // em vez de border-sbds-amarelo: e um valor arbitrario de proposito, pra garantir que
+        // o tailwind-merge substitua corretamente o border-transparent da base acima (uma
+        // classe custom nomeada nao teria essa garantia de dedupe).
+        sbdsPrimary:
+          "border-[var(--sbds-amarelo)] bg-sbds-amarelo text-sbds-ink-on-amarelo font-bold tracking-[-0.01em] duration-[var(--sbds-dur-fast)] ease-[var(--sbds-ease-brand)] hover:brightness-[1.08] active:scale-[0.98]",
+        sbdsSecondary:
+          "border-[var(--sbds-amarelo)] bg-transparent text-sbds-amarelo font-bold tracking-[-0.01em] duration-[var(--sbds-dur-fast)] ease-[var(--sbds-ease-brand)] hover:brightness-[1.08] active:scale-[0.98]",
+        sbdsGhost:
+          "bg-transparent text-sbds-branco font-bold tracking-[-0.01em] duration-[var(--sbds-dur-fast)] ease-[var(--sbds-ease-brand)] hover:brightness-[1.08] active:scale-[0.98]",
       },
       size: {
         default:
@@ -44,6 +55,17 @@ const buttonVariants = cva(
         // Tamanho encorpado dos CTAs da marca
         brand:
           "h-auto gap-2 rounded-[var(--radius-sm)] px-[22px] py-[13px] text-[0.95rem] [&_svg:not([class*='size-'])]:size-[18px]",
+        // Tamanhos do design system oficial (sm/md/lg do Button de referencia). h-auto
+        // desfaz a altura fixa das outras opcoes (aqui quem define a altura e o padding,
+        // como no tamanho "brand" acima). rounded em colchete pelo mesmo motivo do
+        // border-[var(--sbds-amarelo)] das variantes: garante o dedupe contra o rounded-lg
+        // da base.
+        sbdsSm:
+          "h-auto gap-1.5 rounded-[var(--radius-sbds-sm)] px-4 py-2 text-[13px] has-data-[icon=inline-end]:pr-3 has-data-[icon=inline-start]:pl-3",
+        sbdsMd:
+          "h-auto gap-2 rounded-[var(--radius-sbds-sm)] px-6 py-3 text-[15px] has-data-[icon=inline-end]:pr-4 has-data-[icon=inline-start]:pl-4",
+        sbdsLg:
+          "h-auto gap-2 rounded-[var(--radius-sbds-sm)] px-8 py-4 text-[18px] has-data-[icon=inline-end]:pr-6 has-data-[icon=inline-start]:pl-6",
       },
     },
     defaultVariants: {

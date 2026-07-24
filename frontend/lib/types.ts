@@ -122,6 +122,7 @@ export interface PodcastHooksResponse {
   hooks: PodcastHook[];
   hook_choice: PodcastHookChoice | null;
   intro_cut_at: number | null; // segundos já cortados do início do corpo bruto (null = sem corte)
+  fps: number | null; // fps detectado no upload; null em jobs antigos sem a coluna, front assume 30
   source_available: boolean; // 16:9 ainda no servidor (preview e aprovação dependem dele)
   final_available?: boolean; // episódio montado no S3 (status 'done')
   error?: string | null; // mensagem quando status 'error' (retry = montar de novo)

@@ -54,6 +54,22 @@ export function fmtHMS(s?: number | null): string {
   return m + ":" + pad2(ss);
 }
 
+// Timecode em quadros (M:SS:FF) pro corte manual do início do podcast: minuto corrido, sem
+// rollover de hora (pode passar de 99 num episódio de horas; é minuto contínuo, não H:MM).
+// Segundo e quadro sempre com 2 dígitos. Não é timecode drop-frame de broadcast, é só
+// exibição pro produtor se situar no fps real do arquivo.
+export function fmtFrameTC(seconds: number, fps: number): { m: string; s: string; f: string; totalFrames: number } {
+  const fr = fps > 0 ? fps : 30;
+  const framesPerSec = Math.max(1, Math.round(fr));
+  const totalFrames = Math.max(0, Math.round(seconds * fr));
+  const sec = Math.floor(totalFrames / framesPerSec);
+  const f = totalFrames - sec * framesPerSec;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  const pad2 = (n: number) => (n < 10 ? "0" + n : String(n));
+  return { m: String(m), s: pad2(s), f: pad2(f), totalFrames };
+}
+
 // Inverso de fmtHMS: aceita "SS", "M:SS" ou "H:MM:SS" (a hora, se houver, sem limite; minuto
 // e segundo sempre 0 a 59). null se a entrada não é um timestamp válido.
 export function parseHMS(input: string): number | null {

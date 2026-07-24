@@ -87,6 +87,15 @@ def test_uploaded_fora_da_contagem_e_clipe_dentro():
     assert db.count_active_jobs() == 0
 
 
+def test_create_podcast_job_grava_e_le_fps():
+    db.create_podcast_job("TEST-podfps", "p.mp4", "/tmp/TEST-podfps.mp4", "t@t", "v1", fps=29.97)
+    assert db.get_job("TEST-podfps")["fps"] == pytest.approx(29.97)
+
+    # sem informar fps (default None), pra não quebrar chamadas antigas do pipeline
+    db.create_podcast_job("TEST-podfps2", "p.mp4", "/tmp/TEST-podfps2.mp4", "t@t", "v1")
+    assert db.get_job("TEST-podfps2")["fps"] is None
+
+
 def test_reaper_ignora_uploaded_e_segue_matando_clipe_preso():
     db.create_podcast_job("TEST-pod", "p.mp4", "/tmp/TEST-p.mp4", "t@t", "v1")
     db.create_job("TEST-clip", "c.mp4", 30, 90, "/tmp/TEST-c.mp4")
@@ -217,6 +226,8 @@ def test_podcast_upload_feliz_estaciona_sem_disparar_pipeline(client, monkeypatc
     assert job["job_type"] == "podcast" and job["status"] == "uploaded"
     assert job["vinheta_id"] == v_id and job["captions"] == 0
     assert os.path.exists(job["local_path"])
+    # fps veio do probe_av_signature (reusado, sem probe novo) e bate com o vídeo gerado
+    assert job["fps"] == pytest.approx(30.0)
     thread1.assert_not_called()
     assert db.count_active_jobs() == 0
 

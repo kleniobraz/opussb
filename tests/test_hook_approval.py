@@ -128,6 +128,7 @@ def test_hooks_devolve_sugestoes_e_choice(client, monkeypatch, tmp_path):
     assert [h["text"] for h in body["hooks"]] == ["gancho um", "gancho dois", "gancho três"]
     assert body["hook_choice"] is None
     assert body["source_available"] is True
+    assert body["fps"] is None  # _podcast_aguardando não informa fps (jobs antigos)
 
     r = client.post(f"/api/podcast/{jid}/approve", json={"index": 1, "start": 18.5, "end": 61.0})
     assert r.status_code == 200, r.get_json()

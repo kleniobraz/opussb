@@ -9,13 +9,14 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Check, Clapperboard, Download, Music, Play, Scissors, Square, Volume2 } from "lucide-react";
+import { Check, Clapperboard, Download, Music, Play, Scissors, SkipForward, Square, Volume2 } from "lucide-react";
 import * as api from "@/lib/api";
 import { fmtHMS, fmtSeconds, nameFromEmail, timeAgo } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Slider } from "@/components/ui/slider";
+import { SbdsBox } from "@/components/ui/sbds-box";
 import { CorteInicio } from "@/components/podcast/corte-inicio";
 import type { PodcastHook } from "@/lib/types";
 
@@ -63,6 +64,132 @@ function PontaControle({
         +0,5s
       </Button>
       <span className="text-xs text-muted-foreground">{fmtSeconds(value)}</span>
+    </div>
+  );
+}
+
+// Tela de escolha inicial (Cortar o início / Pular), fiel ao conceito importado do Claude
+// Design (SeuBoné Design System): card de vídeo com o preview real do arquivo (o conceito
+// simula um timer de estúdio, aqui mostramos o frame de verdade, é o mesmo princípio já
+// usado na ferramenta de corte: dado real no lugar de dramatização de protótipo), headline
+// com "ponto certo" em amarelo, os dois cards de ação com ícone + descrição, e a marca
+// d'água do traçado da marca sangrando pra fora da coluna de 900px (igual ao conceito:
+// section inteira position:relative, coluna de conteúdo mais estreita que a página).
+function EscolhaInicio({
+  jobId,
+  sourceAvailable,
+  pulando,
+  onPular,
+  onCortar,
+}: {
+  jobId: string;
+  sourceAvailable: boolean;
+  pulando: boolean;
+  onPular: () => void;
+  onCortar: () => void;
+}) {
+  const [dur, setDur] = useState<number | null>(null);
+
+  return (
+    <div className="relative">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src="/design-system/tracado.png"
+        alt=""
+        aria-hidden="true"
+        className="pointer-events-none absolute -right-20 -top-24 w-[430px] opacity-[0.06]"
+      />
+      <div className="relative max-w-[900px] space-y-6">
+        <div className="flex flex-wrap items-center gap-7">
+          <div className="relative aspect-video w-full flex-none overflow-hidden rounded-sbds-md border border-sbds-border-subtle bg-black sm:w-[380px]">
+            {sourceAvailable && (
+              <video
+                src={api.podcastSourceUrl(jobId)}
+                preload="metadata"
+                muted
+                playsInline
+                onLoadedMetadata={(e) => setDur(e.currentTarget.duration || null)}
+                className="size-full object-cover"
+              />
+            )}
+            <div className="absolute left-2.5 top-2.5 rounded-sbds-pill border border-sbds-border-subtle bg-black/60 px-2.5 py-1 text-[9.5px] font-bold tracking-[0.08em] text-sbds-text-muted uppercase">
+              Começo do arquivo
+            </div>
+            {dur != null && (
+              <div className="absolute right-2.5 bottom-2.5 rounded-sbds-sm border border-sbds-border-subtle bg-black/65 px-2 py-1 text-xs font-semibold text-sbds-branco tabular-nums">
+                {fmtHMS(dur)}
+              </div>
+            )}
+          </div>
+          <div className="min-w-[280px] flex-1 space-y-2.5">
+            <h2 className="text-[27px] leading-[1.1] font-black tracking-[-0.02em] text-sbds-branco">
+              O episódio começa no <span className="text-sbds-amarelo">ponto certo?</span>
+            </h2>
+            <p className="max-w-[420px] text-sm leading-[1.45] text-sbds-text-muted">
+              Antes de transcrever, confira o comecinho do arquivo. Timer, vinheta ou
+              silêncio antes da conversa? Corta fora e o episódio começa limpo.
+            </p>
+          </div>
+        </div>
+
+        <div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <SbdsBox
+              role="button"
+              tabIndex={0}
+              onClick={onCortar}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  onCortar();
+                }
+              }}
+              className="flex cursor-pointer flex-col gap-2.5 border-transparent bg-sbds-amarelo text-sbds-ink-on-amarelo shadow-none transition-[filter,transform] duration-[var(--sbds-dur-fast)] ease-[var(--sbds-ease-brand)] hover:brightness-[1.08] active:scale-[0.98]"
+            >
+              <div className="flex size-10 items-center justify-center rounded-sbds-pill bg-black/12">
+                <Scissors className="size-[19px]" />
+              </div>
+              <div className="text-lg font-black tracking-[-0.02em]">Cortar o início</div>
+              <div className="text-[13px] leading-[1.45] text-sbds-ink-on-amarelo/70">
+                Tem timer, vinheta ou conversa fiada antes do episódio começar. Marque o
+                ponto certo e o resto vai fora.
+              </div>
+            </SbdsBox>
+
+            <SbdsBox
+              role="button"
+              tabIndex={0}
+              onClick={pulando ? undefined : onPular}
+              onKeyDown={(e) => {
+                if (!pulando && (e.key === "Enter" || e.key === " ")) {
+                  e.preventDefault();
+                  onPular();
+                }
+              }}
+              aria-disabled={pulando}
+              className={`flex flex-col gap-2.5 transition-[filter,transform] duration-[var(--sbds-dur-fast)] ease-[var(--sbds-ease-brand)] ${
+                pulando
+                  ? "pointer-events-none opacity-60"
+                  : "cursor-pointer hover:brightness-[1.08] active:scale-[0.98]"
+              }`}
+            >
+              <div className="flex size-10 items-center justify-center rounded-sbds-pill bg-white/6 text-sbds-amarelo">
+                <SkipForward className="size-[18px]" />
+              </div>
+              <div className="text-lg font-bold tracking-[-0.02em]">
+                {pulando ? "Disparando..." : "Pular, já começa certo"}
+              </div>
+              <div className="text-[13px] leading-[1.45] text-sbds-text-muted">
+                A conversa começa direto, sem abertura pra tirar. Segue inteiro pra
+                transcrição.
+              </div>
+            </SbdsBox>
+          </div>
+          <p className="mt-3.5 text-xs text-sbds-text-muted">
+            Nada é apagado: as duas escolhas podem ser desfeitas antes da transcrição.
+          </p>
+        </div>
+      </div>
     </div>
   );
 }
@@ -402,7 +529,8 @@ export function HookApproval({ jobId }: { jobId: string }) {
     return (
       <div className="view-pad">
         {cabecalho("corte de início falhou")}
-        <div className="max-w-2xl space-y-4">
+        {/* mesma largura de .view-pad-narrow (1180px), igual ao wrapper do CorteInicio */}
+        <div className="mx-auto max-w-[1180px] space-y-4">
           <p className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-400">
             O corte do início falhou: {data.error || "erro desconhecido"}. O vídeo original
             continua íntegro no servidor.
@@ -415,21 +543,13 @@ export function HookApproval({ jobId }: { jobId: string }) {
                 novo um pouco antes ou depois, ou pule sem cortar.
               </p>
 
-              <div className="flex flex-wrap gap-3">
-                <Button
-                  size="lg"
-                  variant="outline"
-                  disabled={transcribing}
-                  onClick={startTranscribe}
-                >
-                  <Clapperboard className="size-4" />
-                  {transcribing ? "Disparando..." : "Pular e transcrever sem cortar"}
-                </Button>
-                <Button size="lg" variant="default" onClick={() => setCortando(true)}>
-                  <Scissors className="size-4" />
-                  Cortar o início
-                </Button>
-              </div>
+              <EscolhaInicio
+                jobId={jobId}
+                sourceAvailable={data.source_available}
+                pulando={transcribing}
+                onPular={startTranscribe}
+                onCortar={() => setCortando(true)}
+              />
             </>
           ) : (
             <>
@@ -438,7 +558,7 @@ export function HookApproval({ jobId }: { jobId: string }) {
               </Button>
 
               {data.source_available ? (
-                <CorteInicio jobId={jobId} onConfirm={confirmCut} confirming={cutting} />
+                <CorteInicio jobId={jobId} onConfirm={confirmCut} confirming={cutting} fps={data.fps} />
               ) : (
                 <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-400">
                   O vídeo original não está mais no servidor; não dá pra marcar o corte de
@@ -515,15 +635,10 @@ export function HookApproval({ jobId }: { jobId: string }) {
     return (
       <div className="view-pad">
         {cabecalho("aguardando transcrição")}
-        <div className="max-w-2xl space-y-4">
+        {/* mesma largura de .view-pad-narrow (1180px), igual ao wrapper do CorteInicio */}
+        <div className="mx-auto max-w-[1180px] space-y-4">
           {!cortando ? (
             <>
-              <p className="text-sm text-muted-foreground">
-                Seu episódio tem uma abertura antes do conteúdo (timer, vinheta do
-                estúdio)? Marque onde ele começa de verdade e corte. Se já começa certo,
-                pule direto.
-              </p>
-
               {data.intro_cut_at != null && (
                 <p className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-400">
                   Já foram cortados {fmtHMS(data.intro_cut_at)} do início deste episódio. Dá
@@ -531,21 +646,13 @@ export function HookApproval({ jobId }: { jobId: string }) {
                 </p>
               )}
 
-              <div className="flex flex-wrap gap-3">
-                <Button
-                  size="lg"
-                  variant="outline"
-                  disabled={transcribing}
-                  onClick={startTranscribe}
-                >
-                  <Clapperboard className="size-4" />
-                  {transcribing ? "Disparando..." : "Pular, este episódio já começa certo"}
-                </Button>
-                <Button size="lg" variant="default" onClick={() => setCortando(true)}>
-                  <Scissors className="size-4" />
-                  Cortar o início
-                </Button>
-              </div>
+              <EscolhaInicio
+                jobId={jobId}
+                sourceAvailable={data.source_available}
+                pulando={transcribing}
+                onPular={startTranscribe}
+                onCortar={() => setCortando(true)}
+              />
             </>
           ) : (
             <>
@@ -554,7 +661,7 @@ export function HookApproval({ jobId }: { jobId: string }) {
               </Button>
 
               {data.source_available ? (
-                <CorteInicio jobId={jobId} onConfirm={confirmCut} confirming={cutting} />
+                <CorteInicio jobId={jobId} onConfirm={confirmCut} confirming={cutting} fps={data.fps} />
               ) : (
                 <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-400">
                   O vídeo original não está mais no servidor; não dá pra marcar o corte. Pule

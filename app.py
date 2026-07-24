@@ -3098,8 +3098,21 @@ def podcast_upload():
         return jsonify({"error": "A análise do vídeo demorou demais e foi interrompida. Tente enviar de "
                                  "novo; se acontecer outra vez, avise o administrador."}), 400
 
-    db.create_podcast_job(job_id, file.filename, local_path, session["user"], vinheta_id)
-    log.info("[podcast] job %s estacionado em 'uploaded' (%dx%d, vinheta %s)", job_id, w, h, vinheta_id)
+    # FPS exato pra tela "Cortar o início" (navegação quadro a quadro), reusando o MESMO
+    # probe da montagem final (evita duplicar parse de fps). Auxiliar, não crítico: se
+    # a assinatura vier None ou o "num/den" não parsear, o job segue com fps=None.
+    fps = None
+    sig = _probe_av_signature(local_path, require_audio=False)
+    if sig and sig.get("fps_s"):
+        try:
+            num, den = sig["fps_s"].split("/")
+            fps = float(num) / float(den)
+        except (ValueError, ZeroDivisionError):
+            fps = None
+
+    db.create_podcast_job(job_id, file.filename, local_path, session["user"], vinheta_id, fps)
+    log.info("[podcast] job %s estacionado em 'uploaded' (%dx%d, vinheta %s, fps %s)",
+             job_id, w, h, vinheta_id, fps)
     return jsonify({"job_id": job_id, "status": "uploaded"}), 201
 
 
@@ -3282,6 +3295,7 @@ def podcast_hooks_view(job_id):
         "hooks": _job_hooks(job),
         "hook_choice": choice,
         "intro_cut_at": job.get("intro_cut_at"),
+        "fps": job.get("fps"),
         "source_available": bool(job.get("local_path") and os.path.exists(job["local_path"])),
         "final_available": bool(job.get("podcast_final_key")) and job["status"] == "done",
         "audio_status": job.get("podcast_audio_status"),

@@ -74,6 +74,25 @@
   --color-v3-text-soft: var(--v3-text-soft);
   --color-v3-text-disabled: var(--v3-text-disabled);
   --color-v3-ghost: var(--v3-ghost);
+
+  /* ── Design system oficial SB Clips (SeuBone Design System, importado via MCP) ──
+     Tokens aditivos, prefixo sbds. Nao sobrescrevem --color-primary/--radius-md/--shadow-card
+     nem nenhum outro valor existente (chaves diferentes); usados so na tela de corte de
+     inicio do podcast por enquanto. Gera utilitarios de primeira classe (bg-sbds-amarelo,
+     rounded-sbds-pill, shadow-sbds-card), igual bg-v3-accent ja funciona acima. */
+  --color-sbds-amarelo: var(--sbds-amarelo);
+  --color-sbds-preto: var(--sbds-preto);
+  --color-sbds-branco: var(--sbds-branco);
+  --color-sbds-cinza-claro: var(--sbds-cinza-claro);
+  --color-sbds-surface-card: var(--sbds-surface-card);
+  --color-sbds-border-subtle: var(--sbds-border-subtle);
+  --color-sbds-text-muted: var(--sbds-text-muted);
+  --color-sbds-ink-on-amarelo: var(--sbds-ink-on-amarelo);
+  --radius-sbds-sm: var(--sbds-radius-sm);
+  --radius-sbds-md: var(--sbds-radius-md);
+  --radius-sbds-lg: var(--sbds-radius-lg);
+  --radius-sbds-pill: var(--sbds-radius-pill);
+  --shadow-sbds-card: var(--sbds-shadow-card);
 }
 
 :root,
@@ -162,6 +181,29 @@
   --v3-text-disabled: #4e4e4e;
   --v3-ghost: rgba(255, 255, 255, 0.07);
   --v3-ease-editorial: cubic-bezier(0.83, 0, 0.17, 1);
+
+  /* ── Design system oficial SB Clips (SeuBone Design System, importado via MCP) ──
+     Tokens crus, prefixo sbds, aditivos (nao sobrescrevem nenhum valor acima). Valores
+     exatos do design system: --dur-fast/--dur-base/--ease-brand ficam so aqui (sem entrada
+     em @theme, Tailwind nao tem categoria pra duracao/easing customizados de primeira
+     classe); use via colchete (ex.: duration-[var(--sbds-dur-base)]) nos poucos lugares
+     que precisarem, isolados nos componentes da tela de corte de inicio. */
+  --sbds-amarelo: #ffc107;
+  --sbds-preto: #111111;
+  --sbds-branco: #ffffff;
+  --sbds-cinza-claro: #efefef;
+  --sbds-surface-card: #1a1a1a;
+  --sbds-border-subtle: rgba(255, 255, 255, 0.14);
+  --sbds-text-muted: rgba(255, 255, 255, 0.68);
+  --sbds-ink-on-amarelo: #111111;
+  --sbds-radius-sm: 8px;
+  --sbds-radius-md: 12px;
+  --sbds-radius-lg: 16px;
+  --sbds-radius-pill: 999px;
+  --sbds-shadow-card: 0 8px 32px rgba(0, 0, 0, 0.45);
+  --sbds-ease-brand: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --sbds-dur-fast: 120ms;
+  --sbds-dur-base: 200ms;
 }
 
 @layer base {

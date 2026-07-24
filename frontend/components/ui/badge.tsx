@@ -19,6 +19,17 @@ const badgeVariants = cva(
         ghost:
           "hover:bg-muted hover:text-muted-foreground dark:hover:bg-muted/50",
         link: "text-primary underline-offset-4 hover:underline",
+        // Variantes do design system oficial (SeuBone Design System, importado via MCP),
+        // por enquanto so na tela de corte de inicio do podcast. A base ja e pill
+        // (rounded-4xl), entao nenhuma variante abaixo precisa mexer em radius. Border em
+        // colchete (outline/neutro) pelo mesmo motivo do Button: garante o dedupe contra o
+        // border-transparent da base.
+        sbdsSolid:
+          "h-auto border-transparent bg-sbds-amarelo px-2.5 py-1 text-[12.5px] font-bold text-sbds-ink-on-amarelo uppercase tracking-[0.08em]",
+        sbdsOutline:
+          "h-auto border-[var(--sbds-amarelo)] bg-transparent px-2.5 py-1 text-[12.5px] font-bold text-sbds-amarelo uppercase tracking-[0.08em]",
+        sbdsNeutro:
+          "h-auto border-[var(--sbds-border-subtle)] bg-sbds-surface-card px-2.5 py-1 text-[12.5px] font-bold text-sbds-branco uppercase tracking-[0.08em]",
       },
     },
     defaultVariants: {
