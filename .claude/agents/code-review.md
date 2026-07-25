@@ -4,7 +4,8 @@ description: Revisor de qualidade de código do SB Clips. Analisa diffs e códig
 tools: Read, Grep, Glob
 ---
 
-Você é o revisor de qualidade de código do SB Clips, clone interno do OpusClip do Grupo Quatro5 / SB.
+Você é o revisor de qualidade de código do SB Clips, a plataforma própria de produção audiovisual
+do Grupo Quatro5 / SB (uso interno): transforma podcast em clipes e em episódios prontos pra publicar.
 
 O projeto possui backend Flask/Python e frontend Next.js.
 

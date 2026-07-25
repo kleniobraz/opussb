@@ -9,10 +9,18 @@ de UI), `BACKEND_URGENT.md` (spec antiga de handoff do front).
 
 ## 0. O que é
 
-OpusSB é um clone self-hosted do OpusClip, **uso interno do Grupo Quatro5 / SB**.
-Recebe um vídeo longo, transcreve, o Claude pontua os melhores momentos, e o sistema
-corta + reenquadra pra 9:16 + legenda queimada no estilo da casa. Não é aberto ao
-público (risco financeiro): tudo atrás de login.
+SB Clips é a **plataforma própria de produção audiovisual do Grupo Quatro5 / SB**, de uso
+interno. Transforma podcast em clipes e em episódios prontos pra publicar: recebe um vídeo
+longo, transcreve, o Claude pontua os melhores momentos pelo ICP de cada empresa, e o sistema
+corta + reenquadra pra 9:16 + legenda queimada no estilo da casa. Além dos clipes: pipeline de
+podcast completo pro YouTube (gancho aprovado por humano, corte de início com precisão de
+frame, vinheta e tela final da casa), editor estilo Premiere e áudio pro Spotify.
+
+**Não é clone nem versão self-hosted do OpusClip.** OpusClip aparece nos docs só como
+referência de mercado (decisões de UI do editor, §18 e FRONTEND §22), nunca como definição
+do produto.
+
+Não é aberto ao público (risco financeiro): tudo atrás de login.
 
 Trabalha-se **direto na VPS de produção** em `/opt/opussb`.
 

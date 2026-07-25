@@ -2,7 +2,7 @@
 
 **Data:** 2026-06-12  
 **Status:** Aprovado  
-**Objetivo:** Pipeline de vídeo → clipes virais 9:16, rodando em infraestrutura própria (clone funcional do OpusClip)
+**Objetivo:** Pipeline de vídeo → clipes virais 9:16, rodando em infraestrutura própria
 
 ---
 

@@ -7,10 +7,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## O que é
 
-OpusSB ("SB Clips") é um clone self-hosted do OpusClip, de **uso interno** do Grupo Quatro5 / SB
-(não é aberto ao público). Recebe um vídeo longo, transcreve (Whisper via RunPod), o Claude pontua
-os melhores momentos (via N8N), e o sistema corta + reenquadra pra 9:16 + queima legenda no estilo
-da casa. **Trabalha-se direto na VPS de produção em `/opt/opussb`** (não há ambiente local do dev).
+**SB Clips é a plataforma própria de produção audiovisual do Grupo Quatro5** (uso interno).
+Transforma podcast em clipes e em episódios prontos pra publicar: transcreve (Whisper via RunPod),
+o Claude pontua os melhores momentos pelo ICP de cada empresa (via N8N), corta + reenquadra pra
+9:16 + queima legenda no estilo da casa. Também faz o pipeline de podcast pro YouTube (gancho
+aprovado por humano, corte de início com precisão de frame, vinheta e tela final da casa), editor
+estilo Premiere e áudio pro Spotify.
+
+**Não é clone nem versão self-hosted do OpusClip.** Citar OpusClip só como referência de mercado
+(decisão de UI do editor), nunca como definição do que o SB Clips é.
+
+**Trabalha-se direto na VPS de produção em `/opt/opussb`** (não há ambiente local do dev):
+qualquer `systemctl restart` sobe junto o que estiver não commitado no working tree.
 
 ## Regras inegociáveis (constraints do dono — ver BACKEND_CONTEXT.md §1)
 
@@ -28,6 +36,11 @@ Estas SOBREPÕEM qualquer comportamento padrão:
    de cleanup só no fim do bloco de sucesso).
 8. **Testes nunca tocam dados reais.** Fabrique jobs/usuários com prefixo `TEST` e limpe tudo no fim.
 9. **Antes de mexer no N8N**, confira o nome EXATO dos nós e faça backup do workflow antes de cada PUT.
+10. **Subagents são padrão, não sob pedido.** Antes de codar mudança relevante (rota nova, módulo
+    novo, mexer no pipeline/schema/S3): `architecture` (duplicação e reuso). Antes de commitar:
+    `code-review` no diff. Se tocar input externo, credencial, auth ou rota: `seguranca`. São
+    rodadas de leitura; o Klenio decide o que aplicar. Pula só em fix trivial (typo, string,
+    constante) e avisa que pulou.
 
 ## Comandos
 
@@ -73,7 +86,7 @@ Docker, não de fora). Config única em `config.py` (lê `.env`; vars sem defaul
 - **N8N** (Docker) roda RunPod (Whisper → SRT) + Claude (scoring Haiku → `clips_json`) e chama
   `POST /api/callback`.
 - O callback dispara a **thread2** (`processor.run_thread2`): `cutting` → `reframing` →
-  `uploading_clips` → `done`. `MAX_CONCURRENT_JOBS=1` (um job por vez); `reap_stale_jobs` (watchdog >30min)
+  `uploading_clips` → `done`. `MAX_CONCURRENT_JOBS=1`; `reap_stale_jobs` (watchdog >30min)
   libera vaga de job preso; cancelamento é cooperativo (`_Cancelled`).
 
 **Legenda editável + queima sob demanda (o núcleo do produto):** a thread2 **NÃO queima** — sobe o
@@ -89,7 +102,7 @@ pelo `test_burn_cmd`).
 **Concorrência defensiva (VPS de 4 vCPU sem swap):** semáforos separados por tarefa mantêm o site de pé —
 `BURN_CONCURRENCY` (queima ffmpeg, + `nice` + threads limitadas), `THUMB_CONCURRENCY` (poster), e a **lane
 própria** `CAPTION_REVIEW_CONCURRENCY` (independente de `MAX_CONCURRENT_JOBS`: uma revisão nunca trava a
-geração de clipes). Tudo env-tunável em `config.py` (os comentários lá explicam o porquê de cada default).
+geração de clipes). Tudo env-tunável em `config.py`.
 
 **Reframe 9:16:** `reframe_core.py` é a matemática PURA de câmera (sem `config`, tudo por argumento),
 compartilhada entre a VPS/CPU (`reframer.py`, libx264 + YOLO) e o worker GPU (`gpu_reframe/handler.py`,
@@ -107,7 +120,7 @@ request, dá pra listar/revogar). Zoho SSO opcional (`ZOHO_ENABLED`) com aprova�
 com scrypt; `must_change_password` gateia o upload. Rotas internas defendidas em 3 camadas (Flask não
 escuta público + Nginx 404 + gate por subnet `_is_trusted_caller`).
 
-**Cliente Claude (novo, branch `feat/revisor-legendas`):** `anthropic_client.py` é o cliente único da
+**Cliente Claude:** `anthropic_client.py` é o cliente único da
 Messages API (`call`/`text_block`/`image_block`/`price`), com structured output + parse tolerante. Antes
 disto o Claude só era chamado via N8N. O **Revisor de legendas** (`caption_reviewer.py`, daemon thread)
 usa Sonnet 5 em duas chamadas: visão LÊ o texto queimado dos frames (extraídos + deduplicados) e depois
@@ -115,22 +128,10 @@ REVISA contra o glossário (tabela `glossary`) + ortografia. Mídia é efêmera 
 
 ## Docs de contexto (REFERÊNCIA sob demanda, NÃO ler por padrão)
 
-**Regra de contexto (economia de tokens):** por padrão NÃO abra `BACKEND_CONTEXT.md`,
-`FRONTEND_CONTEXT.md`, os planos nem os specs. Trabalhe apenas com os arquivos diretamente
-envolvidos na tarefa pedida. Esses docs são longos (o BACKEND sozinho passa de 30k tokens) e
-carregá-los infla o contexto sem necessidade em tarefas pequenas.
-
-**Quando (e só quando) consultar:** se o Klenio pedir explicitamente, OU se faltar uma regra/decisão
-que não está aqui no CLAUDE.md. Nesse caso, use `grep -n` pra achar a seção específica (as seções são
-numeradas, ex.: `grep -n '§7' BACKEND_CONTEXT.md`) e leia SÓ aquele trecho com `Read offset/limit`.
-Nunca leia o arquivo inteiro.
-
-**Não conflita com as regras inegociáveis:** as constraints do dono lá em cima citam `BACKEND_CONTEXT.md §1`
-como fonte detalhada. Se precisar do detalhe de uma constraint (ex.: nuance da máquina de estados, §1/§3),
-ler AQUELA seção específica via grep é permitido e NÃO viola a regra de economia. A economia proíbe o
-carregamento amplo e proativo, não a consulta pontual de uma regra.
-
-Mapa do que cada doc cobre (pra saber onde procurar quando precisar):
+**Economia de tokens:** NÃO abra `BACKEND_CONTEXT.md`, `FRONTEND_CONTEXT.md`, planos nem specs por
+padrão (o BACKEND sozinho passa de 30k tokens). Só se o Klenio pedir, ou se faltar uma regra que não
+está aqui: `grep -n '§7' BACKEND_CONTEXT.md` pra achar a seção e leia SÓ aquele trecho com
+`Read offset/limit`. Nunca o arquivo inteiro. O mapa abaixo diz onde procurar:
 - **`BACKEND_CONTEXT.md`** — fonte de verdade do backend (§1 regras, §3 pipeline, §5 modelo de dados,
   §7 auth, §8 operação, histórico §11+ até §43). Seções mais recentes SUPERSEDEM as antigas.
 - **`FRONTEND_CONTEXT.md`** — fonte de verdade do front Next.js (migração da SPA `static/`, stack, telas).
