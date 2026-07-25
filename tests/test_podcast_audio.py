@@ -15,6 +15,7 @@ from werkzeug.security import generate_password_hash
 import config
 import db
 import podcast_audio
+import s3_client
 
 
 # ─── Sintético ────────────────────────────────────────────────────────────────
@@ -225,6 +226,30 @@ def test_audio_route_cache_hit_200_sem_nova_thread(client, monkeypatch, mocker):
     assert r.status_code == 200 and r.get_json()["audio_status"] == "done"
     time.sleep(0.05)
     extrai.assert_not_called()
+
+
+def test_audio_route_cache_estolado_503_sem_redisparar(client, monkeypatch, mocker):
+    """S3 estolado (S3StalledError do watchdog) no HEAD do MP3 já pronto: 503 pedindo pra
+    tentar de novo, e NÃO uma extração nova. É o único ponto do app onde um estol não degrada
+    pra "não existe": aqui isso custaria baixar + reprocessar + subir um episódio de vários GB
+    só porque um HEAD não respondeu."""
+    monkeypatch.setattr(config, "PODCAST_ENABLED", True)
+    monkeypatch.setattr(config, "PODCAST_AUDIO_ENABLED", True)
+    extrai = mocker.patch("podcast_audio.run_podcast_audio_extract")
+    jid, _ = _job_montado("TEST-audio-estol")
+    db.update_job(jid, podcast_audio_status="done",
+                  podcast_audio_key=f"jobs/{jid}/podcast/audio.mp3")
+    mocker.patch("s3_client.exists",
+                 side_effect=s3_client.S3StalledError("head: sem progresso por mais de 60s"))
+    _login(client, "t@t")
+
+    r = client.post(f"/api/podcast/{jid}/audio")
+    assert r.status_code == 503
+    assert "instável" in r.get_json()["error"]
+    time.sleep(0.05)
+    extrai.assert_not_called()
+    # E o status no banco segue 'done' (não foi rebaixado pra 'extraindo' por causa do estol).
+    assert db.get_job(jid)["podcast_audio_status"] == "done"
 
 
 def test_audio_route_feliz_idle_extraindo_done(client, monkeypatch, tmp_path, s3_falso, mocker):

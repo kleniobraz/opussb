@@ -19,13 +19,39 @@ S3_SECRET_KEY: str = os.environ["S3_SECRET_KEY"]
 # nunca tocar os objetos de producao (isolamento leve). Aplicado so na borda do s3_client, entao
 # app.py/processor.py seguem construindo keys SEM prefixo. Se setado, deve terminar em "/".
 S3_KEY_PREFIX: str = os.environ.get("S3_KEY_PREFIX", "")
-# Teto de PROGRESSO (não de duração total) pra qualquer download_file: sem nenhum byte novo
-# por esse tempo, s3_client.download_file desiste (DownloadStalledError) em vez de pendurar
-# o worker pra sempre. Achado em produção 2026-07-24: download de 7,6GB travou sem se mover
-# e derrubou o site inteiro (1 worker/4 threads do gunicorn). 180s dá folga generosa pra
-# transferência lenta de verdade (a VPS baixa do bucket a ~98MB/s quando funciona), sem
-# deixar um travamento genuíno se arrastar por minutos a mais.
-S3_DOWNLOAD_STALL_TIMEOUT: float = float(os.environ.get("S3_DOWNLOAD_STALL_TIMEOUT", "180"))
+# Teto de PROGRESSO (não de duração total) das TRANSFERÊNCIAS do s3_client (download_file e
+# upload_file): sem nenhum byte novo por esse tempo, o watchdog desiste (S3StalledError) em vez
+# de pendurar o worker pra sempre. Achado em produção 2026-07-24: download de 7,6GB travou sem
+# se mover e derrubou o site inteiro (1 worker/4 threads do gunicorn). 180s dá folga generosa
+# pra transferência lenta de verdade (a VPS baixa do bucket a ~98MB/s quando funciona), sem
+# deixar um travamento genuíno se arrastar por minutos a mais. É teto de progresso, não de
+# duração, porque um final.mp4 de dezenas de GB leva minutos legítimos.
+# (Nome antigo desta var, até 2026-07-25: S3_DOWNLOAD_STALL_TIMEOUT, quando só o download tinha
+# proteção; nunca chegou a ser setada em nenhum .env.)
+S3_STALL_TIMEOUT: float = float(os.environ.get("S3_STALL_TIMEOUT", "180"))
+# Teto de DURAÇÃO TOTAL das chamadas CURTAS do s3_client (HEAD/DELETE/LIST/lifecycle): não têm
+# byte nenhum pra medir progresso, então o teto é a chamada inteira. Existe porque o botocore
+# sozinho não tem teto útil: connect_timeout + read_timeout de 60s cada x 3 tentativas de retry
+# deu 6min20s MEDIDOS travando o boot do app no ensure_lifecycle_rule (2026-07-24). Em operação
+# normal essas chamadas levam milissegundos, então 60s é ordens de grandeza de folga: quem
+# encostar nesse teto está travado de verdade, e falhar rápido é o comportamento desejado.
+S3_API_TIMEOUT: float = float(os.environ.get("S3_API_TIMEOUT", "60"))
+# Transfer Acceleration nas URLs de DOWNLOAD EXPLÍCITO do usuário (episódio, clipe com ?dl=1,
+# MP3 e o "baixar todos", que reusa a rota do clipe). Motivo: medido pelo Klenio em 2026-07-25,
+# no navegador, baixando um episódio de verdade: 1,3MB/s do bucket em SP (2h restantes na tela),
+# por rota ruim do provedor. O accelerate faz o tráfego entrar pela borda AWS mais próxima e
+# viajar pela rede interna deles, contornando o peering.
+# NÃO confundir com o teste comparativo de 3 regiões (single e multi stream) do
+# /root/opussb-teste-regiao/teste_escritorio.sh: esse é OUTRO teste, mais completo, e roda no
+# escritório na segunda 2026-07-27. Este número aqui é a medição pontual que motivou a flag.
+# NÃO vale a pena (e pode piorar) nas URLs que a VPS consome: Campinas->SP já faz 98MB/s medidos,
+# então ali seria pagar egress a mais por zero ganho. Player, thumb, waveform e sprite também
+# ficam fora: não são download de arquivo grande.
+# CUSTO: +US$0,04/GB (o accelerate cobra por cima do egress normal de US$0,15/GB em sa-east-1),
+# incidindo SÓ nos downloads do usuário. Default OFF: é opt-in, ligue com true no .env.
+S3_ACCELERATE_DOWNLOADS: bool = (
+    os.environ.get("S3_ACCELERATE_DOWNLOADS", "false").lower() in ("1", "true", "yes")
+)
 
 # RunPod
 RUNPOD_API_KEY: str = os.environ["RUNPOD_API_KEY"]
@@ -134,11 +160,15 @@ PODCAST_AUDIO_CONCURRENCY: int = int(os.environ.get("PODCAST_AUDIO_CONCURRENCY",
 # do vídeo; 1.3 dá margem) antes de baixar dezenas de GB às cegas, mesmo espírito do
 # COMPOSE_DISK_FACTOR (a VPS não tem swap).
 PODCAST_AUDIO_DISK_FACTOR: float = float(os.environ.get("PODCAST_AUDIO_DISK_FACTOR", "1.3"))
-# Kill switch de emergência (default DESLIGADO de propósito): a extração trava o app inteiro
-# quando o download do final.mp4 (ou outro ponto sem teto no caminho) engasga, mesma classe
-# do incidente de 2026-07-24 (achado: o timeout de download_file não cobre esse caminho
-# inteiro). Fica off até o conserto real entrar; ligar exige por PODCAST_AUDIO_ENABLED=true
-# no .env de propósito, não é so tirar do codigo.
+# Kill switch da extração de áudio, criado em 2026-07-24 quando a extração travou o app inteiro
+# (o caminho tinha três chamadas S3 sem teto: download_file, head_size e upload_file). O conserto
+# entrou em 2026-07-25: TODA chamada síncrona do s3_client passa por um watchdog único
+# (s3_client._com_teto, tetos em S3_STALL_TIMEOUT/S3_API_TIMEOUT), então o caminho inteiro tem
+# teto e uma extração que engasga vira 'error' no job em vez de pendurar o worker. Coberto por
+# teste (tests/test_s3_client.py, tests/test_podcast_audio.py); A VALIDAR em produção com um
+# episódio real de verdade, que é o único teste que prova o caminho inteiro sob carga.
+# Segue como flag (não foi removido do código) pra dar um desligamento rápido sem deploy se a
+# extração voltar a incomodar: é a operação mais pesada do app (baixa o episódio inteiro).
 PODCAST_AUDIO_ENABLED: bool = os.environ.get("PODCAST_AUDIO_ENABLED", "false").lower() in ("1", "true", "yes")
 
 # Corte manual do início do corpo bruto, ANTES da transcrição (§39 Parte 2): reencoda só o

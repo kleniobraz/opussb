@@ -137,15 +137,24 @@ for _es_id, _es in config.END_SCREENS.items():
 # SOURCE16X9_TTL_DAYS. Gated por SOURCE16X9_LIFECYCLE_ENSURE (default off) pra NAO mutar a config do
 # bucket sem decisao; idempotente (so PUTa quando a regra falta/difere). Best-effort: nao trava o boot.
 if config.SOURCE16X9_LIFECYCLE_ENSURE:
-    try:
-        # rule_id namespaceado por ambiente: staging e prod dividem o MESMO bucket; um id comum faria
-        # cada boot sobrescrever a regra do outro (o merge por id derruba a regra alheia). Sufixo do
-        # S3_KEY_PREFIX (prod = "prod") mantem as duas regras coexistindo no bucket.
-        _lc_env = config.S3_KEY_PREFIX.strip("/").replace("/", "-") or "prod"
-        s3_client.ensure_lifecycle_rule(config.SOURCE16X9_PREFIX, config.SOURCE16X9_TTL_DAYS,
-                                        f"opussb-source16x9-ttl-{_lc_env}")
-    except Exception as e:
-        log.warning("[lifecycle] falha ao garantir a regra do 16:9 retido: %s", e)
+    def _ensure_lifecycle_bg():
+        try:
+            # rule_id namespaceado por ambiente: staging e prod dividem o MESMO bucket; um id comum faria
+            # cada boot sobrescrever a regra do outro (o merge por id derruba a regra alheia). Sufixo do
+            # S3_KEY_PREFIX (prod = "prod") mantem as duas regras coexistindo no bucket.
+            _lc_env = config.S3_KEY_PREFIX.strip("/").replace("/", "-") or "prod"
+            s3_client.ensure_lifecycle_rule(config.SOURCE16X9_PREFIX, config.SOURCE16X9_TTL_DAYS,
+                                            f"opussb-source16x9-ttl-{_lc_env}")
+        except Exception as e:
+            log.warning("[lifecycle] falha ao garantir a regra do 16:9 retido: %s", e)
+
+    # Em thread de fundo, NAO no boot sincrono: em 2026-07-24 essa chamada pendurou o worker do
+    # gunicorn por 6min20s entre "Booting worker" e a primeira request (site fora do ar em TODO
+    # restart de deploy que pegasse o S3 ruim). O s3_client agora tem teto proprio (_api), mas
+    # housekeeping idempotente e best-effort nao tem por que estar no caminho critico do boot:
+    # o app sobe e serve na hora, e a regra e garantida em paralelo.
+    threading.Thread(target=_ensure_lifecycle_bg, daemon=True,
+                     name="lifecycle-16x9").start()
 
 # Semeia admins iniciais (config ADMIN_EMAILS) como is_admin + active. Idempotente:
 # cria a linha se não existir (sem senha utilizável; ele entra via Zoho) ou só promove.
@@ -1071,10 +1080,23 @@ def _clip_download_name(job, idx):
     return f"clip_{idx + 1:02d}.mp4"
 
 
-def _clip_redirect(key, download_name=None):
-    """302 pra URL presignada de um clipe. Com download_name, a presignada carrega
-    Content-Disposition: attachment (força o download com nome amigável em vez de tocar inline)."""
-    return redirect(s3_client.get_presigned_url(key, download_name=download_name), code=302)
+def _s3_redirect(key, download_name=None):
+    """302 pra URL presignada de QUALQUER entregável no S3 (clipe, episódio, MP3, música). Com
+    download_name, a presignada carrega Content-Disposition: attachment (força o download com
+    nome amigável em vez de tocar inline).
+
+    download_name também é o que distingue DOWNLOAD de streaming aqui: só o ?dl=1 (e o
+    ?download=1 do episódio) passa nome, o player/editor/thumb passam None. Por isso o Transfer
+    Acceleration entra exatamente neste ramo (ver config.S3_ACCELERATE_DOWNLOADS), sem tocar o
+    caminho do player.
+
+    PONTO ÚNICO de propósito: enquanto as rotas de episódio e MP3 chamavam get_presigned_url
+    direto, ligar a flag não acelerava nada justamente nos arquivos maiores (o final.mp4 tem
+    dezenas de GB contra dezenas de MB de um clipe), e falhava em silêncio. Rota nova que sirva
+    arquivo do S3 deve passar por aqui, não montar presignada na mão."""
+    if download_name:
+        return redirect(s3_client.get_presigned_download_url(key, download_name), code=302)
+    return redirect(s3_client.get_presigned_url(key), code=302)
 
 
 def _project_from_job(job):
@@ -1169,7 +1191,7 @@ def project_thumb(job_id):
     key = job.get("thumbnail_key")
     if not key:
         abort(404)
-    return redirect(s3_client.get_presigned_url(key), code=302)
+    return _s3_redirect(key)
 
 
 @app.route("/api/projects/<job_id>/download_all")
@@ -1557,21 +1579,41 @@ def _produce_endscreen(content_key: str, es_id: str, final_key: str, dur=None) -
         _burn_sem.release()
 
 
+def _cache_quente(key: str):
+    """s3_client.exists pra CHECAGEM DE CACHE no S3, tolerante a estol. Devolve True (tem),
+    False (nao tem) ou None (o HEAD estolou, S3StalledError: nao deu pra saber).
+
+    Existe porque o watchdog do s3_client (2026-07-25) fez o exists() PROPAGAR um HEAD travado em
+    vez de pendurar a thread pra sempre, e os caminhos daqui prometem degradar, nao dar 500: o
+    clipe sempre toca, o card cai no fundo atual, a faixa fica neutra. Cada chamador trata None
+    como "degrada AGORA, sem tentar gerar": com o S3 estolado, o caminho de geracao baixaria a
+    base e ficaria preso ate o teto (S3_STALL_TIMEOUT), prendendo uma das 4 threads do gunicorn
+    por minutos, que e exatamente o que o watchdog existe pra evitar."""
+    try:
+        return s3_client.exists(key)
+    except s3_client.S3StalledError as e:
+        log.warning("[s3] cache de %s indisponivel (%s); degradando sem tentar gerar", key, e)
+        return None
+
+
 def _serve_clip(content_key: str, es_id, dl_name, es_dur=None):
     """302 pro entregável do clipe, anexando a tela final (es_id, encurtada a es_dur se informado) se
     houver. Sem es_id, serve o content direto. Com es_id, garante <content>_es.mp4 e serve ele; se o
     anexo falhar, serve o content sem tela final (o clipe sempre toca). Só pode ser chamado FORA do
     semáforo de queima (o anexo o adquire)."""
     if not es_id:
-        return _clip_redirect(content_key, dl_name)
+        return _s3_redirect(content_key, dl_name)
     final_key = _endscreen_key(content_key)
     if final_key == content_key:                              # chave sem .mp4 (defensivo)
-        return _clip_redirect(content_key, dl_name)
-    if s3_client.exists(final_key):                           # cache quente do final
-        return _clip_redirect(final_key, dl_name)
+        return _s3_redirect(content_key, dl_name)
+    quente = _cache_quente(final_key)                         # cache quente do final
+    if quente:
+        return _s3_redirect(final_key, dl_name)
+    if quente is None:                                        # S3 estolado: nem tenta anexar
+        return _s3_redirect(content_key, dl_name)
     if _produce_endscreen(content_key, es_id, final_key, es_dur):
-        return _clip_redirect(final_key, dl_name)
-    return _clip_redirect(content_key, dl_name)               # anexo falhou: degrada (clipe toca)
+        return _s3_redirect(final_key, dl_name)
+    return _s3_redirect(content_key, dl_name)               # anexo falhou: degrada (clipe toca)
 
 
 def _ensure_burn(clip_id, base_key, target_key, do_caps, do_music, segments_json,
@@ -1580,11 +1622,17 @@ def _ensure_burn(clip_id, base_key, target_key, do_caps, do_music, segments_json
     renderizou/existe, ou base_key quando não há nada a aplicar), ou None em fallback (servir base SEM
     tela final). Gerencia o semáforo GLOBAL de queima inteiramente (sempre libera antes de retornar),
     pra o anexo da tela final (que readquire o semáforo) nunca dar deadlock."""
-    if s3_client.exists(target_key):                          # cache quente
+    quente = _cache_quente(target_key)                        # cache quente
+    if quente:
         return target_key
+    if quente is None:
+        return None                                           # S3 estolado: base sem gastar o teto
     with _clip_burn_lock(clip_id):
-        if s3_client.exists(target_key):                      # outra thread renderizou
+        quente = _cache_quente(target_key)                    # outra thread renderizou
+        if quente:
             return target_key
+        if quente is None:
+            return None
         if not _burn_sem.acquire(timeout=_BURN_QUEUE_TIMEOUT):
             log.warning("[burn] fila de queima cheia para %s; servindo base", clip_id)
             return None                                       # fallback: base sem tela final
@@ -1697,7 +1745,7 @@ def clip_video(clip_id):
     content_key = _ensure_burn(clip_id, base_key, target_key, do_caps, do_music, segments_json,
                                caption_y, caption_style, music, trim_needed, in_pt, out_pt)
     if content_key is None:                              # fallback da queima: serve a base SEM tela final
-        return _clip_redirect(base_key, dl_name)
+        return _s3_redirect(base_key, dl_name)
     return _serve_clip(content_key, es_id, dl_name, es_dur)
 
 
@@ -1709,7 +1757,7 @@ def clip_base(clip_id):
     queimada), e a queima final continua acontecendo sob demanda em /video. So faz sentido
     pra clipe novo (_base.mp4); clipe antigo (_9x16.mp4) cai na propria base mesmo."""
     _job, _idx, base_key = _clip_lookup(clip_id)
-    return _clip_redirect(base_key)
+    return _s3_redirect(base_key)
 
 
 def _src169_key_for(job_id: str, idx: int) -> str:
@@ -1727,9 +1775,9 @@ def clip_src169(clip_id):
     indisponivel). Pan-only: o front arrasta a caixa 9:16 sobre este 16:9."""
     job, idx, _base_key = _clip_lookup(clip_id)
     src_key = _src169_key_for(job["job_id"], idx)
-    if not s3_client.exists(src_key):
+    if _cache_quente(src_key) is not True:   # inclui S3 estolado (None): mesma degradacao do 404
         abort(404)
-    return _clip_redirect(src_key)
+    return _s3_redirect(src_key)
 
 
 # Teto de tempo da extracao do poster (range-seek + decode de 1 frame). Curto: e barato.
@@ -1754,11 +1802,17 @@ def clip_thumb(clip_id):
     Biblioteca compartilhada: exige so sessao ativa."""
     job, idx, base_key = _clip_lookup(clip_id)
     thumb_key = _thumb_key_for(base_key)
-    if s3_client.exists(thumb_key):
-        return _clip_redirect(thumb_key)
+    quente = _cache_quente(thumb_key)
+    if quente:
+        return _s3_redirect(thumb_key)
+    if quente is None:
+        abort(404)                                           # S3 estolado: card cai no fundo atual
     with _clip_thumb_lock(clip_id):
-        if s3_client.exists(thumb_key):                      # outra thread acabou de gerar
-            return _clip_redirect(thumb_key)
+        quente = _cache_quente(thumb_key)                    # outra thread acabou de gerar
+        if quente:
+            return _s3_redirect(thumb_key)
+        if quente is None:
+            abort(404)
         if not _thumb_sem.acquire(timeout=config.THUMB_QUEUE_TIMEOUT):
             abort(404)                                       # fila cheia: card sem poster, re-tenta depois
         tmp = None
@@ -1783,7 +1837,7 @@ def clip_thumb(clip_id):
                                    preexec_fn=lambda: os.nice(config.BURN_NICE))
             if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) >= 256:
                 s3_client.upload_file(out, thumb_key)
-                return _clip_redirect(thumb_key)
+                return _s3_redirect(thumb_key)
             log.warning("[thumb] clip %s: ffmpeg falhou (%s)", clip_id, r.stderr[-200:])
             abort(404)
         finally:
@@ -1880,8 +1934,11 @@ def clip_filmstrip(clip_id):
     Best-effort: falha/fila cheia -> {url: null} (a faixa fica neutra). NAO queima legenda."""
     _job, _idx, base_key = _clip_lookup(clip_id)
     strip_key = _strip_key_for(base_key)
-    if s3_client.exists(strip_key):
+    quente = _cache_quente(strip_key)
+    if quente:
         return jsonify({"url": s3_client.get_presigned_url(strip_key)})
+    if quente is None:
+        return jsonify({"url": None})                        # S3 estolado: faixa neutra
     if not _thumb_sem.acquire(timeout=config.THUMB_QUEUE_TIMEOUT):
         return jsonify({"url": None})
     tmp = None
@@ -2086,7 +2143,10 @@ def clip_captions_get(clip_id):
     # crop_editable INDEPENDE de legenda (crop e so pan do 16:9 retido, §33): basta a base ser
     # re-renderizavel (_base.mp4) + o 16:9 existir. Nao acoplar a `editable` (que exige fala), senao
     # um clipe sem legenda mas com 16:9 retido + keyframes auto perderia o editor de crop.
-    crop_editable = ("_base.mp4" in base_key) and s3_client.exists(_src169_key_for(job["job_id"], idx))
+    # `is True`: com o S3 estolado (_cache_quente devolve None) o editor de crop aparece como
+    # indisponivel, em vez de a tela inteira de legendas morrer num 500 por causa de um HEAD.
+    crop_editable = ("_base.mp4" in base_key) and \
+        _cache_quente(_src169_key_for(job["job_id"], idx)) is True
     # Tela final: override do clipe (None/"none"/id), o efetivo após herança, o default do projeto,
     # e a biblioteca de opções (pro editor montar o toggle/seletor sem outra request).
     return jsonify({"segments": segs, "editable": editable, "music": music_info,
@@ -2298,7 +2358,12 @@ def clip_keyframes_put(clip_id):
     if "_base.mp4" not in base_key:
         return jsonify({"error": "Este clipe nao e editavel (sem base re-renderizavel)."}), 409
     src_key = _src169_key_for(job["job_id"], idx)
-    if not s3_client.exists(src_key):
+    quente = _cache_quente(src_key)
+    if quente is None:
+        # S3 estolado: NAO dizer "clipe antigo" (seria mentira e o usuario apagaria o trabalho
+        # dele achando que nao da pra editar). 503 = tente de novo em instantes.
+        return jsonify({"error": "Armazenamento instavel agora. Tente salvar de novo em instantes."}), 503
+    if not quente:
         return jsonify({"error": "Crop indisponivel: este clipe nao tem o 16:9 retido (clipe antigo)."}), 409
     data = request.get_json(silent=True) or {}
     # auto seed preservado (pro toggle Auto/Manual reverter sem perder a trajetoria da maquina)
@@ -2820,7 +2885,7 @@ def clip_music_audio(clip_id):
     music = db.get_clip_music(clip_id)
     if not music or not music.get("music_key"):
         abort(404)
-    return _clip_redirect(music["music_key"])
+    return _s3_redirect(music["music_key"])
 
 
 def _can_manage(job) -> bool:
@@ -3434,8 +3499,9 @@ def podcast_final(job_id):
         return jsonify({"error": "O episódio ainda não foi montado."}), 409
     dl = None
     if request.args.get("download"):
-        dl = os.path.splitext(job.get("filename") or "podcast")[0] + "_final.mp4"
-    return redirect(s3_client.get_presigned_url(key, download_name=dl), code=302)
+        dl = _safe_filename(os.path.splitext(job.get("filename") or "podcast")[0],
+                            fallback="podcast") + "_final.mp4"
+    return _s3_redirect(key, dl)
 
 
 @app.route("/api/podcast/<job_id>/audio", methods=["POST"])
@@ -3464,9 +3530,16 @@ def podcast_audio_route(job_id):
 
     with _podcast_audio_lock(job_id):
         job = db.get_job(job_id)
-        if job.get("podcast_audio_status") == "done" and job.get("podcast_audio_key") \
-                and s3_client.exists(job["podcast_audio_key"]):
-            return jsonify({"job_id": job_id, "audio_status": "done"}), 200
+        if job.get("podcast_audio_status") == "done" and job.get("podcast_audio_key"):
+            quente = _cache_quente(job["podcast_audio_key"])
+            if quente:
+                return jsonify({"job_id": job_id, "audio_status": "done"}), 200
+            if quente is None:
+                # ÚNICO ponto onde S3 estolado NÃO degrada pra "não existe": aqui um False
+                # dispararia uma extração NOVA de um episódio de vários GB (download + ffmpeg +
+                # upload) só porque um HEAD não respondeu. Melhor pedir pra tentar de novo.
+                return jsonify({"error": "Armazenamento instável agora. Tente novamente em "
+                                         "instantes."}), 503
         if job.get("podcast_audio_status") == "extraindo":
             # A auto-cura via polling (podcast_hooks_view) já cobre o caso comum; esta
             # checagem redundante aqui só cobre quem chama o POST direto sem nunca ter
@@ -3492,8 +3565,9 @@ def podcast_audio_download(job_id):
     key = job.get("podcast_audio_key")
     if not key or job.get("podcast_audio_status") != "done":
         return jsonify({"error": "O áudio ainda não foi extraído."}), 409
-    dl_name = _safe_filename(os.path.splitext(job.get("filename") or "podcast")[0]) + ".mp3"
-    return redirect(s3_client.get_presigned_url(key, download_name=dl_name), code=302)
+    dl_name = _safe_filename(os.path.splitext(job.get("filename") or "podcast")[0],
+                             fallback="podcast") + ".mp3"
+    return _s3_redirect(key, dl_name)
 
 
 def _is_youtube_url(url: str) -> bool:

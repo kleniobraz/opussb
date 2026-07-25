@@ -856,14 +856,14 @@ queimas seguem serializadas pelo semáforo (§19.1/§21.2). Deployado + pushado 
   vazia se ainda não há clipes (job processando).
 - **`clip_video` aceita `?dl=1`**: deriva um nome de arquivo amigável (`_clip_download_name`, do título do
   `clips_json` -> "NN titulo.mp4", senão "clip_NN.mp4") e aplica em TODAS as redireções via o helper novo
-  `_clip_redirect(key, download_name)`. Sem `dl`, comportamento idêntico ao de antes.
+  `_s3_redirect(key, download_name)`. Sem `dl`, comportamento idêntico ao de antes.
 - **`s3_client.get_presigned_url(key, expiry, download_name=None)`**: com `download_name`, embute
   `ResponseContentDisposition: attachment; filename="..."` na presignada -> o S3 devolve `Content-Disposition:
   attachment` e o navegador BAIXA (não toca inline). É necessário porque o `/video` faz 302 pro S3
   (cross-origin), e aí o atributo `download` de um `<a>` é ignorado; a disposition na própria URL presignada
   resolve, sem alterar o objeto nem o player.
 - Helpers novos (`app.py`): `_safe_filename` (NFKD->ASCII, só `[A-Za-z0-9 ._-]`, limita), `_clip_download_name`,
-  `_clip_redirect`. Teste `test_download_all` (helpers + presigned com/sem disposition + rota 200/404/shape).
+  `_s3_redirect`. Teste `test_download_all` (helpers + presigned com/sem disposition + rota 200/404/shape).
 - Front: FRONTEND §19. Validado e2e (usuário TEST) + `test_backend.py` verde.
 
 ## 24. Reframe: troca de câmera por GEOMETRIA (Fase 0, anti-vazio multicam) (2026-06-24)

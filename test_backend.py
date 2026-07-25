@@ -19,9 +19,37 @@ _TMP_DB = tempfile.NamedTemporaryFile(prefix="opussb_test_", suffix=".db", delet
 _TMP_DB.close()
 os.environ["DB_PATH"] = _TMP_DB.name
 
+# S3 FALSO, também antes do import (config.py lê o ambiente no import e load_dotenv NÃO
+# sobrescreve o que já está setado). Sem isto o `import app` abaixo sobe com as credenciais
+# reais do .env e dispara ensure_lifecycle_rule (get/put_bucket_lifecycle_configuration) no
+# bucket de PRODUÇÃO, violando a regra 8 do CLAUDE.md num comando que o próprio CLAUDE.md
+# manda rodar. O tests/conftest.py da suíte pytest já fazia isso; aqui faltava.
+os.environ["S3_ENDPOINT"] = "https://test.s3.example.com"
+os.environ["S3_BUCKET"] = "test-bucket"
+os.environ["S3_ACCESS_KEY"] = "AKIATEST"
+os.environ["S3_SECRET_KEY"] = "secrettest"
+os.environ["S3_KEY_PREFIX"] = ""
+os.environ["SOURCE16X9_LIFECYCLE_ENSURE"] = "false"
+
 import app          # noqa: E402
 import captions     # noqa: E402
 import processor    # noqa: E402
+import s3_client    # noqa: E402
+
+# REDE ZERO no S3 (regra 8). O pino de endpoint acima já impede acertar o bucket real, mas sem
+# stub a chamada vira erro de DNS no meio do teste: a rota GET /captions, por exemplo, faz HEAD
+# pra checar cache quente e antes disto dependia do bucket de PRODUÇÃO responder 404 pra seguir.
+# Só as funções que fazem I/O; presign é assinatura local e continua real (é o que o teste da
+# linha ~568 exercita). Os testes que precisam de outro retorno seguem trocando e restaurando
+# o atributo por conta própria, como já faziam.
+s3_client.exists = lambda k: False
+s3_client.head_size = lambda k: 0
+s3_client.upload_file = lambda *a, **kw: None
+s3_client.download_file = lambda *a, **kw: None
+s3_client.delete_object = lambda k: None
+s3_client.delete_prefix = lambda p: 0
+# ensure_lifecycle_rule NÃO entra no stub: tem teste próprio (com client fake, sem rede) e o
+# boot já não a dispara por causa do SOURCE16X9_LIFECYCLE_ENSURE=false pinado acima.
 
 _failures = []
 

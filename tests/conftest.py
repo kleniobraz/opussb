@@ -1,10 +1,18 @@
 import os
 
-# Set before any module import — config.py reads at import time
-os.environ.setdefault("S3_ENDPOINT", "https://test.s3.example.com")
-os.environ.setdefault("S3_BUCKET", "test-bucket")
-os.environ.setdefault("S3_ACCESS_KEY", "AKIATEST")
-os.environ.setdefault("S3_SECRET_KEY", "secrettest")
+# Set before any module import — config.py reads at import time.
+#
+# S3 e o gate de lifecycle entram por ATRIBUIÇÃO DIRETA, não setdefault: setdefault não
+# sobrescreve variável já exportada no shell, então quem fizesse `set -a; . .env; set +a`
+# (hábito de depuração na VPS) rodaria a suíte com as credenciais REAIS, e o `import app` de
+# vários módulos de teste dispararia ensure_lifecycle_rule contra o bucket de PRODUÇÃO, com
+# PUT se a regra divergisse. Violação da regra 8 por acidente de shell. Aqui o teste nunca
+# alcança o bucket real, aconteça o que acontecer no ambiente.
+os.environ["S3_ENDPOINT"] = "https://test.s3.example.com"
+os.environ["S3_BUCKET"] = "test-bucket"
+os.environ["S3_ACCESS_KEY"] = "AKIATEST"
+os.environ["S3_SECRET_KEY"] = "secrettest"
+os.environ["SOURCE16X9_LIFECYCLE_ENSURE"] = "false"
 os.environ.setdefault("RUNPOD_API_KEY", "rp_test")
 os.environ.setdefault("RUNPOD_ENDPOINT_ID", "testendpoint")
 os.environ.setdefault("ANTHROPIC_API_KEY", "sk-ant-test")
@@ -16,6 +24,12 @@ os.environ.setdefault("JOB_DIR", "/tmp/test-opussb-jobs")
 # cruas, então o pino garante suíte determinística em qualquer worktree (load_dotenv
 # não sobrescreve env já setada).
 os.environ.setdefault("S3_KEY_PREFIX", "")
+# Mesma razão do S3_KEY_PREFIX acima: desde que as rotas de download passaram pelo
+# get_presigned_download_url, a suíte ficaria dependente da flag do .env. Com ela ligada em
+# produção (o caso desejado), o mock de get_presigned_url em test_podcast_audio deixaria de
+# interceptar (o código chamaria get_presigned_url_accelerate) e a suíte ficaria vermelha sem
+# nada estar quebrado. O pino mantém o teste determinístico com a flag em qualquer valor.
+os.environ.setdefault("S3_ACCELERATE_DOWNLOADS", "false")
 
 import pytest
 import importlib
