@@ -27,6 +27,7 @@ from werkzeug.exceptions import HTTPException
 
 import config
 import db
+import em_voo
 import s3_client
 import processor
 import captions
@@ -176,6 +177,57 @@ _MAX_CLIP_SECONDS = 3600
 
 def _allowed(filename: str) -> bool:
     return os.path.splitext(filename.lower())[1] in ALLOWED_EXTENSIONS
+
+
+# ─── Trabalho em voo: o gate de deploy (ver em_voo.py) ───────────────────────
+
+@app.before_request
+def _marca_upload_em_voo():
+    """Marca requests de corpo grande como UPLOAD em voo, pro /health saber que não dá pra
+    reiniciar. É o item que motivou o em_voo.py: um upload não cria linha em `jobs` até
+    TERMINAR (o de podcast só em app.py, bem depois do file.save e do probe de CFR), então
+    o gate antigo via active_jobs=0 e liberava o restart em cima de 75 minutos de trabalho.
+
+    Aqui e não na view: o nginx tem proxy_request_buffering off no bloco /api, então o corpo
+    chega em streaming e a thread do gunicorn fica ocupada desde o primeiro byte; a view só
+    roda quando o upload JÁ acabou. Marcando no before_request, uma entrada só cobre o corpo
+    inteiro, o file.save e o probe.
+
+    Por TAMANHO e não por lista de rotas: já são seis rotas multipart e uma lista dessas
+    apodrece na sétima. Multipart SEM Content-Length (chunked) também entra, independente de
+    tamanho: sem isso um cliente que não mande o header passaria despercebido e o gate
+    voltaria a mentir, que é o problema inteiro."""
+    if request.method not in ("POST", "PUT"):
+        return None
+    # SÓ com sessão. O before_request é hook GLOBAL e roda antes do login_required, então sem
+    # esta linha qualquer anônimo na internet prende o pode_reiniciar em false: bastaria abrir
+    # um POST anunciando Content-Length grande e gotejar bytes (o nginx tem
+    # proxy_request_buffering off no bloco /api, então a request chega ao Flask na hora). O
+    # time ficaria impedido de subir correção, inclusive de segurança, por causa de um
+    # estranho. Todo upload real é autenticado, então não se perde nada.
+    if not session.get("sid"):
+        return None
+    tam = request.content_length or 0
+    multipart_sem_tamanho = (not request.content_length
+                             and "multipart/form-data" in (request.content_type or ""))
+    if tam >= config.EM_VOO_UPLOAD_MIN_BYTES or multipart_sem_tamanho:
+        request.environ["opussb.em_voo_token"] = em_voo.entrar(
+            "upload", f"{request.path} {tam or 'chunked'}")
+    return None
+
+
+@app.teardown_request
+def _libera_upload_em_voo(exc):
+    """Contrapartida do _marca_upload_em_voo. teardown_request e NÃO after_request de
+    propósito: o after não roda quando a view levanta, e ler corpo truncado levanta. Um F5 no
+    meio do upload (que é como o dono cancela hoje) vazaria o registro exatamente no caso que
+    o antídoto de idade existe pra cobrir. O teardown roda sempre, com ou sem exceção."""
+    tok = request.environ.pop("opussb.em_voo_token", None) if request else None
+    if tok is not None:
+        em_voo.sair(tok)
+        if exc is not None:
+            log.info("[em_voo] upload em %s encerrado por exceção (%s): cliente abortou?",
+                     request.path, type(exc).__name__)
 
 
 # ─── Cabeçalhos de segurança + erros em JSON ─────────────────────────────────
@@ -991,6 +1043,9 @@ def health():
     except Exception as e:
         db_ok = False
         log.warning("health: checagem do banco falhou (%s)", e)
+    # As duas metades da pergunta "dá pra reiniciar?", que NÃO se somam: o banco responde a
+    # parte DURÁVEL (estado esperando trabalho, sobrevive ao processo) e o em_voo responde a
+    # EFÊMERA (o que este processo está fazendo agora, com idade). Cada uma num campo.
     return jsonify({
         "status": "ok" if db_ok else "degraded",
         "db": db_ok,
@@ -1556,6 +1611,7 @@ def _produce_endscreen(content_key: str, es_id: str, final_key: str, dur=None) -
     if not _burn_sem.acquire(timeout=_BURN_QUEUE_TIMEOUT):
         log.warning("[endscreen] fila cheia para %s; sem tela final", content_key)
         return False
+    _tk_burn = em_voo.entrar("burn", f"endscreen {content_key}")
     tmp = None
     try:
         if s3_client.exists(final_key):                       # outra thread produziu enquanto esperávamos o slot
@@ -1581,6 +1637,7 @@ def _produce_endscreen(content_key: str, es_id: str, final_key: str, dur=None) -
     finally:
         if tmp:
             shutil.rmtree(tmp, ignore_errors=True)
+        em_voo.sair(_tk_burn)
         _burn_sem.release()
 
 
@@ -1641,6 +1698,7 @@ def _ensure_burn(clip_id, base_key, target_key, do_caps, do_music, segments_json
         if not _burn_sem.acquire(timeout=_BURN_QUEUE_TIMEOUT):
             log.warning("[burn] fila de queima cheia para %s; servindo base", clip_id)
             return None                                       # fallback: base sem tela final
+        _tk_burn2 = em_voo.entrar("burn", f"clip {clip_id}")
         tmp = None
         try:
             tmp = tempfile.mkdtemp(prefix="burn_")
@@ -1674,6 +1732,7 @@ def _ensure_burn(clip_id, base_key, target_key, do_caps, do_music, segments_json
         finally:
             if tmp:
                 shutil.rmtree(tmp, ignore_errors=True)
+            em_voo.sair(_tk_burn2)
             _burn_sem.release()
 
 
@@ -1820,6 +1879,7 @@ def clip_thumb(clip_id):
             abort(404)
         if not _thumb_sem.acquire(timeout=config.THUMB_QUEUE_TIMEOUT):
             abort(404)                                       # fila cheia: card sem poster, re-tenta depois
+        _tk_mid1 = em_voo.entrar("midia", f"thumb {clip_id}")
         tmp = None
         try:
             # Frame de DENTRO do corte (nao da sobra-cabeca): in_point + 1s. Sem janela (legado), 1s.
@@ -1846,6 +1906,7 @@ def clip_thumb(clip_id):
             log.warning("[thumb] clip %s: ffmpeg falhou (%s)", clip_id, r.stderr[-200:])
             abort(404)
         finally:
+            em_voo.sair(_tk_mid1)
             _thumb_sem.release()
             if tmp:
                 shutil.rmtree(tmp, ignore_errors=True)
@@ -1903,6 +1964,7 @@ def clip_waveform(clip_id):
             pass
     if not _thumb_sem.acquire(timeout=config.THUMB_QUEUE_TIMEOUT):
         return jsonify({"peaks": []})
+    _tk_mid2 = em_voo.entrar("midia", f"waveform {clip_id}")
     try:
         peaks = _compute_peaks(s3_client.get_presigned_url(base_key))
         if peaks:
@@ -1912,6 +1974,7 @@ def clip_waveform(clip_id):
         log.warning("[waveform] clip %s: %s", clip_id, e)
         return jsonify({"peaks": []})
     finally:
+        em_voo.sair(_tk_mid2)
         _thumb_sem.release()
 
 
@@ -1946,6 +2009,7 @@ def clip_filmstrip(clip_id):
         return jsonify({"url": None})                        # S3 estolado: faixa neutra
     if not _thumb_sem.acquire(timeout=config.THUMB_QUEUE_TIMEOUT):
         return jsonify({"url": None})
+    _tk_mid3 = em_voo.entrar("midia", f"filmstrip {clip_id}")
     tmp = None
     try:
         if s3_client.exists(strip_key):                      # outra thread gerou enquanto esperavamos
@@ -1982,6 +2046,7 @@ def clip_filmstrip(clip_id):
         log.warning("[filmstrip] clip %s: %s", clip_id, e)
         return jsonify({"url": None})
     finally:
+        em_voo.sair(_tk_mid3)
         _thumb_sem.release()
         if tmp:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -2294,7 +2359,7 @@ def _do_rerender(clip_id, base_key, src_key):
     so muda o pan, entao a legenda segue valida."""
     tmp = None
     try:
-        with _rerender_sem:
+        with _rerender_sem, em_voo.registrar("rerender", f"clip {clip_id}"):
             raw = db.get_clip_keyframes(clip_id)
             try:
                 rec = json.loads(raw) if raw else None
@@ -3705,11 +3770,13 @@ def upload_youtube():
     # probe (subprocess yt-dlp de até 45s) roda sob um semáforo pra não esgotar as threads.
     if not _yt_probe_sem.acquire(blocking=False):
         return jsonify({"error": "Muitas validações de link em andamento. Tente de novo em instantes."}), 429
+    _tk_yt = em_voo.entrar("ytprobe", "youtube probe")
     try:
         info = processor.youtube_probe(url)
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 400
     finally:
+        em_voo.sair(_tk_yt)
         _yt_probe_sem.release()
     # Recusa live em andamento, agendada E recém-encerrada (post_live: VOD ainda processando,
     # duração instável/parcial). Só VOD totalmente pronto segue.
@@ -3826,6 +3893,43 @@ def internal_update_job(job_id):
         return jsonify({"error": "Nenhum campo válido."}), 400
     db.update_job(job_id, **updates)
     return jsonify({"ok": True})
+
+
+@app.route("/api/internal/deploy_gate")
+def deploy_gate():
+    """Responde "dá pra reiniciar agora?" pro ritual de deploy. Rota INTERNA de propósito.
+
+    Por que não no /health: aquele é a única rota pública junto do /login (nginx serve sem
+    auth), e publicar em tempo real quais operações rodam, quantas e há quanto tempo entrega
+    a um anônimo o perfil operacional da empresa: horário de upload de episódio, duração,
+    quando o sistema fica ocioso e quando a fila esvazia (ou seja, quando o deploy vem e o
+    site cai). O ritual lê isso de dentro da VPS (localhost:5001), então nada disso precisa
+    sair pela internet.
+
+    Não dá pra gatear o /health com _is_trusted_caller: tudo que passa pelo nginx chega como
+    127.0.0.1 e seria considerado confiável. Rota sob /api/internal, que o nginx já devolve
+    404 pra fora, é a barreira que funciona (e ainda tem o gate por subnet abaixo)."""
+    if not _is_trusted_caller(request.remote_addr):
+        abort(404)
+    try:
+        active = db.count_trabalho_em_andamento()
+        db_ok = True
+    except Exception as e:
+        active, db_ok = None, False
+        log.warning("deploy_gate: checagem do banco falhou (%s)", e)
+    voo = em_voo.snapshot()
+    for cat, idade, rotulo in em_voo.novos_suspeitos():
+        # Uma vez por vazamento, não a cada consulta: o rótulo (job/clip/path) só aparece
+        # AQUI, no journal, nunca numa resposta HTTP.
+        log.warning("[em_voo] SUSPEITO: %s em voo há %ds (%s). Provavelmente vazou (não "
+                    "decrementou); não conta mais pro pode_reiniciar", cat, idade, rotulo)
+    return jsonify({
+        "db": db_ok,
+        "active_jobs": active,
+        "em_voo": voo["em_voo"],
+        "suspeitos": voo["suspeitos"],
+        "pode_reiniciar": bool(db_ok) and active == 0 and not voo["bloqueia_deploy"],
+    })
 
 
 @app.route("/api/internal/maintenance_gate")

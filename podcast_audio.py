@@ -13,6 +13,7 @@ import threading
 
 import config
 import db
+import em_voo
 import s3_client
 
 log = logging.getLogger("opussb.audio")
@@ -116,9 +117,15 @@ def extrair_e_publicar(job_id: str, src: str, out_dir: str, slot_timeout: float)
     desfecho barato: o áudio vira 'error' e o usuário tem "Tentar de novo"."""
     if not _audio_sem.acquire(timeout=slot_timeout):
         raise RuntimeError(f"fila de extração de áudio ocupada (esperei {slot_timeout:.0f}s)")
+    # em_voo colado no par acquire/release que já existe (e NÃO dentro de _extrair_e_subir):
+    # os dois chamadores têm fronteiras diferentes de propósito, e no caminho sob demanda o
+    # download do episódio inteiro fica fora daquela função. Marcar lá deixaria justamente o
+    # download de dezenas de GB fora do gate de deploy.
+    tok = em_voo.entrar("audio", f"job {job_id} (montagem)")
     try:
         return _com_heartbeat(job_id, lambda: _extrair_e_subir(job_id, src, out_dir))
     finally:
+        em_voo.sair(tok)
         _audio_sem.release()
 
 
@@ -154,7 +161,7 @@ def run_podcast_audio_extract(job_id: str) -> None:
             # ponta, exatamente como antes desta refatoração.
             return _extrair_e_subir(job_id, local_final, workdir)
 
-        with _audio_sem:
+        with _audio_sem, em_voo.registrar("audio", f"job {job_id} (sob demanda)"):
             audio_key = _com_heartbeat(job_id, _trabalho)
         db.update_job(job_id, podcast_audio_status="done", podcast_audio_key=audio_key)
         log.info("[audio] job %s: áudio extraído e no S3 (%s)", job_id, audio_key)

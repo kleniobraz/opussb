@@ -54,7 +54,9 @@ Estas SOBREPÕEM qualquer comportamento padrão:
 uvx ruff check .            # ou pipx run ruff check .
 
 # Rodar/operar o backend (produção):
-systemctl restart opussb                    # aplica mudança em .py (só quando active_jobs=0 + backup)
+maintenance on                              # 1o: nginx recusa /api pra nao-admin, nenhum upload novo entra
+curl -s localhost:5001/api/internal/deploy_gate | jq   # 2o: exige "pode_reiniciar": true E olhe "suspeitos"
+systemctl restart opussb                    # 3o: só então (com backup feito)
 journalctl -u opussb -f                      # logs (print() do worker fica buffered; use log.*/stderr)
 curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5001/health
 
@@ -68,7 +70,33 @@ maintenance on|off|status         # break-glass SSH; mesmo flag que o botão do 
 ```
 
 **Deploy** (sem CI): backup (`cp opussb.db` + `tar czf` dos `.py` em `/opt/opussb_backups/`),
-`systemctl restart opussb` **com `active_jobs=0`**, e pro front `npm run build` + `systemctl restart opussb-web`.
+`systemctl restart opussb` **só com `"pode_reiniciar": true` em `/api/internal/deploy_gate`**, e pro front
+`npm run build` + `systemctl restart opussb-web`.
+
+**O gate de deploy é o `pode_reiniciar`, NÃO o `active_jobs`.** O `active_jobs` só enxerga a
+tabela `jobs`, e já mentiu 3x: upload em voo não cria linha até TERMINAR (um restart matou um
+de 10GB com 75min de trabalho em 2026-07-26), e queima, thumb, re-render, extração de MP3 e
+revisor de legendas também não aparecem lá. O `pode_reiniciar` junta as duas metades: o banco
+(durável) e o `em_voo.py` (o que ESTE processo faz agora, com idade).
+
+**Ligue a manutenção ANTES** (`maintenance on`): o nginx passa a recusar `/api` pra não-admin,
+então nenhum upload novo começa e a fila converge, em vez de você correr atrás dela.
+
+O gate fica numa rota INTERNA (o nginx devolve 404 pra fora) e não no `/health`: aquele é
+público, e publicar em tempo real o que a VPS está fazendo entregaria a qualquer um o horário
+dos uploads e o momento exato em que a fila esvazia, que é quando o site cai pro deploy.
+
+**E OLHE a lista `suspeitos` antes de reiniciar**, não só o `pode_reiniciar: true`. Suspeito é
+operação em voo há mais tempo que o teto da categoria dela: ela NÃO bloqueia (senão um
+vazamento travaria o deploy pra sempre), mas ignorar suspeito em silêncio é exatamente como
+chegamos ao incidente. Se aparecer `"upload": {"n":1,"mais_antigo_s":21600}`, ou vazou de
+verdade, ou é um upload legítimo lentíssimo que o restart vai matar. Nos dois casos, decida
+consciente antes de reiniciar.
+
+**O gate reduz a janela, não a elimina.** `POST /api/callback` do N8N chega pelo bind
+`172.17.0.1:5001` sem passar pelo nginx, então a manutenção não o bloqueia: um callback pode
+aterrissar entre a sua leitura do gate e o `systemctl restart` e disparar a thread2. É a mesma
+corrida que o `active_jobs` sempre teve; o gate só a encolheu de 75 minutos para segundos.
 Migrações de banco são **aditivas** (código antigo ignora coluna/tabela nova); rollback = `git checkout <commit> -- <arquivos>` + restart, ou restaurar o tarball.
 
 ## Arquitetura (resumo inline, não precisa abrir doc nenhum)

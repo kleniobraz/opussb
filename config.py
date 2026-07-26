@@ -44,6 +44,32 @@ S3_API_TIMEOUT: float = float(os.environ.get("S3_API_TIMEOUT", "60"))
 # thread. Metadado que não responde em 20s não vai responder em 60, então aqui o teto é menor
 # de propósito; o S3_API_TIMEOUT do resto do app fica intacto.
 S3_DELETE_TIMEOUT: float = float(os.environ.get("S3_DELETE_TIMEOUT", "20"))
+
+# ─── Registro de trabalho em voo (em_voo.py), pro gate de deploy do /health ───────────────
+# Corpo POST/PUT a partir deste tamanho conta como UPLOAD em voo. Marcado por TAMANHO e não
+# por lista de rotas porque já existem seis rotas multipart e uma lista dessas apodrece na
+# sétima. 32MiB fica bem acima de qualquer JSON/thumb e bem abaixo de um episódio.
+EM_VOO_UPLOAD_MIN_BYTES: int = int(os.environ.get("EM_VOO_UPLOAD_MIN_BYTES", 32 * 1024 * 1024))
+# Idade a partir da qual uma operação em voo é considerada VAZADA (suspeita): sai da conta do
+# pode_reiniciar e vira alerta pra um humano olhar. Sem isto, uma operação que não decremente
+# no finally travaria o deploy pra sempre, que é a armadilha que a trava do delete de projeto
+# já teve.
+# POR CATEGORIA de propósito: um teto único erra dos DOIS lados. Um upload legítimo de 10GB em
+# internet ruim passa de 4h, viraria "suspeito", sairia do gate e alguém reiniciaria em cima
+# dele (o incidente de 2026-07-26 se repetindo); e um thumb parado há 3h claramente vazou, mas
+# seguiria bloqueando o deploy.
+EM_VOO_SUSPEITO_S: dict = {
+    "upload":   6 * 3600,    # 10GB em internet ruim leva horas. Generoso de propósito.
+    "rerender": 3600,
+    "revisor":  3600,
+    "audio":    40 * 60,     # download do episódio + ffmpeg + upload do MP3
+    "burn":     15 * 60,
+    "midia":    15 * 60,
+    "ytprobe":  15 * 60,
+}
+# Categoria sem teto explícito (alguém adicionou uma e esqueceu daqui): 15min, o mesmo do
+# grupo das rápidas. Conservador: prefere marcar suspeito cedo a travar deploy pra sempre.
+EM_VOO_SUSPEITO_PADRAO_S: int = 15 * 60
 # Transfer Acceleration nas URLs de DOWNLOAD EXPLÍCITO do usuário (episódio, clipe com ?dl=1,
 # MP3 e o "baixar todos", que reusa a rota do clipe). Motivo: medido pelo Klenio em 2026-07-25,
 # no navegador, baixando um episódio de verdade: 1,3MB/s do bucket em SP (2h restantes na tela),

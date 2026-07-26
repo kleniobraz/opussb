@@ -36,6 +36,7 @@ import anthropic_client
 import caption_sampler
 import config
 import db
+import em_voo
 
 log = logging.getLogger("opussb.caption_reviewer")
 
@@ -450,7 +451,7 @@ def run_review(review_id: str, video_path: str) -> None:
     """Pipeline completo de uma revisão. Atualiza a linha e limpa a mídia no fim."""
     work_dir = os.path.dirname(video_path)
     try:
-        with _sem:
+        with _sem, em_voo.registrar("revisor", f"review {review_id}"):
             db.update_caption_review(review_id, status="extracting", progress=15)
             frames = prepare_frames(video_path, work_dir)
             log.info("[caption_review %s] %d imagens após amostragem por mudança de legenda",
