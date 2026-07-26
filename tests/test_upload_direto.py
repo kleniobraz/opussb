@@ -191,6 +191,20 @@ def test_kill_switch_off_devolve_404(client, s3_falso, monkeypatch):
     assert _init(client).status_code == 404
 
 
+def test_kill_switch_marca_o_404_pro_front_distinguir(client, s3_falso, monkeypatch):
+    """O front cai no caminho ANTIGO (o de 21% de sucesso) quando vê 404 aqui. Sem o marcador,
+    um 404 de outra causa (deploy fora de ordem: front novo, backend antigo) rebaixaria todo
+    mundo em silêncio, e ninguém veria pelos sintomas."""
+    monkeypatch.setattr(config, "PODCAST_UPLOAD_DIRETO", False)
+    _vinheta()
+    _login(client)
+
+    r = _init(client)
+
+    assert r.status_code == 404
+    assert r.get_json()["upload_direto"] is False
+
+
 # ─── /parts ───────────────────────────────────────────────────────────────────
 
 def test_parts_devolve_presignadas_do_lote(client, s3_falso):

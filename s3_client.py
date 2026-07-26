@@ -416,6 +416,14 @@ def ensure_lifecycle_rule(prefix: str, days: int, rule_id: str) -> bool:
 # enxerga o header, e o complete (que exige a lista de (parte, ETag)) falha SÓ NO FIM de um
 # upload de 10GB. Verificado contra o bucket em 2026-07-26: preflight, PUT de parte com Origin
 # e complete, o ciclo inteiro.
+#
+# PENDÊNCIA CONHECIDA, resolver ANTES de ligar PODCAST_UPLOAD_DIRETO em produção: o nginx serve
+# `sbclips.space` E `www.sbclips.space` (server_name com os dois, e o www responde 200 direto,
+# sem redirecionar), mas o CORS só lista o apex. Quem entrar pelo www passa no /init (é
+# same-origin com o Flask) e só quebra no preflight do PUT, parte por parte, até esgotar os
+# retries: o pior formato possível de falha. Duas saídas, e é decisão do dono: acrescentar
+# https://www.sbclips.space ao CORS (segue sendo lista fechada, não "*"), ou fazer o www
+# redirecionar pro apex no nginx.
 
 def criar_multipart(s3_key: str, content_type: str = "video/mp4") -> str:
     """Abre um multipart e devolve o uploadId. Quem abre é o SERVIDOR: a key é derivada de

@@ -3300,7 +3300,10 @@ def _podcast_is_cfr(path: str) -> bool:
 def _guarda_upload_direto():
     """Guardas comuns às 4 rotas. Devolve (user, None) ou (None, resposta_de_erro)."""
     if not config.PODCAST_ENABLED or not config.PODCAST_UPLOAD_DIRETO:
-        return None, (jsonify({"error": "Recurso indisponível."}), 404)
+        # O marcador distingue "kill switch desligado" de qualquer OUTRO 404 (deploy fora de
+        # ordem, path errado, 404 do proxy). Sem ele o front cairia no caminho antigo em
+        # silêncio nos dois casos, e o antigo é justamente o de 21% de sucesso.
+        return None, (jsonify({"error": "Recurso indisponível.", "upload_direto": False}), 404)
     user = db.get_user(session["user"])
     if not user:
         session.clear()

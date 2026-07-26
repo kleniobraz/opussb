@@ -122,22 +122,17 @@ export function uploadYoutube(
 
 // Upload com progresso real (XHR expõe upload.onprogress; o fetch não). Mesma origem,
 // então o cookie de sessão vai junto. Mantém a semântica de erro/401 do resto da API.
-export function uploadWithProgress(
-  file: File,
-  opts: UploadOptions,
+// Miolo comum dos uploads por XHR (clipe e o caminho ANTIGO de podcast): os dois tratavam
+// resposta, 401 e erro de rede com o mesmo bloco copiado. XHR e não fetch porque só ele
+// reporta progresso de upload, e sem barra um envio de 40min parece travado.
+function xhrJson<T>(
+  url: string,
+  corpo: FormData,
   onProgress?: (p: { loaded: number; total: number }) => void,
-): Promise<UploadResponse> {
-  const fd = new FormData();
-  fd.append("video", file);
-  fd.append("min_duration", String(opts.minDuration));
-  fd.append("max_duration", String(opts.maxDuration));
-  if (opts.aspectRatio) fd.append("aspect_ratio", opts.aspectRatio);
-  if (opts.language) fd.append("language", opts.language);
-  fd.append("captions", opts.captions ? "true" : "false");
-
-  return new Promise<UploadResponse>((resolve, reject) => {
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", "/api/upload");
+    xhr.open("POST", url);
     xhr.withCredentials = true;
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) onProgress({ loaded: e.loaded, total: e.total });
@@ -154,15 +149,32 @@ export function uploadWithProgress(
         if (typeof window !== "undefined") window.dispatchEvent(new Event(AUTH_EVENT));
         reject(new AuthError());
       } else if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(data as UploadResponse);
+        resolve(data as T);
       } else {
         reject(new ApiError(String(err || "HTTP " + xhr.status), xhr.status, data));
       }
     };
     xhr.onerror = () => reject(new ApiError("Falha de rede no upload.", 0));
     xhr.ontimeout = () => reject(new ApiError("Tempo esgotado no upload.", 0));
-    xhr.send(fd);
+    xhr.send(corpo);
   });
+}
+
+
+export function uploadWithProgress(
+  file: File,
+  opts: UploadOptions,
+  onProgress?: (p: { loaded: number; total: number }) => void,
+): Promise<UploadResponse> {
+  const fd = new FormData();
+  fd.append("video", file);
+  fd.append("min_duration", String(opts.minDuration));
+  fd.append("max_duration", String(opts.maxDuration));
+  if (opts.aspectRatio) fd.append("aspect_ratio", opts.aspectRatio);
+  if (opts.language) fd.append("language", opts.language);
+  fd.append("captions", opts.captions ? "true" : "false");
+
+  return xhrJson<UploadResponse>("/api/upload", fd, onProgress);
 }
 
 export const status = (jobId: string) =>
@@ -373,34 +385,52 @@ export function podcastUploadWithProgress(
   fd.append("video", file);
   fd.append("vinheta_id", vinhetaId);
 
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", "/api/podcast/upload");
-    xhr.withCredentials = true;
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable && onProgress) onProgress({ loaded: e.loaded, total: e.total });
-    };
-    xhr.onload = () => {
-      let data: unknown = {};
-      try {
-        data = JSON.parse(xhr.responseText || "{}");
-      } catch {
-        /* resposta sem JSON */
-      }
-      const err = (data as { error?: string })?.error;
-      if (xhr.status === 401) {
-        if (typeof window !== "undefined") window.dispatchEvent(new Event(AUTH_EVENT));
-        reject(new AuthError());
-      } else if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(data as UploadResponse & { status?: string });
-      } else {
-        reject(new ApiError(String(err || "HTTP " + xhr.status), xhr.status, data));
-      }
-    };
-    xhr.onerror = () => reject(new ApiError("Falha de rede no upload.", 0));
-    xhr.ontimeout = () => reject(new ApiError("Tempo esgotado no upload.", 0));
-    xhr.send(fd);
+  return xhrJson<UploadResponse & { status?: string }>("/api/podcast/upload", fd, onProgress);
+}
+
+// ── Upload DIRETO pro S3 (multipart presignado) ─────────────────────────────
+// O motor que orquestra estas quatro vive em lib/upload-multipart.ts; aqui só o transporte.
+
+export type PlanoUpload = {
+  token: string;
+  job_id: string;
+  part_size: number;
+  part_count: number;
+  concurrency: number;
+  lote: number;
+};
+
+export const podcastUploadInit = (body: { filename: string; size: number; vinheta_id: string }) =>
+  postJson<PlanoUpload>("/api/podcast/upload/init", body);
+
+export const podcastUploadParts = (token: string, parts: number[]) =>
+  postJson<{ urls: Record<string, string>; expira_em: number }>("/api/podcast/upload/parts", {
+    token,
+    parts,
   });
+
+export const podcastUploadComplete = (
+  token: string,
+  parts: { number: number; etag: string }[],
+  medicao?: { ms: number; concorrencia: number; retries: number },
+) =>
+  postJson<{ job_id: string; status: string }>("/api/podcast/upload/complete", {
+    token,
+    parts,
+    medicao,
+  });
+
+// Cancelamento explícito. keepalive porque este é o único ponto do app que precisa sobreviver
+// ao fechamento da aba: sem o AbortMultipartUpload, as partes já enviadas ficam COBRADAS e
+// invisíveis no list_objects_v2 até o lifecycle de 7 dias passar.
+export function podcastUploadAbort(token: string): Promise<unknown> {
+  return fetch("/api/podcast/upload/abort", {
+    method: "POST",
+    credentials: "include",
+    keepalive: true,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  }).catch(() => undefined);
 }
 
 // Dispara a transcrição do job estacionado (pode devolver 429 se a fila estiver ocupada).

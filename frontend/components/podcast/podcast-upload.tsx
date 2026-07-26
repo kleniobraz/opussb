@@ -5,13 +5,14 @@
 // entorno visual v3 do UploadConsole de /gerar, sem os controles de clipe (aspecto/duração/
 // idioma/legenda não existem aqui; o único ajuste é a vinheta que abre o episódio).
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { Sparkles } from "lucide-react";
+import { Sparkles, X } from "lucide-react";
 import * as api from "@/lib/api";
 import { fmtBytes, fmtEta, fmtSeconds } from "@/lib/format";
-import { MAX_BYTES, extOk } from "@/lib/upload";
+import { MAX_BYTES, ehDezesseisPorNove, extOk, lerMetaVideo } from "@/lib/upload";
+import { UploadCancelado, uploadDireto } from "@/lib/upload-multipart";
 import { cn } from "@/lib/utils";
 import { DropIcon } from "@/components/drop-icon";
 import { Button } from "@/components/ui/button";
@@ -41,9 +42,18 @@ export function PodcastUpload() {
   const [prog, setProg] = useState<{ pct: number; loaded: number; total: number; eta: number | null } | null>(
     null,
   );
+  // O par (controller, token) é o que torna o Cancelar real: o controller para os PUTs em voo
+  // e o token deixa o servidor chamar AbortMultipartUpload. Sem o segundo, cancelar pararia a
+  // barra mas deixaria as partes já enviadas COBRADAS e invisíveis no bucket.
+  const fileRef = useRef<File | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const tokenRef = useRef<string | null>(null);
+  const [cancelando, setCancelando] = useState(false);
+  const [partes, setPartes] = useState<{ feitas: number; total: number } | null>(null);
 
   function pickFile(f: File | null) {
     setError("");
+    fileRef.current = f;
     if (!f) {
       setFile(null);
       setMeta({ text: "", error: false });
@@ -51,16 +61,67 @@ export function PodcastUpload() {
     }
     if (!extOk(f.name)) {
       setFile(null);
+      fileRef.current = null;
       setMeta({ text: "Formato não suportado. Use mp4, mov, avi, mkv ou webm.", error: true });
       return;
     }
     if (f.size > MAX_BYTES) {
       setFile(null);
+      fileRef.current = null;
       setMeta({ text: `Arquivo acima de 15GB (${fmtBytes(f.size)}).`, error: true });
       return;
     }
     setFile(f);
     setMeta({ text: fmtBytes(f.size), error: false });
+
+    // Checa o 16:9 AQUI, lendo só o cabeçalho do arquivo local. O servidor revalida no fim
+    // (é ele quem manda), mas descobrir que o vídeo não é 16:9 depois de 40min de envio é o
+    // pior jeito possível de receber essa notícia. Metadado ilegível (mkv, avi) não reprova:
+    // segue o envio e o servidor decide.
+    void lerMetaVideo(f).then((m) => {
+      // Carimbado com o arquivo: lerMetaVideo leva até 8s, e sem esta comparação o resultado
+      // de um arquivo já substituído sobrescreveria o do arquivo novo (trocar A por B e ver a
+      // seleção de B sumir sozinha três segundos depois).
+      if (fileRef.current !== f || !m) return;
+      const detalhe = `${m.width}x${m.height}`;
+      if (!ehDezesseisPorNove(m)) {
+        // AVISA, não bloqueia. Aqui só dá pra comparar pixel cru; o servidor aplica o SAR, e
+        // material anamórfico (1440x1080 com SAR 4:3 é 16:9 de verdade) seria reprovado aqui e
+        // aceito lá. Quem manda é o servidor: bloquear no cliente deixaria o usuário sem saída
+        // nenhuma pela tela. O ganho de avisar continua de pé: ele sabe ANTES dos 40min.
+        setMeta({
+          text: `${detalhe}: isto não parece 16:9. O envio segue, mas o servidor pode recusar.`,
+          error: true,
+        });
+      } else {
+        setMeta({ text: `${fmtBytes(f.size)} · ${detalhe}`, error: false });
+      }
+    });
+  }
+
+  useEffect(() => {
+    // pagehide e não beforeunload: beforeunload não dispara em navegador móvel nem em aba
+    // descartada, e este é o caso comum de abandono de um envio de 40 minutos. O fetch do
+    // abort usa keepalive justamente pra sobreviver ao descarte da página.
+    const aoSair = () => {
+      if (tokenRef.current) void api.podcastUploadAbort(tokenRef.current);
+    };
+    window.addEventListener("pagehide", aoSair);
+    return () => {
+      window.removeEventListener("pagehide", aoSair);
+      aoSair(); // desmontar no meio do envio é abandono igual (o usuário navegou pra outra tela)
+    };
+  }, []);
+
+  async function cancelar() {
+    setCancelando(true);
+    abortRef.current?.abort();
+    if (tokenRef.current) await api.podcastUploadAbort(tokenRef.current);
+    tokenRef.current = null;
+    setCancelando(false);
+    setSubmitting(false);
+    setProg(null);
+    setError("Envio cancelado.");
   }
 
   async function onSubmit(e: React.FormEvent) {
@@ -72,15 +133,39 @@ export function PodcastUpload() {
     setSubmitting(true);
     setProg({ pct: 0, loaded: 0, total: file.size, eta: null });
     const start = Date.now();
+    const avancar = (loaded: number, total: number) => {
+      const elapsed = (Date.now() - start) / 1000;
+      const speed = elapsed > 0 ? loaded / elapsed : 0;
+      const eta = speed > 0 && total > loaded ? (total - loaded) / speed : null;
+      setProg({ pct: total ? Math.round((loaded / total) * 100) : 0, loaded, total, eta });
+    };
+
+    const ac = new AbortController();
+    abortRef.current = ac;
     try {
-      const res = await api.podcastUploadWithProgress(file, vinhetaId, ({ loaded, total }) => {
-        const elapsed = (Date.now() - start) / 1000;
-        const speed = elapsed > 0 ? loaded / elapsed : 0;
-        const eta = speed > 0 && total > loaded ? (total - loaded) / speed : null;
-        setProg({ pct: total ? Math.round((loaded / total) * 100) : 0, loaded, total, eta });
+      // Caminho NOVO primeiro. Ele devolve null quando o kill switch PODCAST_UPLOAD_DIRETO
+      // está desligado no servidor (404 no /init), e aí caímos no caminho antigo. Usar o
+      // próprio 404 como sinal evita uma rota só pra publicar o valor de uma flag, e faz o
+      // rollback ser uma linha no .env, sem rebuild do Next.
+      const direto = await uploadDireto({
+        file,
+        vinhetaId,
+        sinal: ac.signal,
+        onToken: (t) => (tokenRef.current = t),
+        onProgresso: (p) => {
+          avancar(p.enviado, p.total);
+          setPartes({ feitas: p.partesConcluidas, total: p.partesTotal });
+        },
       });
+      const res =
+        direto ??
+        (await api.podcastUploadWithProgress(file, vinhetaId, ({ loaded, total }) =>
+          avancar(loaded, total),
+        ));
+      tokenRef.current = null;
       router.push("/podcast/" + res.job_id);
     } catch (ex) {
+      if (ex instanceof UploadCancelado) return; // o cancelar() já cuidou do estado
       setError(ex instanceof api.ApiError ? ex.message : "Erro ao enviar o episódio.");
       setSubmitting(false);
       setProg(null);
@@ -205,6 +290,23 @@ export function PodcastUpload() {
                         : "calculando tempo…"}
                   </span>
                 </div>
+                {/* Só aparece enquanto ainda há bytes subindo: depois de 100% o servidor já
+                    está montando o objeto, e cancelar ali seria pedir pra desfazer um envio
+                    que deu certo. */}
+                {/* Critério por PARTES, não por porcentagem: num arquivo de 15GB o pct vira
+                    100 com até 75MB ainda por subir, e se justo a última parte travasse o
+                    usuário ficaria sem botão nenhum, só com F5 (que deixa o multipart órfão). */}
+                {(partes ? partes.feitas < partes.total : (prog?.pct ?? 0) < 100) && (
+                  <button
+                    type="button"
+                    onClick={cancelar}
+                    disabled={cancelando}
+                    className="mt-1 inline-flex w-fit items-center gap-1.5 font-mono text-xs font-semibold text-v3-text-soft underline-offset-4 transition-colors hover:text-[var(--red)] hover:underline disabled:opacity-50"
+                  >
+                    <X className="size-3.5" aria-hidden="true" />
+                    {cancelando ? "cancelando…" : "cancelar envio"}
+                  </button>
+                )}
               </div>
             ) : (
               <Button type="submit" variant="v3Cta" size="brand" disabled={vinhetas.length === 0}>
