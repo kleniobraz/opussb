@@ -159,11 +159,16 @@ def _com_teto(op: str, timeout: float, fn, erro=S3StalledError):
     return saida.get("valor")
 
 
-def _api(op: str, chamada):
+def _api(op: str, chamada, timeout: float = None):
     """Atalho de _com_teto pra chamada CURTA de API (metadado/controle, sem bytes pra medir):
-    `chamada` é um callable sem argumentos e o teto é a duração total (config.S3_API_TIMEOUT).
-    Toda chamada de rede curta deste módulo passa por aqui."""
-    return _com_teto(op, config.S3_API_TIMEOUT, lambda _bater_ponto: chamada())
+    `chamada` é um callable sem argumentos e o teto é a duração TOTAL da chamada. Toda chamada
+    de rede curta deste módulo passa por aqui.
+
+    timeout=None usa config.S3_API_TIMEOUT (60s, o teto geral). O caminho da EXCLUSÃO passa um
+    valor menor (config.S3_DELETE_TIMEOUT): ali a chamada é síncrona DENTRO de um request e
+    segura uma das 4 threads do gunicorn até responder."""
+    return _com_teto(op, config.S3_API_TIMEOUT if timeout is None else timeout,
+                     lambda _bater_ponto: chamada())
 
 
 def upload_file(local_path: str, s3_key: str, stall_timeout: float = None) -> None:
@@ -308,15 +313,22 @@ def delete_object(s3_key: str) -> None:
          lambda: _client().delete_object(Bucket=config.S3_BUCKET, Key=_k(s3_key)))
 
 
-def delete_prefix(prefix: str) -> int:
+def delete_prefix(prefix: str, timeout: float = None) -> int:
     """Apaga todos os objetos sob um prefixo (ex: 'jobs/{job_id}/'). Lista paginado
     e deleta em lotes de até 1000. Retorna quantos objetos foram removidos.
 
     Pagina com ContinuationToken na mão em vez do paginator do boto3 porque o paginator é um
     gerador lazy (a chamada de rede acontece escondida dentro do `for`), e cada chamada precisa
     ser visível pra passar pelo _api e ter teto próprio. Um prefixo grande faz N chamadas, cada
-    uma com seu teto de config.S3_API_TIMEOUT: o teto é POR chamada (uma faxina legítima e longa
-    não é interrompida), o que importa é nenhuma delas pendurar o worker pra sempre."""
+    uma com seu teto: o teto é POR chamada (uma faxina legítima e longa não é interrompida), o
+    que importa é nenhuma delas pendurar o worker pra sempre.
+
+    timeout: repassado pro _api de CADA chamada. None mantém o teto geral (S3_API_TIMEOUT); o
+    caminho da exclusão de projeto passa o menor (S3_DELETE_TIMEOUT) porque roda síncrono
+    dentro de um request, segurando uma das 4 threads do gunicorn.
+
+    IDEMPOTENTE: prefixo já vazio lista zero objetos e nem chega a chamar delete_objects,
+    devolvendo 0. É o que faz o retry da exclusão ser seguro depois de uma falha no meio."""
     client = _client()
     want_prefix = _k(prefix)
     deleted = 0
@@ -324,7 +336,8 @@ def delete_prefix(prefix: str) -> int:
 
     def _apagar_lote(objs):
         _api(f"delete_objects {want_prefix} ({len(objs)})",
-             lambda: client.delete_objects(Bucket=config.S3_BUCKET, Delete={"Objects": objs}))
+             lambda: client.delete_objects(Bucket=config.S3_BUCKET, Delete={"Objects": objs}),
+             timeout=timeout)
 
     token = None
     while True:
@@ -333,7 +346,8 @@ def delete_prefix(prefix: str) -> int:
             kwargs["ContinuationToken"] = token
         # Prefixa SO a listagem; as keys retornadas pelo S3 ja vem com o prefixo e sao deletadas
         # como estao (nao re-prefixar, senao viraria duplo prefixo).
-        page = _api(f"list {want_prefix}", lambda: client.list_objects_v2(**kwargs))
+        page = _api(f"list {want_prefix}", lambda: client.list_objects_v2(**kwargs),
+                    timeout=timeout)
         for obj in page.get("Contents", []):
             batch.append({"Key": obj["Key"]})
             if len(batch) == 1000:

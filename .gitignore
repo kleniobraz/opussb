@@ -5,6 +5,8 @@ __pycache__/
 venv/
 jobs/
 opussb.db
+opussb-teste.db
+jobs-teste/
 opussb.db-wal
 opussb.db-shm
 *.egg-info/

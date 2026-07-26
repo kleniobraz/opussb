@@ -128,6 +128,7 @@ export interface PodcastHooksResponse {
   error?: string | null; // mensagem quando status 'error' (retry = montar de novo)
   audio_status?: string | null; // "extraindo" | "done" | "error" | ausente (nunca pedido)
   audio_available?: boolean; // MP3 já extraído e no S3
+  owner_email?: string | null; // dono do projeto; o botão de excluir espelha o gate do clipe
 }
 
 // Uma opção da biblioteca de telas finais (outro anexado ao fim do clipe).

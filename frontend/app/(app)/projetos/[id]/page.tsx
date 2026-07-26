@@ -22,6 +22,7 @@ export default function ProjetoPage() {
   const { data: p, isLoading, isError } = useProject(id);
   const { data: endScreens } = useQuery({ queryKey: ["endScreens"], queryFn: api.getEndScreens });
   const [delOpen, setDelOpen] = useState(false);
+  const [delBusy, setDelBusy] = useState(false);
   const [endSaving, setEndSaving] = useState(false);
   const esFileRef = useRef<HTMLInputElement>(null);
 
@@ -118,13 +119,20 @@ export default function ProjetoPage() {
   }
 
   async function del() {
-    const ok = await api.deleteProject(id);
-    if (ok) {
+    if (delBusy) return;
+    setDelBusy(true);
+    try {
+      await api.deleteProject(id);
       toast.success("Projeto excluído");
       qc.invalidateQueries({ queryKey: ["projects"] });
       router.push("/projetos");
-    } else {
-      toast.info("Excluir aguarda o backend (DELETE /api/projects/:id).", { duration: 6000 });
+    } catch (e) {
+      // Mensagem do backend, não texto genérico: a exclusão agora ABORTA quando o
+      // armazenamento não responde, e o usuário precisa saber que o projeto continua aqui.
+      toast.error(e instanceof api.ApiError ? e.message : "Não consegui excluir o projeto.",
+        { duration: 8000 });
+    } finally {
+      setDelBusy(false);
     }
   }
 
@@ -223,8 +231,8 @@ export default function ProjetoPage() {
             <Download /> Baixar todos
           </Button>
           {canDelete && (
-            <Button variant="destructive" onClick={() => setDelOpen(true)}>
-              Excluir
+            <Button variant="destructive" disabled={delBusy} onClick={() => setDelOpen(true)}>
+              {delBusy ? "Excluindo..." : "Excluir"}
             </Button>
           )}
         </div>

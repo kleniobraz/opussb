@@ -2612,6 +2612,17 @@ def vinheta_delete(v_id):
             s3_client.delete_object(v["s3_key"])
         except Exception as e:
             log.warning("[vinheta] falha ao apagar asset %s: %s", v["s3_key"], e)
+    # Os _matched/ dela também: são re-encodes cacheados por ASSINATURA de vídeo
+    # (podcast_compose._sig_tag), então há UM por combinação de fps/resolução/profile já
+    # montada com esta vinheta. É AQUI que eles morrem, e não no delete de projeto: a key não
+    # tem job nenhum, é cache compartilhado entre projetos, e apagar no delete de projeto
+    # quebraria a montagem dos outros. Mesmo padrão do end_screen_delete logo acima.
+    try:
+        n = s3_client.delete_prefix(config.VINHETA_PREFIX + f"_matched/{v_id}_")
+        if n:
+            log.info("[vinheta] %d matched(s) da vinheta %s removidos", n, v_id)
+    except Exception as e:
+        log.warning("[vinheta] falha ao limpar matched de %s: %s", v_id, e)
     return jsonify({"ok": True})
 
 
@@ -2904,23 +2915,79 @@ def _can_manage(job) -> bool:
     return bool(owner) and owner == session["user"]
 
 
+def _apagar_armazenamento_do_job(job_id: str) -> int:
+    """Apaga TUDO que o job ocupa fora do banco: os dois prefixos do S3 e o diretório local.
+    Devolve quantos objetos saíram do S3. PROPAGA falha do S3 de propósito (quem chama decide),
+    e o disco é best-effort.
+
+    Teto MENOR aqui (config.S3_DELETE_TIMEOUT): roda síncrono dentro do request e segura uma
+    das 4 threads do gunicorn até responder.
+
+    IDEMPOTENTE nos três passos, que é o que faz o retry funcionar depois de uma falha no meio:
+    delete_prefix em prefixo já vazio devolve 0 sem chamar delete_objects, e rmtree com
+    ignore_errors não liga pra diretório inexistente.
+
+    O caminho local é montado do JOB_DIR + job_id, NUNCA de job["local_path"]: em job legado
+    esse campo pode apontar pra fora do JOB_DIR, e aqui a operação é destrutiva."""
+    # Guarda de forma antes de qualquer destruição. Hoje é redundante em três camadas (o
+    # converter <job_id> do Flask é [^/]+, todo job_id do banco é uuid4 do servidor, e a rota
+    # só chega aqui depois do get_job achar a linha), mas é a última barreira num caminho que
+    # faz rmtree: no dia em que alguém aceitar id vindo do cliente (importação, seed) ou trocar
+    # pra <path:job_id>, esta linha é o que impede um "../" de escapar do JOB_DIR.
+    if not job_id or job_id != os.path.basename(job_id):
+        raise ValueError(f"job_id com formato inesperado: {job_id!r}")
+    t = config.S3_DELETE_TIMEOUT
+    n = s3_client.delete_prefix(f"jobs/{job_id}/", timeout=t)
+    n += s3_client.delete_prefix(f"{config.SOURCE16X9_PREFIX}{job_id}/", timeout=t)  # 16:9 retido
+    shutil.rmtree(os.path.join(config.JOB_DIR, job_id), ignore_errors=True)
+    return n
+
+
 @app.route("/api/projects/<job_id>", methods=["DELETE"])
 @login_required
 def delete_project(job_id):
+    """Exclui o projeto (clipe OU podcast: a rota é a mesma, sem if por job_type) e tudo que
+    ele ocupa. Não é gateada por PODCAST_ENABLED de propósito: podcast órfão precisa ser
+    excluível mesmo com o kill switch desligado.
+
+    Reap antes de tudo pelo mesmo motivo das rotas de admissão: sem isso um job com a thread
+    morta em 'montando' ficaria travado na checagem abaixo e o projeto viraria INELIMINÁVEL,
+    porque o reap não roda em timer."""
+    db.reap_stale_jobs(config.JOB_STALE_MINUTES)
     job = db.get_job(job_id)
     if not job:
         return jsonify({"error": "Projeto não encontrado."}), 404
     if not _can_manage(job):
         return jsonify({"error": "Só o dono do projeto ou um admin pode excluir."}), 403
-    # Apaga os arquivos no S3 (áudio + clipes) e depois o registro. Se a limpeza do
-    # S3 falhar parcialmente, ainda removemos o job pra UI ficar consistente (o que
-    # sobrar no bucket é órfão e pode ser varrido depois).
+    # Trava POR JOB (db.job_em_andamento), não pelas contagens globais: bloquear pelo total
+    # impediria excluir este projeto por causa de trabalho de OUTRO. O _podcast_audio_stale
+    # compõe porque a auto-cura do 'extraindo' só roda no GET de polling: sem ele, extração
+    # morta por restart deixaria o projeto travado até alguém abrir a tela.
+    if db.job_em_andamento(job) and not _podcast_audio_stale(job):
+        return jsonify({"error": "Este projeto tem trabalho em andamento. "
+                                 "Aguarde terminar (ou cancele) antes de excluir."}), 409
+    # S3 -> disco -> BANCO POR ÚLTIMO. A linha do banco é o único ponteiro pro job_id, e o
+    # job_id é o que reconstrói os dois prefixos e o caminho local: apagá-la antes tornaria o
+    # que sobrou inalcançável (o retry veria 404) e recriaria a categoria "órfão invisível",
+    # que é exatamente o que esta ordem existe pra matar. Falha de S3 ABORTA a exclusão e o
+    # projeto continua listado, clicável de novo.
     try:
-        s3_client.delete_prefix(f"jobs/{job_id}/")
-        s3_client.delete_prefix(f"{config.SOURCE16X9_PREFIX}{job_id}/")   # 16:9 retido (crop por keyframe)
+        n = _apagar_armazenamento_do_job(job_id)
+    except s3_client.S3StalledError:
+        log.warning("[delete] S3 não respondeu ao excluir o job %s; projeto preservado", job_id)
+        # Sem prometer "nada foi excluído": o estol pode ter vindo no SEGUNDO prefixo, com o
+        # primeiro já apagado. O projeto continua listado (é o que garante o retry), mas
+        # parte dos arquivos pode ter saído, e o texto precisa empurrar pro retry em vez de
+        # dar o assunto por encerrado.
+        return jsonify({"error": "O armazenamento não respondeu e a exclusão não terminou; "
+                                 "parte dos arquivos pode já ter saído. O projeto continua "
+                                 "aqui: tente de novo em alguns minutos."}), 503
     except Exception as e:
-        log.warning("[delete] falha ao limpar S3 do job %s: %s", job_id, e)
+        log.warning("[delete] falha ao limpar o armazenamento do job %s: %s", job_id, e)
+        return jsonify({"error": "Não consegui apagar os arquivos deste projeto, então ele "
+                                 "foi preservado. Tente de novo; se insistir, avise o time."}), 502
     db.delete_job(job_id)
+    log.info("[delete] job %s removido (%d objeto(s) no S3)", job_id, n)
     return jsonify({"ok": True})
 
 
@@ -3381,6 +3448,10 @@ def podcast_hooks_view(job_id):
         "final_available": bool(job.get("podcast_final_key")) and job["status"] == "done",
         "audio_status": job.get("podcast_audio_status"),
         "audio_available": bool(job.get("podcast_audio_key")) and job.get("podcast_audio_status") == "done",
+        # Pro front decidir se mostra o botão de excluir, igual o projeto de clipe já faz com
+        # p.owner_email. Sem isto o podcast teria que fazer uma segunda request no ciclo de
+        # polling (de 3s) só pra saber o dono. Mesmo campo que _project_from_job já devolve.
+        "owner_email": job.get("user_email"),
         "error": job.get("error") if job["status"] == "error" else None,
     })
 

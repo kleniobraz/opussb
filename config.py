@@ -36,6 +36,14 @@ S3_STALL_TIMEOUT: float = float(os.environ.get("S3_STALL_TIMEOUT", "180"))
 # normal essas chamadas levam milissegundos, então 60s é ordens de grandeza de folga: quem
 # encostar nesse teto está travado de verdade, e falhar rápido é o comportamento desejado.
 S3_API_TIMEOUT: float = float(os.environ.get("S3_API_TIMEOUT", "60"))
+# Teto MENOR, só no caminho da EXCLUSÃO de projeto (DELETE /api/projects/<id>). Desde que a
+# exclusão passou a FALHAR quando o S3 não responde (antes ela apagava o registro assim mesmo e
+# deixava órfão invisível no bucket pago), um clique passou a poder segurar uma thread do
+# gunicorn por teto x nº de chamadas. São 1 worker e 4 THREADS: duas exclusões penduradas comem
+# metade da capacidade do app, e o site já caiu duas vezes por chamada síncrona segurando
+# thread. Metadado que não responde em 20s não vai responder em 60, então aqui o teto é menor
+# de propósito; o S3_API_TIMEOUT do resto do app fica intacto.
+S3_DELETE_TIMEOUT: float = float(os.environ.get("S3_DELETE_TIMEOUT", "20"))
 # Transfer Acceleration nas URLs de DOWNLOAD EXPLÍCITO do usuário (episódio, clipe com ?dl=1,
 # MP3 e o "baixar todos", que reusa a rota do clipe). Motivo: medido pelo Klenio em 2026-07-25,
 # no navegador, baixando um episódio de verdade: 1,3MB/s do bucket em SP (2h restantes na tela),

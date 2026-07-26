@@ -180,8 +180,14 @@ export const favoriteClip = (id: string, on: boolean) =>
     method: on ? "POST" : "DELETE",
   }).then((r) => r.ok);
 
+// Devolve o JSON (e LEVANTA ApiError com a mensagem do backend em falha), em vez do
+// booleano de antes: desde que a exclusão passou a abortar quando o S3 não responde, o
+// usuário precisa saber que o projeto CONTINUA existindo. Com `.then(r => r.ok)` toda falha
+// virava um "false" mudo e a tela mostrava um texto genérico.
 export const deleteProject = (id: string) =>
-  request("/api/projects/" + encodeURIComponent(id), { method: "DELETE" }).then((r) => r.ok);
+  request("/api/projects/" + encodeURIComponent(id), { method: "DELETE" }).then((r) =>
+    asJson<{ ok?: boolean }>(r),
+  );
 
 export const cancelJob = (id: string) =>
   request("/api/jobs/" + encodeURIComponent(id) + "/cancel", { method: "POST" }).then((r) => r.ok);

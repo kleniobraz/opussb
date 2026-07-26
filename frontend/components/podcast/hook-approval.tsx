@@ -6,6 +6,7 @@
 // Deliberadamente NÃO reusa o editor de clipes 9:16: aqui é um trim de duas pontas.
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -17,6 +18,8 @@ import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Slider } from "@/components/ui/slider";
 import { SbdsBox } from "@/components/ui/sbds-box";
+import { ConfirmDialog } from "@/components/confirm-dialog";
+import { useAuth } from "@/providers/auth-provider";
 import { CorteInicio } from "@/components/podcast/corte-inicio";
 import type { PodcastHook } from "@/lib/types";
 
@@ -194,8 +197,17 @@ function EscolhaInicio({
   );
 }
 
+// Espelha db.STATUS_PARADOS do backend: status em que NÃO há pipeline rodando. Serve a duas
+// perguntas nesta tela (continuar o polling? liberar o botão de excluir?), então fica em um
+// lugar só em vez de literal repetido.
+const STATUS_PARADOS = ["uploaded", "aguardando_aprovacao", "gancho_aprovado", "done", "error"];
+
 export function HookApproval({ jobId }: { jobId: string }) {
   const qc = useQueryClient();
+  const router = useRouter();
+  const { user } = useAuth();
+  const [delOpen, setDelOpen] = useState(false);
+  const [delBusy, setDelBusy] = useState(false);
   const { data, isLoading, isError } = useQuery({
     queryKey: ["podcastHooks", jobId],
     queryFn: () => api.podcastHooks(jobId),
@@ -207,9 +219,8 @@ export function HookApproval({ jobId }: { jobId: string }) {
     // principal já parado (ex.: episódio 'done' esperando só o MP3 terminar).
     refetchInterval: (q) => {
       const s = q.state.data?.status;
-      const parado = ["uploaded", "aguardando_aprovacao", "gancho_aprovado", "done", "error"];
       if (q.state.data?.audio_status === "extraindo") return 3000;
-      return s && !parado.includes(s) ? 3000 : false;
+      return s && !STATUS_PARADOS.includes(s) ? 3000 : false;
     },
   });
 
@@ -400,7 +411,37 @@ export function HookApproval({ jobId }: { jobId: string }) {
     );
   }
 
-  const cabecalho = (rotulo: string) => (
+  // Biblioteca compartilhada: todos acessam, mas só o dono (quem subiu) ou um admin
+  // excluem. O backend reforça isso (403); aqui é só pra não mostrar o botão à toa.
+  // Mesma regra do projeto de clipe, de propósito: é a MESMA rota pros dois tipos.
+  const podeExcluir = !!user && (!!user.is_admin || user.email === data.owner_email);
+  // Trabalho rodando trava a exclusão no backend (409). Aqui é só AVISO, não bloqueio: o
+  // botão continua clicável de propósito. Se a thread morrer (restart no meio da montagem), o
+  // job fica preso em 'montando' pra sempre e um botão desabilitado viraria dead end, já que
+  // esta tela não tem cancelar. A rota roda reap_stale_jobs antes da trava, então o clique é
+  // justamente o que destrava esse caso; e quando o trabalho é real, o 409 explica.
+  const emAndamento =
+    !STATUS_PARADOS.includes(data.status) || data.audio_status === "extraindo";
+
+  async function excluirProjeto() {
+    if (delBusy) return;
+    setDelBusy(true);
+    try {
+      await api.deleteProject(jobId);
+      toast.success("Projeto excluído");
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      router.push("/projetos");
+    } catch (e) {
+      // Mensagem do backend: a exclusão ABORTA quando o armazenamento não responde, e o
+      // usuário precisa saber que o projeto continua aqui em vez de ver um erro genérico.
+      toast.error(e instanceof api.ApiError ? e.message : "Não consegui excluir o projeto.",
+        { duration: 8000 });
+    } finally {
+      setDelBusy(false);
+    }
+  }
+
+  const cabecalho = (rotulo: string, subtitulo?: string) => (
     <>
       <Link href="/projetos" className="back-link">
         ← Projetos
@@ -409,8 +450,34 @@ export function HookApproval({ jobId }: { jobId: string }) {
         <div>
           <p className="eyebrow">Podcast · {rotulo}</p>
           <h1 className="section-title">{data.filename || "Episódio"}</h1>
+          {subtitulo && <p className="mt-1 text-sm text-muted-foreground">{subtitulo}</p>}
         </div>
+        {podeExcluir && (
+          <div className="head-actions">
+            <Button
+              variant="destructive"
+              disabled={delBusy}
+              title={
+                emAndamento
+                  ? "Há trabalho em andamento. Se já terminou ou travou, pode tentar mesmo assim."
+                  : "Excluir este episódio e todos os arquivos dele"
+              }
+              onClick={() => setDelOpen(true)}
+            >
+              {delBusy ? "Excluindo..." : "Excluir"}
+            </Button>
+          </div>
+        )}
       </div>
+      <ConfirmDialog
+        open={delOpen}
+        onOpenChange={setDelOpen}
+        title="Excluir projeto?"
+        message="Isso remove o episódio, o áudio e os arquivos do servidor."
+        okLabel="Excluir"
+        danger
+        onConfirm={excluirProjeto}
+      />
     </>
   );
 
@@ -713,19 +780,11 @@ export function HookApproval({ jobId }: { jobId: string }) {
 
   return (
     <div className="view-pad">
-      <Link href="/projetos" className="back-link">
-        ← Projetos
-      </Link>
-      <div className="section-head">
-        <div>
-          <p className="eyebrow">Podcast · aprovação do gancho</p>
-          <h1 className="section-title">{data.filename || "Episódio"}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Escolha um dos ganchos, ouça o trecho, apare as pontas se precisar e aprove. O
-            gancho abre o episódio antes da vinheta.
-          </p>
-        </div>
-      </div>
+      {cabecalho(
+        "aprovação do gancho",
+        "Escolha um dos ganchos, ouça o trecho, apare as pontas se precisar e aprove. O " +
+          "gancho abre o episódio antes da vinheta.",
+      )}
 
       {!data.source_available && (
         <p className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-400">

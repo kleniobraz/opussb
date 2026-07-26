@@ -938,6 +938,30 @@ def heartbeat_podcast_audio(job_id: str) -> None:
         )
 
 
+# Status em que o job NÃO tem pipeline rodando: 'done'/'error' terminaram, e os três de
+# podcast são episódio estacionado esperando ação humana (§39). Constante única porque a mesma
+# lista governa três perguntas diferentes (tem vaga na fila? dá pra reiniciar? dá pra excluir?)
+# e uma cópia esquecida deixa job inelegível pra reap ou excluível no meio do trabalho.
+STATUS_PARADOS = ('done', 'error', 'uploaded', 'aguardando_aprovacao', 'gancho_aprovado')
+_SQL_PARADOS = "(" + ", ".join(f"'{s}'" for s in STATUS_PARADOS) + ")"
+
+
+def job_em_andamento(job: dict) -> bool:
+    """Este job específico tem trabalho rodando AGORA? Pergunta POR JOB, sobre um dict que o
+    chamador já tem em mãos (zero query).
+
+    Não confundir com count_active_jobs (tem vaga na fila?) nem com
+    count_trabalho_em_andamento (dá pra reiniciar o processo?): as duas são GLOBAIS, e usar
+    qualquer uma pra decidir a exclusão de UM projeto bloquearia o projeto A porque o projeto
+    B está montando.
+
+    Inclui podcast_audio_status == 'extraindo' porque a extração de MP3 roda com o job já
+    'done' (podcast_compose extrai o áudio depois de marcar o episódio como pronto)."""
+    if (job.get("status") or "") not in STATUS_PARADOS:
+        return True
+    return job.get("podcast_audio_status") == "extraindo"
+
+
 def count_active_jobs() -> int:
     # 'uploaded', 'aguardando_aprovacao' e 'gancho_aprovado' = podcast estacionado sem
     # pipeline rodando (§39): não ocupam a vaga de MAX_CONCURRENT_JOBS, senão um podcast
@@ -946,8 +970,7 @@ def count_active_jobs() -> int:
     # propósito: transcrição, corte de início, gancho e montagem disputam a mesma VPS.
     with _conn() as conn:
         row = conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE status NOT IN "
-            "('done', 'error', 'uploaded', 'aguardando_aprovacao', 'gancho_aprovado')"
+            "SELECT COUNT(*) FROM jobs WHERE status NOT IN " + _SQL_PARADOS
         ).fetchone()
         return row[0]
 
@@ -969,10 +992,8 @@ def count_trabalho_em_andamento() -> int:
     dava sinal verde de deploy exatamente no pior momento."""
     with _conn() as conn:
         row = conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE "
-            "  status NOT IN ('done', 'error', 'uploaded', 'aguardando_aprovacao', "
-            "                 'gancho_aprovado') "
-            "  OR podcast_audio_status = 'extraindo'"
+            "SELECT COUNT(*) FROM jobs WHERE status NOT IN " + _SQL_PARADOS +
+            " OR podcast_audio_status = 'extraindo'"
         ).fetchone()
         return row[0]
 
@@ -1136,9 +1157,7 @@ def reap_stale_jobs(stale_minutes: int) -> int:
         # no meio de um trabalho legítimo.
         cur = conn.execute(
             "UPDATE jobs SET status = 'error', error = ?, updated_at = ? "
-            "WHERE status NOT IN "
-            "('done', 'error', 'uploaded', 'aguardando_aprovacao', 'gancho_aprovado') "
-            "AND updated_at < ?",
+            "WHERE status NOT IN " + _SQL_PARADOS + " AND updated_at < ?",
             (msg, _now(), cutoff),
         )
         return cur.rowcount
