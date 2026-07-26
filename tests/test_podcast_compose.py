@@ -15,7 +15,9 @@ from werkzeug.security import generate_password_hash
 
 import config
 import db
+import podcast_audio
 import podcast_compose
+import s3_client
 
 
 # ─── Sintéticos ───────────────────────────────────────────────────────────────
@@ -330,3 +332,201 @@ def test_compose_retry_apos_error(client, monkeypatch, tmp_path, s3_falso):
     assert r.status_code == 202
     assert _espera(lambda: db.get_job(jid)["status"] in ("done", "error"))
     assert db.get_job(jid)["status"] == "done", db.get_job(jid).get("error")
+
+
+# ─── MP3 extraído NA MONTAGEM (elimina o round-trip de dezenas de GB) ─────────
+
+def test_montagem_extrai_mp3_sem_round_trip(tmp_path, s3_falso, monkeypatch):
+    """Caminho feliz: o MP3 sai junto da montagem, com o final.mp4 ainda local, e o
+    download do episódio de volta do S3 NUNCA acontece (é o ponto inteiro da mudança)."""
+    monkeypatch.setattr(config, "PODCAST_AUDIO_ENABLED", True)
+    jid = _job_pronto(tmp_path, s3_falso, job_id="TEST-compose-mp3-ok")
+    db.update_job(jid, status="montando")
+
+    podcast_compose.run_podcast_compose(jid)
+
+    job = db.get_job(jid)
+    assert job["status"] == "done", job.get("error")
+    assert job["podcast_final_key"] == f"jobs/{jid}/podcast/final.mp4"
+    assert job["podcast_audio_status"] == "done"
+    assert job["podcast_audio_key"] == f"jobs/{jid}/podcast/audio.mp3"
+    # o MP3 chegou ao S3 e tem áudio de verdade (não é arquivo vazio)
+    mp3 = s3_falso["uploads"][job["podcast_audio_key"]]
+    assert os.path.getsize(mp3) > 1024
+    assert abs((podcast_compose.duration(mp3) or 0) - 14.5) < 1.0
+    # regra 7 continua valendo: fonte apagada no fim
+    assert not os.path.exists(os.path.join(config.JOB_DIR, jid))
+
+
+def test_montagem_nao_baixa_o_final_de_volta(tmp_path, s3_falso, mocker, monkeypatch):
+    """Trava o objetivo da mudança: durante a montagem, o final.mp4 NÃO pode ser baixado
+    do S3. Se alguém reintroduzir o round-trip, este teste quebra."""
+    monkeypatch.setattr(config, "PODCAST_AUDIO_ENABLED", True)
+    jid = _job_pronto(tmp_path, s3_falso, job_id="TEST-compose-mp3-nodl")
+    db.update_job(jid, status="montando")
+    baixados = []
+    orig = s3_client.download_file
+
+    def _spy(key, dst):
+        baixados.append(key)
+        return orig(key, dst)
+
+    mocker.patch("s3_client.download_file", side_effect=_spy)
+
+    podcast_compose.run_podcast_compose(jid)
+
+    assert db.get_job(jid)["podcast_audio_status"] == "done"
+    assert f"jobs/{jid}/podcast/final.mp4" not in baixados, baixados
+
+
+def test_montagem_sobrevive_a_falha_do_mp3(tmp_path, s3_falso, mocker, monkeypatch):
+    """Requisito do dono: o MP3 é acessório. ffmpeg do áudio explodindo NÃO pode derrubar
+    a montagem, nem deixar o vídeo fonte órfão no disco."""
+    monkeypatch.setattr(config, "PODCAST_AUDIO_ENABLED", True)
+    jid = _job_pronto(tmp_path, s3_falso, job_id="TEST-compose-mp3-falha")
+    db.update_job(jid, status="montando")
+    mocker.patch("podcast_audio._extract_audio",
+                 side_effect=RuntimeError("ffmpeg do audio explodiu"))
+
+    podcast_compose.run_podcast_compose(jid)
+
+    job = db.get_job(jid)
+    assert job["status"] == "done"                 # episódio entregue
+    assert job["error"] is None                    # e sem erro de montagem
+    assert job["podcast_final_key"] == f"jobs/{jid}/podcast/final.mp4"
+    assert job["podcast_audio_status"] == "error"  # só o áudio falhou
+    assert "explodiu" in (job["podcast_audio_error"] or "")
+    # o fonte NÃO pode ficar órfão (guard-rail de disco da próxima montagem depende disso)
+    assert not os.path.exists(os.path.join(config.JOB_DIR, jid))
+
+
+def test_montagem_com_flag_off_nao_extrai_nem_marca_erro(tmp_path, s3_falso, mocker,
+                                                         monkeypatch):
+    """Kill switch off: nada de ffmpeg de áudio, e o estado fica VAZIO (não 'error'),
+    senão o front mentiria "Falha ao extrair o áudio" pra algo que nem foi tentado."""
+    monkeypatch.setattr(config, "PODCAST_AUDIO_ENABLED", False)
+    jid = _job_pronto(tmp_path, s3_falso, job_id="TEST-compose-mp3-off")
+    db.update_job(jid, status="montando")
+    extrai = mocker.patch("podcast_audio._extract_audio")
+
+    podcast_compose.run_podcast_compose(jid)
+
+    job = db.get_job(jid)
+    assert job["status"] == "done"
+    assert job["podcast_audio_status"] is None
+    extrai.assert_not_called()
+
+
+def test_estado_extraindo_entra_junto_com_done(tmp_path, s3_falso, mocker, monkeypatch):
+    """A corrida que o dono pediu pra cobrir: o front NUNCA pode ver 'done' com o áudio
+    vazio, senão mostra o botão "Baixar áudio (MP3)" e o usuário dispara o fallback
+    (download do episódio inteiro de volta do S3) em paralelo com a extração local.
+
+    Espia os UPDATEs em vez de ler o banco de dentro da extração: a garantia é de
+    ATOMICIDADE, e ela só é observável no momento da escrita. A primeira versão deste teste
+    lia o estado de dentro do ffmpeg mockado e continuava VERDE mesmo com a atomicidade
+    quebrada em dois updates sequenciais (verificado na mão), ou seja, dava por provada uma
+    garantia que não checava."""
+    monkeypatch.setattr(config, "PODCAST_AUDIO_ENABLED", True)
+    jid = _job_pronto(tmp_path, s3_falso, job_id="TEST-compose-mp3-corrida")
+    db.update_job(jid, status="montando")
+    updates = []
+    real = db.update_job
+
+    def _espia(job_id, **campos):
+        updates.append(campos)
+        return real(job_id, **campos)
+
+    mocker.patch("podcast_compose.db.update_job", side_effect=_espia)
+
+    podcast_compose.run_podcast_compose(jid)
+
+    marcou_done = [u for u in updates if u.get("status") == "done"]
+    assert len(marcou_done) == 1, f"esperava UM update marcando done: {updates}"
+    assert marcou_done[0].get("podcast_audio_status") == "extraindo", (
+        "'done' foi gravado sem 'extraindo' no MESMO update: abre a janela em que o front "
+        f"mostra o botão e o usuário dispara o download de GB. Update: {marcou_done[0]}")
+
+
+def test_montagem_desiste_do_slot_ocupado_sem_travar(tmp_path, s3_falso, monkeypatch):
+    """Slot de áudio ocupado por uma extração sob demanda: a montagem NÃO pode ficar
+    esperando pra sempre, porque enquanto espera o vídeo fonte (dezenas de GB) segue no
+    disco e nada mais o libera (job 'done' não conta em count_active_jobs nem é ceifado
+    pelo reap_stale_jobs). Desiste no teto, entrega o episódio, áudio fica pro fallback."""
+    monkeypatch.setattr(config, "PODCAST_AUDIO_ENABLED", True)
+    monkeypatch.setattr(podcast_compose, "_AUDIO_SLOT_TIMEOUT", 0.3)   # teto curto no teste
+    jid = _job_pronto(tmp_path, s3_falso, job_id="TEST-compose-mp3-slot")
+    db.update_job(jid, status="montando")
+
+    podcast_audio._audio_sem.acquire()      # simula outra extração segurando a fila
+    try:
+        t0 = time.monotonic()
+        podcast_compose.run_podcast_compose(jid)
+        gasto = time.monotonic() - t0
+    finally:
+        podcast_audio._audio_sem.release()
+
+    job = db.get_job(jid)
+    assert job["status"] == "done"                     # episódio entregue mesmo assim
+    assert job["error"] is None
+    assert job["podcast_audio_status"] == "error"
+    assert "ocupada" in (job["podcast_audio_error"] or "")
+    assert gasto < 30, f"esperou {gasto:.1f}s: o teto do slot não pegou"
+    # e o fonte foi liberado, que é o motivo de existir o teto
+    assert not os.path.exists(os.path.join(config.JOB_DIR, jid))
+
+
+def test_health_nao_reporta_zero_durante_a_extracao(tmp_path, s3_falso, mocker, monkeypatch):
+    """O ritual de deploy é "restart do opussb só com active_jobs=0". Se o /health responder
+    0 enquanto a extração de MP3 roda, o restart mata a thread no meio e deixa o final.mp4
+    órfão no disco (job já 'done' não é ceifado pelo reap_stale_jobs). Este teste é o que
+    impede o gate de deploy de mentir."""
+    monkeypatch.setattr(config, "PODCAST_AUDIO_ENABLED", True)
+    jid = _job_pronto(tmp_path, s3_falso, job_id="TEST-compose-mp3-health")
+    db.update_job(jid, status="montando")
+    medido = {}
+
+    def _durante_extracao(src, out):
+        # roda no meio da extração: é exatamente quando o deploy consultaria o /health
+        medido["andamento"] = db.count_trabalho_em_andamento()
+        medido["fila"] = db.count_active_jobs()
+        return _extract_real(src, out)
+
+    _extract_real = podcast_audio._extract_audio
+    mocker.patch("podcast_audio._extract_audio", side_effect=_durante_extracao)
+
+    podcast_compose.run_podcast_compose(jid)
+
+    assert medido, "a extração nem rodou"
+    assert medido["andamento"] >= 1, (
+        "/health reportaria active_jobs=0 durante a extração: o gate de deploy daria "
+        "sinal verde no pior momento")
+    # e o outro uso NÃO pode ter sido contaminado: a fila de admissão segue livre, senão
+    # cada episódio montado travaria jobs novos por minutos
+    assert medido["fila"] == 0, (
+        "a extração entrou em count_active_jobs e vai travar a admissão de jobs novos")
+    assert db.count_trabalho_em_andamento() == 0      # e zera quando termina
+
+
+def test_fonte_apagada_logo_apos_done(tmp_path, s3_falso, mocker, monkeypatch):
+    """A fonte (maior arquivo do job) morre assim que o final está no S3, sem esperar a
+    extração terminar: encolhe a janela de exposição a um restart."""
+    monkeypatch.setattr(config, "PODCAST_AUDIO_ENABLED", True)
+    jid = _job_pronto(tmp_path, s3_falso, job_id="TEST-compose-mp3-fonte")
+    src = db.get_job(jid)["local_path"]
+    db.update_job(jid, status="montando")
+    visto = {}
+
+    def _durante_extracao(src_arg, out):
+        visto["fonte_existe"] = os.path.exists(src)
+        return _extract_real(src_arg, out)
+
+    _extract_real = podcast_audio._extract_audio
+    mocker.patch("podcast_audio._extract_audio", side_effect=_durante_extracao)
+
+    podcast_compose.run_podcast_compose(jid)
+
+    assert visto.get("fonte_existe") is False, (
+        "a fonte de dezenas de GB ainda estava no disco durante a extração")
+    assert db.get_job(jid)["status"] == "done"
+    assert not os.path.exists(os.path.join(config.JOB_DIR, jid))

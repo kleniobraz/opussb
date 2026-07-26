@@ -952,6 +952,31 @@ def count_active_jobs() -> int:
         return row[0]
 
 
+def count_trabalho_em_andamento() -> int:
+    """Trabalho REALMENTE rodando na VPS. Serve ao /health e, por tabela, ao ritual de
+    deploy ("restart do opussb só com active_jobs=0").
+
+    Difere de count_active_jobs DE PROPÓSITO, porque as duas perguntas são diferentes:
+
+    - count_active_jobs responde "tem vaga na fila?" (MAX_CONCURRENT_JOBS). A extração de
+      MP3 da montagem NÃO pode contar lá: ela roda DEPOIS do job virar 'done' e travaria a
+      admissão de jobs novos por minutos a cada episódio.
+    - esta responde "dá pra reiniciar o processo agora?". A extração PRECISA contar aqui:
+      roda em thread de fundo com o final.mp4 ainda em disco, e um restart no meio mata a
+      thread e deixa arquivo órfão (job 'done' não é ceifado pelo reap_stale_jobs).
+
+    Antes desta separação o /health respondia active_jobs=0 durante a extração, ou seja,
+    dava sinal verde de deploy exatamente no pior momento."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE "
+            "  status NOT IN ('done', 'error', 'uploaded', 'aguardando_aprovacao', "
+            "                 'gancho_aprovado') "
+            "  OR podcast_audio_status = 'extraindo'"
+        ).fetchone()
+        return row[0]
+
+
 def get_user(email: str) -> dict | None:
     with _conn() as conn:
         row = conn.execute(

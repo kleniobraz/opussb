@@ -21,11 +21,18 @@ import threading
 
 import config
 import db
+import podcast_audio
 import s3_client
 
 log = logging.getLogger("opussb.compose")
 
 _PROBE_TIMEOUT = 30
+
+# Teto pra pegar o slot de extração de áudio no fim da montagem. Não é env-tunável de
+# propósito (mesmo espírito do _HEARTBEAT_INTERVAL do podcast_audio): o que importa é não
+# ser infinito, porque enquanto a montagem espera o slot ela segura o vídeo fonte no disco.
+# Estourar aqui não perde nada: o áudio vira 'error' e o usuário tem "Tentar de novo".
+_AUDIO_SLOT_TIMEOUT = 60
 
 
 def probe_av_signature(path: str, require_audio: bool = True):
@@ -321,10 +328,67 @@ def _compose(job_id: str, job: dict, workdir: str) -> None:
     _upload_com_heartbeat(final_local, final_key, job_id)
 
     _check_cancel(job_id)
-    db.update_job(job_id, podcast_final_key=final_key, status="done", progress=100)
+    # 'extraindo' entra no MESMO update do 'done', nunca depois: o front faz polling de 3s e
+    # mostra o botão "Baixar áudio (MP3)" assim que vê done com áudio vazio. Num update
+    # separado existiria a janela pro usuário clicar e disparar o FALLBACK (download do
+    # episódio inteiro de volta do S3) em paralelo com a extração local que já está rodando,
+    # que é exatamente o que esta mudança existe pra eliminar. Atômico, sem janela.
+    extrair = config.PODCAST_AUDIO_ENABLED
+    db.update_job(job_id, podcast_final_key=final_key, status="done", progress=100,
+                  **({"podcast_audio_status": "extraindo"} if extrair else {}))
     log.info("[compose] job %s: final de %.1fs montado e no S3 (%s)", job_id, total, final_key)
-    # Regra 7 da casa: a fonte só morre DEPOIS do final confirmado no S3 (upload + DB acima).
-    shutil.rmtree(os.path.join(config.JOB_DIR, job_id), ignore_errors=True)
+
+    # A FONTE morre aqui, e não só no rmtree do fim: ela é o maior arquivo do job (dezenas
+    # de GB) e a extração de MP3 abaixo usa o final_local, nunca ela. Apagar já encolhe a
+    # janela de exposição: se um restart matar a thread no meio da extração, fica órfão o
+    # workdir (tamanho do final.mp4) em vez de fonte + final. Regra 7 respeitada: o final
+    # já está confirmado no S3 e no banco nas duas linhas acima.
+    try:
+        os.remove(src)
+    except OSError as e:
+        log.warning("[compose] job %s: não consegui apagar a fonte agora (%s); "
+                    "o rmtree do fim cobre", job_id, e)
+
+    # MP3 aqui, com o final.mp4 AINDA local: o caminho antigo (rota sob demanda) baixava os
+    # mesmos GB de volta do S3 só pra extrair uns 100MB de áudio, e esse download é o maior
+    # consumidor de rede do sistema. Best-effort de propósito: o episódio é o entregável, o
+    # MP3 é acessório, então NADA aqui pode derrubar a montagem. Sem _check_cancel: o job já
+    # está 'done' e um _Cancelled cairia no handler que só limpa o workdir, deixando o vídeo
+    # fonte (dezenas de GB) órfão no disco pra sempre.
+    # O try/finally é o que garante a regra 7 mesmo se ALGO aqui explodir. Sem ele, uma
+    # exceção no próprio db.update_job de baixo (SQLite 'database is locked' depois do
+    # busy_timeout, erro de I/O) subiria pro handler de run_podcast_compose, que gravaria
+    # status='error' num episódio JÁ 'done' e com o final.mp4 confirmado no S3: o usuário
+    # perderia acesso a um entregável que existe, veria "montagem falhou" com mensagem de
+    # banco, e o rmtree nunca rodaria (fonte de dezenas de GB órfão travando a próxima
+    # montagem no guard-rail de disco). O finally fecha os dois buracos de uma vez.
+    try:
+        if not extrair:
+            log.info("[compose] job %s: extração de MP3 pulada (PODCAST_AUDIO_ENABLED=false); "
+                     "o áudio segue disponível sob demanda quando a flag voltar", job_id)
+        else:
+            try:
+                audio_key = podcast_audio.extrair_e_publicar(
+                    job_id, final_local, workdir, slot_timeout=_AUDIO_SLOT_TIMEOUT)
+                db.update_job(job_id, podcast_audio_status="done", podcast_audio_key=audio_key)
+                log.info("[compose] job %s: MP3 extraído na montagem, sem round-trip (%s)",
+                         job_id, audio_key)
+            except Exception as e:
+                # 'error' (e não voltar pra vazio) porque o front já sabe renderizar isso como
+                # "Falha ao extrair o áudio" + botão "Tentar de novo", que dispara o fallback
+                # SÓ por ação do usuário. Zero retry automático de propósito.
+                log.warning("[compose] job %s: MP3 falhou na montagem (%s); episódio entregue "
+                            "normalmente, áudio fica sob demanda", job_id, e)
+                db.update_job(job_id, podcast_audio_status="error", podcast_audio_error=str(e))
+    except Exception as e:
+        # Rede de segurança do próprio tratamento de erro: nada depois do 'done' pode
+        # rebaixar o episódio. Só loga; o áudio fica no estado em que deu pra gravar.
+        log.warning("[compose] job %s: falha ao registrar o estado do MP3 (%s); episódio "
+                    "segue entregue", job_id, e)
+    finally:
+        # Regra 7 da casa: a fonte só morre DEPOIS do final confirmado no S3 (upload + DB
+        # acima), e morre SEMPRE, qualquer que tenha sido o desfecho do áudio.
+        shutil.rmtree(os.path.join(config.JOB_DIR, job_id), ignore_errors=True)
 
 
 def run_podcast_compose(job_id: str) -> None:

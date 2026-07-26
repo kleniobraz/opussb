@@ -978,11 +978,16 @@ def sessions_revoke(sid):
 
 @app.route("/health")
 def health():
-    """Saúde do processo. Inclui um ping leve no banco e a contagem de jobs ativos,
-    pra checagem de ops enxergar 'degraded' quando o SQLite trava. Sem segredos."""
+    """Saúde do processo. Inclui um ping leve no banco e a contagem de trabalho em
+    andamento, pra checagem de ops enxergar 'degraded' quando o SQLite trava. Sem segredos.
+
+    Usa count_trabalho_em_andamento e NÃO count_active_jobs: este número é o que o ritual de
+    deploy consulta ("restart do opussb só com active_jobs=0"), então precisa incluir a
+    extração de MP3 da montagem, que roda com o job já 'done' e morreria feio num restart.
+    O campo da resposta segue chamando 'active_jobs' pra não quebrar quem já consome."""
     db_ok, active = True, None
     try:
-        active = db.count_active_jobs()
+        active = db.count_trabalho_em_andamento()
     except Exception as e:
         db_ok = False
         log.warning("health: checagem do banco falhou (%s)", e)
