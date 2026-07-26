@@ -243,3 +243,22 @@ def test_delete_da_VINHETA_varre_os_matched(client, mocker, monkeypatch):
 
     assert r.status_code == 200, r.get_json()
     assert f"{config.VINHETA_PREFIX}_matched/vdel_" in apagados, apagados
+
+
+def test_residuo_em_disco_nao_some_calado(client, s3_espiao, tmp_path, monkeypatch, caplog):
+    """Se o rmtree falhar de verdade (permissão, arquivo em uso), o diretório fica órfão e o
+    registro é apagado logo depois. Best-effort é a decisão certa, mas silêncio não: sem o
+    log ninguém descobre. Visto em produção no deploy de 2026-07-26."""
+    monkeypatch.setattr(config, "JOB_DIR", str(tmp_path))
+    jid = _job_podcast(job_id="TEST-del-residuo")
+    os.makedirs(os.path.join(str(tmp_path), jid), exist_ok=True)
+    # rmtree que "falha" do jeito que ignore_errors esconde: não levanta e não apaga
+    monkeypatch.setattr("app.shutil.rmtree", lambda *a, **kw: None)
+    _login(client, "dono@test")
+
+    with caplog.at_level("WARNING"):
+        r = client.delete(f"/api/projects/{jid}")
+
+    assert r.status_code == 200                      # a exclusão lógica não é impedida
+    assert db.get_job(jid) is None
+    assert any("SOBROU depois do rmtree" in m for m in caplog.messages), caplog.messages

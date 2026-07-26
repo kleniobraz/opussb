@@ -2939,7 +2939,18 @@ def _apagar_armazenamento_do_job(job_id: str) -> int:
     t = config.S3_DELETE_TIMEOUT
     n = s3_client.delete_prefix(f"jobs/{job_id}/", timeout=t)
     n += s3_client.delete_prefix(f"{config.SOURCE16X9_PREFIX}{job_id}/", timeout=t)  # 16:9 retido
-    shutil.rmtree(os.path.join(config.JOB_DIR, job_id), ignore_errors=True)
+    # O disco segue best-effort (ignore_errors): resíduo local é barato perto do bucket pago e
+    # não deve impedir a exclusão lógica. Mas ele não pode sumir CALADO: como o db.delete_job
+    # vem logo depois, um rmtree que falhou de verdade (permissão, arquivo em uso) deixa o
+    # diretório sem nenhum ponteiro e ninguém fica sabendo. Visto acontecer no deploy de
+    # 2026-07-26: diretório de dono errado, rmtree engoliu o erro e o job sumiu do banco com o
+    # arquivo ainda em disco.
+    job_dir = os.path.join(config.JOB_DIR, job_id)
+    shutil.rmtree(job_dir, ignore_errors=True)
+    if os.path.isdir(job_dir):
+        log.warning("[delete] job %s: o diretório local %s SOBROU depois do rmtree "
+                    "(permissão? arquivo em uso?); o registro será apagado assim mesmo e o "
+                    "resíduo fica órfão em disco", job_id, job_dir)
     return n
 
 

@@ -30,6 +30,11 @@ os.environ.setdefault("S3_KEY_PREFIX", "")
 # interceptar (o código chamaria get_presigned_url_accelerate) e a suíte ficaria vermelha sem
 # nada estar quebrado. O pino mantém o teste determinístico com a flag em qualquer valor.
 os.environ.setdefault("S3_ACCELERATE_DOWNLOADS", "false")
+# Mesma lição, flag diferente: PODCAST_AUDIO_ENABLED foi LIGADA em produção em 2026-07-25, e
+# test_audio_route_kill_switch_off_por_padrao_503 checa justamente o DEFAULT do kill switch.
+# Sem o pino a suíte lê o .env real e o teste passa a falhar por causa da configuração de
+# produção, não do código.
+os.environ.setdefault("PODCAST_AUDIO_ENABLED", "false")
 
 import pytest
 import importlib
