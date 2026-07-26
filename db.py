@@ -65,6 +65,11 @@ def init_db() -> None:
         # Frame real do projeto (thumbnail do card). NULL = sem frame: jobs antigos
         # degradam pra capa generativa no front, sem quebrar.
         _ensure_column(conn, "jobs", "thumbnail_key", "TEXT")
+        # Fonte do podcast no S3 quando o upload foi DIRETO do navegador (upload-direto).
+        # Aditiva: código antigo ignora a coluna, e job antigo tem NULL aqui e o arquivo em
+        # local_path, que continua funcionando. A partir dela, local_path vira CÓPIA DE
+        # TRABALHO (some no rmtree, é rematerializada por podcast_ingest) e o S3 é a fonte.
+        _ensure_column(conn, "jobs", "podcast_source_key", "TEXT")
         # Tela final PADRAO do projeto (id da tela na biblioteca, ex.: "clubcast"). NULL = nenhuma
         # (a marca so entra nos projetos que o usuario escolher; nao estampa cliente errado). Os
         # clipes herdam isto, com override por clipe em clip_captions.end_screen.
@@ -589,21 +594,29 @@ def create_job(job_id: str, filename: str, min_duration: int, max_duration: int,
         )
 
 
-def create_podcast_job(job_id: str, filename: str, local_path: str,
+def create_podcast_job(job_id: str, filename: str, local_path: str | None,
                        user_email: str | None, vinheta_id: str,
-                       fps: float | None = None) -> None:
+                       fps: float | None = None,
+                       podcast_source_key: str | None = None) -> None:
     """Entrada do pipeline de podcast (§39): o job nasce ESTACIONADO em 'uploaded',
     status que count_active_jobs e reap_stale_jobs ignoram (não compete com a fila de
     clipes nem é morto pelo watchdog; as próximas fases do pipeline é que o movem).
     Sem min/max (não corta clipes) e captions=0 (o export 16:9 sai sem legenda).
-    fps é opcional (None quando o probe não conseguiu ler o vídeo)."""
+    fps é opcional (None quando o probe não conseguiu ler o vídeo).
+
+    No upload DIRETO o arquivo nunca passou pela VPS: local_path vem None e
+    podcast_source_key aponta pro objeto no S3, que passa a ser a fonte de verdade. O disco
+    vira cópia de trabalho, materializada sob demanda por podcast_ingest.garantir_fonte_local
+    dentro das threads do pipeline."""
     with _conn() as conn:
         conn.execute(
             """INSERT INTO jobs
                (job_id, filename, status, progress, local_path, user_email,
-                job_type, vinheta_id, captions, fps, created_at, updated_at)
-               VALUES (?, ?, 'uploaded', 0, ?, ?, 'podcast', ?, 0, ?, ?, ?)""",
-            (job_id, filename, local_path, user_email, vinheta_id, fps, _now(), _now()),
+                job_type, vinheta_id, captions, fps, podcast_source_key,
+                created_at, updated_at)
+               VALUES (?, ?, 'uploaded', 0, ?, ?, 'podcast', ?, 0, ?, ?, ?, ?)""",
+            (job_id, filename, local_path, user_email, vinheta_id, fps,
+             podcast_source_key, _now(), _now()),
         )
 
 

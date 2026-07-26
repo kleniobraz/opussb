@@ -184,18 +184,25 @@ def upload_file(local_path: str, s3_key: str, stall_timeout: float = None) -> No
     log.info("upload ok: %s", _k(s3_key))
 
 
-def download_file(s3_key: str, local_path: str, stall_timeout: float = None) -> None:
+def download_file(s3_key: str, local_path: str, stall_timeout: float = None,
+                  transfer_config=None) -> None:
     """Baixa um objeto do bucket para um caminho local, com teto de PROGRESSO (_com_teto): mede
     o tempo desde o ÚLTIMO byte recebido (via Callback do boto3, não o tamanho do arquivo no
     disco). Usado pela queima sob demanda (base sem legenda), pela montagem/corte do podcast e
     pela extração de MP3, todos protegidos de uma vez por passarem por aqui.
 
     Levanta DownloadStalledError (subclasse de S3StalledError) pra manter o nome histórico do
-    incidente de 2026-07-24 nas mensagens de erro de job já gravadas."""
+    incidente de 2026-07-24 nas mensagens de erro de job já gravadas.
+
+    transfer_config: TransferConfig do boto3, pra quem precisa de concorrência diferente do
+    default (10 threads). A materialização do fonte de podcast passa 2, porque download
+    pesado é o padrão correlacionado com o bloqueio de TCP do provedor. None mantém o default
+    em todos os outros chamadores."""
     _com_teto(f"download {_k(s3_key)}",
               config.S3_STALL_TIMEOUT if stall_timeout is None else stall_timeout,
               lambda bater_ponto: _client().download_file(
-                  config.S3_BUCKET, _k(s3_key), local_path, Callback=bater_ponto),
+                  config.S3_BUCKET, _k(s3_key), local_path, Callback=bater_ponto,
+                  Config=transfer_config),
               erro=DownloadStalledError)
 
 
@@ -394,3 +401,72 @@ def ensure_lifecycle_rule(prefix: str, days: int, rule_id: str) -> bool:
         Bucket=config.S3_BUCKET, LifecycleConfiguration={"Rules": others + [desired]}))
     log.info("lifecycle rule %s -> prefix=%s days=%d", rule_id, want_prefix, days)
     return True
+
+
+# ─── Multipart PRESIGNADO: upload direto do navegador pro S3 ─────────────────
+# O navegador fala com o S3 sem passar pela VPS. Motivo medido: pelo caminho antigo
+# (multipart/form-data pro Flask) o upload de podcast tinha 21% de sucesso em 14 dias, prendia
+# uma das 4 threads do gunicorn por até 75min, escrevia 10GB em disco temporário e gerava um
+# SEGUNDO tráfego de 10GB da VPS pro S3.
+#
+# CORS DO BUCKET, e isto NÃO é bug pra "consertar": a origem é ÚNICA
+# (https://sbclips.space), nunca "*". Presignada é credencial ao portador, então com CORS
+# aberto qualquer site conseguiria fazer o navegador de um usuário logado subir parte por ele.
+# E `ExposeHeaders` precisa conter ETag: sem isso o JS recebe a resposta da parte mas não
+# enxerga o header, e o complete (que exige a lista de (parte, ETag)) falha SÓ NO FIM de um
+# upload de 10GB. Verificado contra o bucket em 2026-07-26: preflight, PUT de parte com Origin
+# e complete, o ciclo inteiro.
+
+def criar_multipart(s3_key: str, content_type: str = "video/mp4") -> str:
+    """Abre um multipart e devolve o uploadId. Quem abre é o SERVIDOR: a key é derivada de
+    uuid4 aqui e nunca vem do cliente, senão qualquer usuário logado assinaria um PUT pra
+    key de outro projeto (presignada é credencial ao portador, validar no fim chega tarde)."""
+    r = _api(f"create_multipart {_k(s3_key)}",
+             lambda: _client().create_multipart_upload(
+                 Bucket=config.S3_BUCKET, Key=_k(s3_key), ContentType=content_type))
+    return r["UploadId"]
+
+
+def presign_parte(s3_key: str, upload_id: str, numero: int, expiry_seconds: int) -> str:
+    """URL presignada pra UMA parte. Assinatura local (HMAC), sem rede, como os outros presigns.
+
+    NÃO reusa get_presigned_put_url de propósito: aquela fixa ContentType nos Params, o que
+    torna o header assinado e obriga o cliente a mandar exatamente aquele valor. O navegador
+    manda o que quiser pro blob da parte e o S3 responderia 403."""
+    return _client().generate_presigned_url(
+        "upload_part",
+        Params={"Bucket": config.S3_BUCKET, "Key": _k(s3_key),
+                "UploadId": upload_id, "PartNumber": int(numero)},
+        ExpiresIn=expiry_seconds,
+    )
+
+
+def concluir_multipart(s3_key: str, upload_id: str, partes: list) -> str:
+    """Fecha o multipart montando o objeto. `partes` é [{'PartNumber': n, 'ETag': '...'}].
+
+    ORDENA por PartNumber aqui: o cliente sobe em paralelo e a lista chega fora de ordem,
+    o que o S3 recusa com InvalidPartOrder. Uma linha que evita um erro só reproduzível
+    com concorrência > 1.
+
+    Teto maior que o das outras chamadas curtas: montar 640 partes leva mais que um HEAD, e
+    estourar aqui depois de 10GB enviados seria o pior momento possível pra falhar."""
+    ordenadas = sorted(partes, key=lambda p: int(p["PartNumber"]))
+    r = _api(f"complete_multipart {_k(s3_key)} ({len(ordenadas)} partes)",
+             lambda: _client().complete_multipart_upload(
+                 Bucket=config.S3_BUCKET, Key=_k(s3_key), UploadId=upload_id,
+                 MultipartUpload={"Parts": ordenadas}),
+             timeout=config.S3_COMPLETE_TIMEOUT)
+    return r.get("ETag", "")
+
+
+def abortar_multipart(s3_key: str, upload_id: str) -> None:
+    """Descarta as partes já enviadas. É o que o botão Cancelar chama: sem isto, cancelar
+    deixaria GB de partes cobradas e INVISÍVEIS no list_objects_v2 (só list_multipart_uploads
+    enxerga). A regra AbortIncompleteMultipartUpload de 7 dias (ID opussb-abort-multipart-prod, aplicada e
+    VERIFICADA no bucket em 2026-07-26; não é garantida por código, é configuração de bucket)
+    é a rede de segurança pra quem
+    não usa o botão (F5, queda de internet, crash do navegador), não substituto dela."""
+    _api(f"abort_multipart {_k(s3_key)}",
+         lambda: _client().abort_multipart_upload(
+             Bucket=config.S3_BUCKET, Key=_k(s3_key), UploadId=upload_id),
+         timeout=config.S3_DELETE_TIMEOUT)

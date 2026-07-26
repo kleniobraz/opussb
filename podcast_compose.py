@@ -21,6 +21,7 @@ import threading
 
 import config
 import db
+import podcast_ingest
 import podcast_audio
 import s3_client
 
@@ -257,9 +258,9 @@ def _check_cancel(job_id: str) -> None:
 
 
 def _compose(job_id: str, job: dict, workdir: str) -> None:
-    src = job.get("local_path")
-    if not src or not os.path.exists(src):
-        raise RuntimeError("o arquivo fonte não está mais no servidor")
+    # Materializa o fonte se ele ainda estiver só no S3 (upload direto). Idempotente e
+    # DENTRO da thread: baixar 10GB num request prenderia uma das 4 threads do gunicorn.
+    src = podcast_ingest.garantir_fonte_local(job)
     try:
         choice = json.loads(job.get("hook_choice") or "null")
     except ValueError:
@@ -348,6 +349,22 @@ def _compose(job_id: str, job: dict, workdir: str) -> None:
     except OSError as e:
         log.warning("[compose] job %s: não consegui apagar a fonte agora (%s); "
                     "o rmtree do fim cobre", job_id, e)
+
+    # E a cópia no S3 (upload direto) morre junto, pelo mesmo motivo: sem isto cada episódio
+    # deixaria dezenas de GB no bucket PAGO pra sempre, e nada os ceifaria (o lifecycle de 7
+    # dias só coleta multipart incompleto, não objeto montado). A coluna é limpa na mesma
+    # tacada porque _podcast_tem_fonte confia nela: deixá-la apontando pra key apagada faria
+    # o /source responder 302 pra um 404.
+    if job.get("podcast_source_key"):
+        # Coluna limpa ANTES do delete, de propósito: na ordem inversa, um delete que passa
+        # seguido de um update que falha (SQLite locked) deixaria a coluna apontando pra key
+        # apagada, e aí _podcast_tem_fonte mente e o /source responde 302 pra um 404.
+        db.update_job(job_id, podcast_source_key=None)
+        try:
+            s3_client.delete_object(job["podcast_source_key"])
+        except Exception as e:
+            log.warning("[compose] job %s: fonte segue no S3 (%s); o delete do projeto cobre",
+                        job_id, e)
 
     # MP3 aqui, com o final.mp4 AINDA local: o caminho antigo (rota sob demanda) baixava os
     # mesmos GB de volta do S3 só pra extrair uns 100MB de áudio, e esse download é o maior

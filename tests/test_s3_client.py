@@ -71,7 +71,7 @@ def test_download_file_feliz_no_stall(mocker, tmp_path):
     """Download que segue progredindo (Callback chamado) termina normal, sem exceção."""
     mock_s3 = mocker.MagicMock()
 
-    def _download(Bucket, Key, Filename, Callback=None):
+    def _download(Bucket, Key, Filename, Callback=None, **kwargs):
         for _ in range(3):
             time.sleep(0.05)
             Callback(1024)
@@ -84,12 +84,27 @@ def test_download_file_feliz_no_stall(mocker, tmp_path):
     mock_s3.download_file.assert_called_once()
 
 
+def test_download_file_repassa_o_transfer_config(mocker, tmp_path):
+    """A concorrência reduzida da materialização (2 em vez de 10) só serve pra alguma coisa se
+    chegar ao boto3. Sem este teste, alguém removeria o parâmetro e a mitigação do bloqueio de
+    TCP sumiria em silêncio: o download continuaria funcionando, só que com 10 conexões."""
+    import boto3.s3.transfer as boto3_transfer
+    mock_s3 = mocker.MagicMock()
+    mock_s3.download_file.side_effect = lambda Bucket, Key, Filename, Callback=None, **kw: Callback(1)
+    mocker.patch("s3_client._client", return_value=mock_s3)
+    cfg = boto3_transfer.TransferConfig(max_concurrency=2)
+
+    s3_client.download_file("jobs/abc/x.mp4", str(tmp_path / "o.mp4"), transfer_config=cfg)
+
+    assert mock_s3.download_file.call_args.kwargs["Config"] is cfg
+
+
 def test_download_file_sem_progresso_desiste(mocker, tmp_path):
     """Sem NENHUM byte novo por stall_timeout, desiste com DownloadStalledError mesmo com
     a chamada real do boto3 ainda 'presa' (nunca retorna, igual o achado em produção)."""
     mock_s3 = mocker.MagicMock()
 
-    def _download(Bucket, Key, Filename, Callback=None):
+    def _download(Bucket, Key, Filename, Callback=None, **kwargs):
         Callback(1024)  # um pouco de progresso, depois trava de vez
         time.sleep(5)  # bem mais que o stall_timeout do teste
 
@@ -419,3 +434,19 @@ def test_download_url_flag_on_usa_accelerate(mocker, monkeypatch):
     assert s3_client.get_presigned_download_url("jobs/a/final.mp4", "ep.mp4") == "accel"
     normal.assert_not_called()
     assert accel.call_args.kwargs["download_name"] == "ep.mp4"
+
+
+def test_concluir_multipart_ORDENA_as_partes(mocker):
+    """O S3 recusa com InvalidPartOrder se a lista vier fora de ordem, e o navegador com
+    concorrência > 1 termina as partes fora de ordem naturalmente. O erro só aparece depois de
+    10GB enviados, no pior momento possível pra falhar."""
+    mock_s3 = mocker.MagicMock()
+    mock_s3.complete_multipart_upload.return_value = {"ETag": "final"}
+    mocker.patch("s3_client._client", return_value=mock_s3)
+
+    s3_client.concluir_multipart("jobs/x/podcast/source.mp4", "up-1", [
+        {"PartNumber": 3, "ETag": "c"}, {"PartNumber": 1, "ETag": "a"},
+        {"PartNumber": 2, "ETag": "b"}])
+
+    enviadas = mock_s3.complete_multipart_upload.call_args.kwargs["MultipartUpload"]["Parts"]
+    assert [p["PartNumber"] for p in enviadas] == [1, 2, 3]

@@ -12,6 +12,7 @@ from contextlib import contextmanager
 import requests
 import config
 import db
+import podcast_ingest
 import s3_client
 import runpod_client
 import captions
@@ -44,7 +45,11 @@ def run_thread1(job_id: str) -> None:
     try:
         _check_cancel(job_id)
         db.update_job(job_id, status="extracting_audio", progress=15)
-        audio_path = _extract_audio(job["local_path"], job_id)
+        # Podcast por upload direto nasce só no S3: materializa aqui, dentro da thread,
+        # antes de extrair o áudio. Clipe sempre tem o arquivo em disco (o request salvou).
+        fonte = (podcast_ingest.garantir_fonte_local(job) if job.get("job_type") == "podcast"
+                 else job["local_path"])
+        audio_path = _extract_audio(fonte, job_id)
 
         _check_cancel(job_id)
         db.update_job(job_id, status="uploading_audio", progress=25)

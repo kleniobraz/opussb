@@ -44,6 +44,10 @@ S3_API_TIMEOUT: float = float(os.environ.get("S3_API_TIMEOUT", "60"))
 # thread. Metadado que não responde em 20s não vai responder em 60, então aqui o teto é menor
 # de propósito; o S3_API_TIMEOUT do resto do app fica intacto.
 S3_DELETE_TIMEOUT: float = float(os.environ.get("S3_DELETE_TIMEOUT", "20"))
+# Teto do CompleteMultipartUpload. Maior que o S3_API_TIMEOUT geral porque montar 640 partes
+# num objeto de 10GB leva mais que um HEAD, e estourar AQUI seria falhar no pior momento
+# possível: depois de o usuário ter enviado o arquivo inteiro.
+S3_COMPLETE_TIMEOUT: float = float(os.environ.get("S3_COMPLETE_TIMEOUT", "180"))
 
 # ─── Registro de trabalho em voo (em_voo.py), pro gate de deploy do /health ───────────────
 # Corpo POST/PUT a partir deste tamanho conta como UPLOAD em voo. Marcado por TAMANHO e não
@@ -63,6 +67,10 @@ EM_VOO_SUSPEITO_S: dict = {
     "rerender": 3600,
     "revisor":  3600,
     "audio":    40 * 60,     # download do episódio + ffmpeg + upload do MP3
+    # Medido em 2026-07-26: o provedor estrangula o download de ~30 MB/s pra ~2,4 MB/s depois
+    # de ~60s. Nesse ritmo 8GB levam ~55min, e um teto de 60min marcaria como VAZAMENTO uma
+    # materialização perfeitamente saudável (e liberaria o deploy justo em cima dela).
+    "materializa": 2 * 3600,
     "burn":     15 * 60,
     "midia":    15 * 60,
     "ytprobe":  15 * 60,
@@ -204,6 +212,56 @@ PODCAST_AUDIO_DISK_FACTOR: float = float(os.environ.get("PODCAST_AUDIO_DISK_FACT
 # Segue como flag (não foi removido do código) pra dar um desligamento rápido sem deploy se a
 # extração voltar a incomodar: é a operação mais pesada do app (baixa o episódio inteiro).
 PODCAST_AUDIO_ENABLED: bool = os.environ.get("PODCAST_AUDIO_ENABLED", "false").lower() in ("1", "true", "yes")
+
+# ─── Upload direto do navegador pro S3 (multipart presignado) ────────────────────────────
+# Kill switch do caminho NOVO de upload de podcast, default OFF como todo caminho arriscado
+# deste projeto (mesmo padrão de PODCAST_AUDIO_ENABLED e REFRAME_GPU_ENABLED): dá rollback de
+# uma linha no .env, sem git e sem restart de emergência. A rota antiga continua existindo
+# enquanto isto estiver false; combinar data pra removê-la, senão vira dívida permanente.
+PODCAST_UPLOAD_DIRETO: bool = (
+    os.environ.get("PODCAST_UPLOAD_DIRETO", "false").lower() in ("1", "true", "yes")
+)
+# Teto de tamanho do arquivo, checado no init ANTES do primeiro byte. Espelha de propósito o
+# MAX_CONTENT_LENGTH do Flask (16GiB, app.py:65) menos folga: com upload direto o Flask nunca
+# vê o corpo, então esta é a ÚNICA barreira de tamanho que sobra nesse caminho. Sem ela um
+# cliente abre multipart de 5TB (o limite do S3) e a conta chega no fim do mês.
+PODCAST_UPLOAD_MAX_BYTES: int = int(os.environ.get("PODCAST_UPLOAD_MAX_BYTES", 15 * 2**30))
+# Tamanho de cada parte. 16MiB fixo (não calculado): com o teto de 15GB dá no máximo 960
+# partes, bem abaixo do limite de 10.000 do S3, e cálculo dinâmico seria genericidade sem
+# caso de uso. O init recusa se o arquivo exigir mais que 10.000 partes.
+PODCAST_UPLOAD_PART_BYTES: int = int(os.environ.get("PODCAST_UPLOAD_PART_BYTES", 16 * 1024 * 1024))
+# Quantas partes o navegador envia EM PARALELO. Começa em 1 de propósito: o número certo se
+# descobre medindo, não chutando. O init devolve este valor pro cliente, então mudar aqui e
+# reiniciar basta, sem rebuild do Next.
+PODCAST_UPLOAD_CONCURRENCY: int = int(os.environ.get("PODCAST_UPLOAD_CONCURRENCY", "1"))
+# Validade da presignada de CADA parte. Um lote de 50 partes de 16MiB é 800MB, que num uplink
+# ruim de 2Mbps leva ~53min: 2h dá folga de 2x sem virar credencial de escrita de vida longa.
+PODCAST_UPLOAD_URL_TTL: int = int(os.environ.get("PODCAST_UPLOAD_URL_TTL", 2 * 3600))
+# Quantas presignadas por chamada de /parts. Emitir as 640 de uma vez daria ~450KB de JSON e
+# obrigaria validade longa demais; sob demanda uma a uma seriam 640 round-trips.
+PODCAST_UPLOAD_LOTE: int = int(os.environ.get("PODCAST_UPLOAD_LOTE", "50"))
+# Validade do token que carrega o estado da transação (job_id, key, uploadId, dono). Cobre o
+# pior upload medido (75min) com folga enorme e ainda expira dentro dos 7 dias do lifecycle.
+PODCAST_UPLOAD_TOKEN_TTL: int = int(os.environ.get("PODCAST_UPLOAD_TOKEN_TTL", 12 * 3600))
+# Concorrência do TransferManager ao MATERIALIZAR o fonte (S3 -> disco da VPS). 2, e não o
+# default 10 do boto3, porque download pesado é o que correlacionamos 4 de 4 com o bloqueio de
+# TCP do provedor (8 a 20min de operação parada). A feature troca tráfego de upload, que nunca
+# foi correlacionado com nada, por tráfego de download, que foi: melhor materializar devagar
+# em background, sem ninguém esperando, do que rápido derrubando a rede do time.
+# A HIPÓTESE de que o gatilho era o NÚMERO DE CONEXÕES foi TESTADA E REFUTADA em 2026-07-26:
+# download de 8,12GB com concorrência 2 derrubou o TCP igual, 84s depois de começar (5a
+# correlação, e a 1a com concorrência reduzida). A rede voltou ~80s depois de o download
+# morrer. Concorrência 2 fica porque não custa nada, mas quem mitiga de verdade é o teto de
+# banda abaixo: o gatilho é TAXA/VOLUME, não conexões.
+PODCAST_MATERIALIZA_CONCURRENCY: int = int(os.environ.get("PODCAST_MATERIALIZA_CONCURRENCY", "2"))
+# Teto de banda da materialização, em MB/s. 0 desliga o limite.
+#
+# É a mitigação REAL do bloqueio de TCP do provedor (8 a 20min de rede parada, o que trava o
+# site inteiro pro time, não só o job). Materializar devagar em background, sem ninguém
+# esperando, é barato; derrubar a rede da empresa por 20min, não. O valor sai medido, não
+# chutado: ver o número validado no BACKEND_CONTEXT antes de subir.
+PODCAST_MATERIALIZA_MAX_MBPS: float = float(os.environ.get("PODCAST_MATERIALIZA_MAX_MBPS", "0"))
+
 
 # Corte manual do início do corpo bruto, ANTES da transcrição (§39 Parte 2): reencoda só o
 # pedacinho até o próximo keyframe e copia o resto em -c copy (nunca reencoda o corpo

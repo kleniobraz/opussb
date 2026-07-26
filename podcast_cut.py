@@ -15,6 +15,7 @@ import threading
 
 import config
 import db
+import podcast_ingest
 import podcast_compose
 
 log = logging.getLogger("opussb.cut")
@@ -142,9 +143,13 @@ def _com_heartbeat(job_id: str, fn) -> None:
 
 
 def _cortar_inicio(job_id: str, job: dict, workdir: str, cut_at: float) -> None:
-    src = job.get("local_path")
-    if not src or not os.path.exists(src):
-        raise RuntimeError("o arquivo fonte não está mais no servidor")
+    # Materializa o fonte se ele ainda estiver só no S3 (upload direto). Idempotente e
+    # DENTRO da thread: baixar 10GB num request prenderia uma das 4 threads do gunicorn.
+    # aceita_original: este é o ÚNICO chamador que pode rebaixar o original com intro_cut_at
+    # gravado, porque ele vai reaplicar o corte. fator_disco: pedir o 3,5x do corte já aqui
+    # evita baixar 8GB por dezenas de minutos pra falhar na linha seguinte por falta de disco.
+    src = podcast_ingest.garantir_fonte_local(
+        job, fator_disco=config.PODCAST_CUT_DISK_FACTOR, aceita_original=True)
 
     # Gravado ANTES do ffmpeg começar (não só no sucesso), igual hook_choice é gravado
     # antes da montagem: permite o front distinguir erro do corte de erro de outra fase.

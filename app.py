@@ -21,6 +21,7 @@ import urllib.parse
 from datetime import datetime, timezone, timedelta
 
 import requests
+from botocore.exceptions import ClientError
 from flask import Flask, request, jsonify, abort, session, redirect, send_file
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.exceptions import HTTPException
@@ -35,6 +36,7 @@ import caption_reviewer
 import hooks
 import podcast_compose
 import podcast_cut
+import podcast_ingest
 import podcast_audio
 
 # Logging pra stderr: print() no worker do gunicorn fica com buffer e some do
@@ -1140,7 +1142,7 @@ def _clip_download_name(job, idx):
     return f"clip_{idx + 1:02d}.mp4"
 
 
-def _s3_redirect(key, download_name=None):
+def _s3_redirect(key, download_name=None, expiry_seconds=None):
     """302 pra URL presignada de QUALQUER entregável no S3 (clipe, episódio, MP3, música). Com
     download_name, a presignada carrega Content-Disposition: attachment (força o download com
     nome amigável em vez de tocar inline).
@@ -1154,9 +1156,14 @@ def _s3_redirect(key, download_name=None):
     direto, ligar a flag não acelerava nada justamente nos arquivos maiores (o final.mp4 tem
     dezenas de GB contra dezenas de MB de um clipe), e falhava em silêncio. Rota nova que sirva
     arquivo do S3 deve passar por aqui, não montar presignada na mão."""
+    # expiry_seconds: default None = o padrão do s3_client (24h), certo pros ENTREGÁVEIS (o
+    # usuário abre o link, baixa depois, manda pra alguém). Quem serve material BRUTO passa um
+    # teto curto: presignada é link ao portador e nenhuma revogação de sessão a alcança.
+    extra = {} if expiry_seconds is None else {"expiry_seconds": expiry_seconds}
     if download_name:
-        return redirect(s3_client.get_presigned_download_url(key, download_name), code=302)
-    return redirect(s3_client.get_presigned_url(key), code=302)
+        return redirect(s3_client.get_presigned_download_url(key, download_name, **extra),
+                        code=302)
+    return redirect(s3_client.get_presigned_url(key, **extra), code=302)
 
 
 def _project_from_job(job):
@@ -3214,6 +3221,28 @@ def upload():
 
 # ─── Upload de podcast 16:9 (§39: só a ENTRADA; transcrição/gancho nas próximas partes) ─
 
+def _podcast_tem_fonte(job) -> bool:
+    """Substitui a guarda "local_path existe?" que as 6 rotas de podcast repetiam. Com upload
+    direto o fonte nasce SÓ no S3 e chega ao disco depois, em thread (podcast_ingest.
+    garantir_fonte_local): sem isto o upload funcionaria e a tela seguinte daria 409 em tudo."""
+    local = job.get("local_path")
+    return bool((local and os.path.exists(local)) or job.get("podcast_source_key"))
+
+
+def _podcast_fonte_para_probe(job):
+    """Um caminho que o ffprobe consegue abrir: o arquivo local, ou uma presignada.
+
+    Ler por HTTPS aqui é seguro e barato porque o ffprobe faz RANGE REQUEST e busca só o moov:
+    medido em 2026-07-26, 4,6MB e 0,3s num arquivo de 8,12GB. Quem NÃO pode rodar remoto é o
+    _podcast_is_cfr, que percorre todos os pacotes e puxaria os 8GB inteiros; por isso ele
+    continua só no caminho com arquivo local."""
+    local = job.get("local_path")
+    if local and os.path.exists(local):
+        return local
+    key = job.get("podcast_source_key")
+    return s3_client.get_presigned_url(key, expiry_seconds=600) if key else None
+
+
 def _probe_podcast_video(path: str):
     """(width, height, dar) do primeiro stream de vídeo, com SAR aplicado, ou None se
     o arquivo não tiver vídeo legível."""
@@ -3260,6 +3289,301 @@ def _podcast_is_cfr(path: str) -> bool:
     if not total:
         return False
     return max(deltas.values()) / total >= 0.999 and min(deltas) > 0
+
+
+# ─── Upload DIRETO do navegador pro S3 (multipart presignado) ────────────────
+# Quatro rotas finas: a orquestração mora em podcast_ingest.py e as primitivas de S3 em
+# s3_client.py, porque app.py já tem quase 4000 linhas. Gateadas por PODCAST_UPLOAD_DIRETO
+# (default false): enquanto estiver off, a rota antiga /api/podcast/upload continua sendo a
+# única entrada. Combinar data pra remover a antiga, senão vira dívida permanente.
+
+def _guarda_upload_direto():
+    """Guardas comuns às 4 rotas. Devolve (user, None) ou (None, resposta_de_erro)."""
+    if not config.PODCAST_ENABLED or not config.PODCAST_UPLOAD_DIRETO:
+        return None, (jsonify({"error": "Recurso indisponível."}), 404)
+    user = db.get_user(session["user"])
+    if not user:
+        session.clear()
+        return None, (jsonify({"error": "Sessão inválida.", "auth": False}), 401)
+    if user["must_change_password"]:
+        return None, (jsonify({"error": "Troque a senha do primeiro acesso antes de "
+                                        "processar vídeos."}), 403)
+    return user, None
+
+
+def _recusar_e_limpar(key, job_id, motivo):
+    """Recusa DEPOIS do objeto já existir no bucket. Diferente do caminho antigo (que recusava
+    antes de qualquer arquivo existir), aqui deixar de apagar significa GB órfãos num bucket
+    pago que nada ceifa. Best-effort: se o delete falhar, LOGA e segue, porque a resposta de
+    recusa é mais importante que a limpeza (e o delete do projeto ainda cobre depois)."""
+    try:
+        s3_client.delete_object(key)
+    except Exception as e:
+        log.warning("[podcast/complete] job %s: recusado por %s mas o objeto FICOU no S3 "
+                    "(%s): %s", job_id, motivo, key, e)
+
+
+@app.route("/api/podcast/upload/init", methods=["POST"])
+@login_required
+def podcast_upload_init():
+    """Abre o multipart e devolve o plano de envio. NENHUMA linha é criada no banco aqui: o
+    estado da transação viaja num token assinado (podcast_ingest.emitir_token) e o S3 já é o
+    registro dos uploads pendentes (list_multipart_uploads enumera, o lifecycle de 7 dias
+    coleta). Job no init apareceria na lista de projetos por 75min com todos os botões dando
+    409, e seria excluível pelo DELETE por baixo das partes em voo."""
+    user, err = _guarda_upload_direto()
+    if err:
+        return err
+    d = request.get_json(silent=True) or {}
+    filename = (d.get("filename") or "").strip()
+    vinheta_id = (d.get("vinheta_id") or "").strip()
+    try:
+        tamanho = int(d.get("size") or 0)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Tamanho de arquivo inválido."}), 400
+
+    if not filename or not _allowed(filename):
+        log.warning("[podcast/init] recusado (extensão): filename=%r", filename)
+        return jsonify({"error": "Arquivo inválido. Use mp4, mov, avi, mkv ou webm."}), 400
+    if not vinheta_id or not db.get_vinheta(vinheta_id):
+        log.warning("[podcast/init] recusado (vinheta): id=%r", vinheta_id)
+        return jsonify({"error": "Escolha uma vinheta válida da biblioteca."}), 400
+    if tamanho <= 0 or tamanho > config.PODCAST_UPLOAD_MAX_BYTES:
+        log.warning("[podcast/init] recusado (tamanho): %.2fGB (teto %.0fGB)",
+                    tamanho / 2**30, config.PODCAST_UPLOAD_MAX_BYTES / 2**30)
+        return jsonify({"error": f"Arquivo de {tamanho / 2**30:.1f}GB. O limite é "
+                                 f"{config.PODCAST_UPLOAD_MAX_BYTES / 2**30:.0f}GB."}), 400
+    try:
+        part_size, part_count = podcast_ingest.calcular_partes(tamanho)
+    except ValueError as e:
+        log.warning("[podcast/init] recusado (partes): %s", e)
+        return jsonify({"error": str(e)}), 400
+
+    # job_id e key derivados AQUI, no servidor. A key nunca vem do cliente: presignada é
+    # credencial ao portador, então aceitar key do cliente deixaria qualquer usuário logado
+    # assinar um PUT pra jobs/<outro>/podcast/final.mp4.
+    job_id = str(uuid.uuid4())
+    ext = os.path.splitext(filename)[1].lower()
+    key = f"jobs/{job_id}/podcast/source{ext}"
+    try:
+        upload_id = s3_client.criar_multipart(key)
+    except Exception as e:
+        log.warning("[podcast/init] falha ao abrir multipart: %s", e)
+        return jsonify({"error": "Não consegui iniciar o envio agora. Tente de novo."}), 503
+
+    token = podcast_ingest.emitir_token({
+        "job_id": job_id, "key": key, "upload_id": upload_id, "ext": ext,
+        "part_count": part_count,
+        # splitext antes do sanitizador: ele NÃO tira extensão, então sanitizar o nome
+        # inteiro e concatenar ext produziria "Podcast Carbone 12.mp4.mp4" no card e no
+        # nome do download do episódio.
+        "filename": _safe_filename(os.path.splitext(filename)[0], fallback="podcast") + ext,
+        "vinheta_id": vinheta_id, "size": tamanho,
+        "user_email": session["user"], "t0": time.time(),
+    })
+    log.info("[podcast/init] job %s: %.2fGB em %d parte(s) de %dMiB, conc=%d",
+             job_id, tamanho / 2**30, part_count, part_size // 2**20,
+             config.PODCAST_UPLOAD_CONCURRENCY)
+    return jsonify({
+        "token": token, "job_id": job_id,
+        "part_size": part_size, "part_count": part_count,
+        "concurrency": config.PODCAST_UPLOAD_CONCURRENCY,
+        "lote": config.PODCAST_UPLOAD_LOTE,
+    }), 201
+
+
+@app.route("/api/podcast/upload/parts", methods=["POST"])
+@login_required
+def podcast_upload_parts():
+    """Presignadas de um LOTE de partes. Em lotes e não todas de uma vez: 640 URLs dariam
+    ~450KB de JSON e obrigariam validade de horas pra uma credencial de escrita."""
+    user, err = _guarda_upload_direto()
+    if err:
+        return err
+    d = request.get_json(silent=True) or {}
+    try:
+        tk = podcast_ingest.ler_token(d.get("token") or "", session["user"])
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 403
+    numeros = d.get("parts") or []
+    if not isinstance(numeros, list) or not numeros:
+        return jsonify({"error": "Nenhuma parte pedida."}), 400
+    if len(numeros) > config.PODCAST_UPLOAD_LOTE:
+        # Sem este teto, um POST pede 100 mil URLs e o servidor assina 100 mil HMACs numa
+        # das 4 threads do gunicorn.
+        return jsonify({"error": f"No máximo {config.PODCAST_UPLOAD_LOTE} partes por vez."}), 400
+    try:
+        nums = [int(n) for n in numeros]
+    except (TypeError, ValueError):
+        return jsonify({"error": "Números de parte inválidos."}), 400
+    # Contra o part_count DO TOKEN, não contra o 10000 do S3. Sem isto, quem declara 16MiB no
+    # init ainda consegue pedir presignadas de 1 a 10000 e, como a presignada não fixa
+    # Content-Length, subir 5GiB em cada uma: o teto de tamanho viraria auto-declarado.
+    teto = int(tk.get("part_count") or 0) or 10000
+    if any(n < 1 or n > teto for n in nums):
+        log.warning("[podcast/parts] job %s pediu parte fora da faixa (teto %d): %r",
+                    tk.get("job_id"), teto, nums[:5])
+        return jsonify({"error": "Números de parte fora da faixa."}), 400
+
+    urls = {str(n): s3_client.presign_parte(tk["key"], tk["upload_id"], n,
+                                            config.PODCAST_UPLOAD_URL_TTL)
+            for n in nums}
+    return jsonify({"urls": urls, "expira_em": config.PODCAST_UPLOAD_URL_TTL})
+
+
+@app.route("/api/podcast/upload/complete", methods=["POST"])
+@login_required
+def podcast_upload_complete():
+    """Fecha o multipart, valida por range e cria o job. IDEMPOTENTE de propósito: é a
+    proteção da única janela que sobra (restart entre o último byte e esta chamada)."""
+    user, err = _guarda_upload_direto()
+    if err:
+        return err
+    d = request.get_json(silent=True) or {}
+    try:
+        tk = podcast_ingest.ler_token(d.get("token") or "", session["user"])
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 403
+    job_id, key = tk["job_id"], tk["key"]
+
+    # Retry de um complete que já deu certo: o job existe e é deste dono. Responde 200 sem
+    # refazer nada, que é o que torna o retry do cliente seguro.
+    ja = db.get_job(job_id)
+    if ja and ja.get("job_type") == "podcast":
+        return jsonify({"job_id": job_id, "status": ja["status"]}), 200
+
+    partes = d.get("parts") or []
+    try:
+        lista = [{"PartNumber": int(p["number"]), "ETag": p["etag"]} for p in partes]
+    except (TypeError, KeyError, ValueError):
+        return jsonify({"error": "Lista de partes inválida."}), 400
+
+    try:
+        s3_client.concluir_multipart(key, tk["upload_id"], lista)
+    except ClientError as e:
+        codigo = e.response.get("Error", {}).get("Code", "")
+        if codigo == "NoSuchUpload":
+            # NoSuchUpload é a MESMA resposta pra "já concluí", "abortei" e "expirou". Quem
+            # desambigua é o objeto final: se ele está lá com o tamanho certo, o complete
+            # anterior funcionou e este é um retry legítimo.
+            try:
+                tam = s3_client.head_size(key)
+            except Exception:
+                tam = None
+            if tam != tk["size"]:
+                # Objeto PRESENTE com tamanho errado é caso diferente de objeto ausente, e
+                # sem apagar ele fica no bucket pago sem linha no banco: invisível pro
+                # delete_project (que só chega por job_id) e sem nada que o ceife.
+                if tam is not None:
+                    _recusar_e_limpar(key, job_id, "objeto montado com tamanho divergente")
+                log.warning("[podcast/complete] job %s: uploadId sumiu (tam=%r, esperado=%r)",
+                            job_id, tam, tk["size"])
+                return jsonify({"error": "Este envio não pôde ser concluído. "
+                                         "Envie o arquivo de novo."}), 409
+            log.info("[podcast/complete] job %s: complete repetido, objeto já montado", job_id)
+        elif codigo in ("InvalidPart", "InvalidPartOrder", "EntityTooSmall"):
+            log.warning("[podcast/complete] job %s recusado (%s)", job_id, codigo)
+            return jsonify({"error": "Algumas partes do envio não chegaram inteiras. "
+                                     "Tente enviar de novo."}), 400
+        else:
+            log.warning("[podcast/complete] job %s: erro do S3 (%s)", job_id, codigo)
+            return jsonify({"error": "Falha ao finalizar o envio. Tente de novo."}), 502
+    except s3_client.S3StalledError:
+        # O objeto PODE ter sido montado mesmo assim; o retry cai no ramo NoSuchUpload acima.
+        log.warning("[podcast/complete] job %s: S3 não respondeu ao finalizar", job_id)
+        return jsonify({"error": "O armazenamento não respondeu. Tente de novo em "
+                                 "instantes; o que já subiu não se perdeu."}), 503
+
+    # O tamanho declarado no init vira VERIFICADO aqui, contra o objeto montado. Sem isto o
+    # teto de PODCAST_UPLOAD_MAX_BYTES é só um número que o cliente escolheu: ele declara
+    # 16MiB, sobe partes de 5GiB (a presignada não fixa Content-Length) e o complete aceita.
+    # Tolerância zero de propósito: o cliente sabe o tamanho exato do arquivo que escolheu.
+    try:
+        real = s3_client.head_size(key)
+    except Exception as e:
+        log.warning("[podcast/complete] job %s: não consegui conferir o tamanho (%s)", job_id, e)
+        real = None
+    if real is not None and real != tk["size"]:
+        _recusar_e_limpar(key, job_id, "tamanho divergente")
+        log.warning("[podcast/complete] job %s recusado: declarou %d bytes e montou %d",
+                    job_id, tk["size"], real)
+        return jsonify({"error": "O arquivo enviado não bate com o que foi anunciado. "
+                                 "Envie de novo."}), 400
+
+    # Validação por RANGE REQUEST: ffprobe lê só o moov. Medido em 2026-07-26: 4,6MB e 0,3s
+    # num arquivo de 8,12GB. O CFR NÃO é validado aqui de propósito (leria o arquivo inteiro,
+    # 8GB): fica pro início do processamento, que já materializa o fonte.
+    if not db.get_vinheta(tk["vinheta_id"]):
+        # Em 75min de upload um admin pode ter apagado a vinheta, e o /compose 409 depois.
+        _recusar_e_limpar(key, job_id, "vinheta inexistente")
+        log.warning("[podcast/complete] job %s recusado (vinheta sumiu): %s",
+                    job_id, tk["vinheta_id"])
+        return jsonify({"error": "A vinheta escolhida não existe mais. Escolha outra."}), 409
+    try:
+        url = s3_client.get_presigned_url(key, expiry_seconds=600)
+        probe = _probe_podcast_video(url)
+    except subprocess.TimeoutExpired:
+        # Timeout do probe NÃO recusa: moov no fim do arquivo faria o ffprobe puxar tudo.
+        # Aceita e deixa o probe do processamento (com o arquivo local) decidir.
+        log.warning("[podcast/complete] job %s: probe por range estourou; aceitando assim "
+                    "mesmo (o processamento valida com o arquivo local)", job_id)
+        probe = None
+    if probe:
+        w, h, dar = probe
+        if abs(dar - 16 / 9) > (16 / 9) * 0.02:
+            _recusar_e_limpar(key, job_id, "não ser 16:9")
+            log.warning("[podcast/complete] job %s recusado (não é 16:9): %dx%d dar=%.4f",
+                        job_id, w, h, dar)
+            return jsonify({"error": f"O vídeo do podcast precisa ser 16:9 (ex.: 1920x1080). "
+                                     f"Este veio {w}x{h}."}), 400
+
+    try:
+        db.create_podcast_job(job_id, tk["filename"], None, session["user"], tk["vinheta_id"],
+                              fps=None, podcast_source_key=key)
+    except sqlite3.IntegrityError:
+        # Duplo clique: dois completes em voo passaram juntos pelo get_job() lá em cima, que
+        # ainda devolvia None pros dois. O outro ganhou a corrida e o job já existe. É o mesmo
+        # caso do retry idempotente, só detectado mais tarde: 200, não 500.
+        log.info("[podcast/complete] job %s: complete concorrente, job já criado", job_id)
+        return jsonify({"job_id": job_id, "status": "uploaded"}), 200
+    # Telemetria do cliente é ENTRADA EXTERNA: %r pra não deixar forjar linha de journal (o
+    # único lugar onde a operação enxerga o pipeline), e float() defensivo porque um TypeError
+    # aqui viraria 500 DEPOIS do job já criado, com o usuário achando que perdeu o upload.
+    med = d.get("medicao") if isinstance(d.get("medicao"), dict) else {}
+    try:
+        ms = float(med.get("ms") or 0)
+    except (TypeError, ValueError):
+        ms = 0.0
+    log.info("[podcast/complete] job %s PRONTO: %.2fGB, cliente %.0fs (%.1f MB/s), conc=%r, "
+             "retries=%r, servidor %.0fs", job_id, tk["size"] / 2**30, ms / 1000,
+             (tk["size"] / 2**20) / max(ms / 1000, 0.001),
+             med.get("concorrencia"), med.get("retries"), time.time() - tk["t0"])
+    return jsonify({"job_id": job_id, "status": "uploaded"}), 201
+
+
+@app.route("/api/podcast/upload/abort", methods=["POST"])
+@login_required
+def podcast_upload_abort():
+    """Cancelamento explícito do usuário. Chama AbortMultipartUpload: sem isso, cancelar
+    deixaria GB de partes cobradas e invisíveis no list_objects_v2. Idempotente: abortar duas
+    vezes, ou abortar o que já expirou, responde 200."""
+    user, err = _guarda_upload_direto()
+    if err:
+        return err
+    d = request.get_json(silent=True) or {}
+    try:
+        tk = podcast_ingest.ler_token(d.get("token") or "", session["user"])
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 403
+    try:
+        s3_client.abortar_multipart(tk["key"], tk["upload_id"])
+        log.info("[podcast/abort] job %s: envio cancelado pelo usuário", tk["job_id"])
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") != "NoSuchUpload":
+            log.warning("[podcast/abort] job %s: %s", tk["job_id"], e)
+    except Exception as e:
+        log.warning("[podcast/abort] job %s: %s", tk["job_id"], e)
+    return jsonify({"ok": True})
 
 
 @app.route("/api/podcast/upload", methods=["POST"])
@@ -3382,13 +3706,17 @@ def podcast_cut_intro_route(job_id):
         return jsonify({"error": "Informe um ponto de corte válido (cut_at, em segundos, >= 0)."}), 400
     cut_at = float(cut_at)
 
-    if not job.get("local_path") or not os.path.exists(job["local_path"]):
+    if not _podcast_tem_fonte(job):
         return jsonify({"error": "O arquivo do podcast não está mais no servidor. Envie de novo."}), 409
 
-    total = _probe_duration(job["local_path"])
-    if total is None:
+    total = _probe_duration(_podcast_fonte_para_probe(job))
+    if total is None and job.get("local_path") and os.path.exists(job["local_path"]):
+        # Só é erro com o arquivo EM DISCO: aí não conseguir ler a duração é sintoma de
+        # arquivo quebrado. Com o fonte só no S3 o probe é remoto (timeout de 30s), e um
+        # timeout de rede não pode impedir o produtor de cortar: segue sem a checagem, e a
+        # thread revalida com o arquivo local, que é onde a decisão de verdade acontece.
         return jsonify({"error": "Não consegui ler a duração do arquivo do podcast."}), 400
-    if (total - cut_at) < config.PODCAST_CUT_MIN_REMAINING_SECONDS:
+    if total is not None and (total - cut_at) < config.PODCAST_CUT_MIN_REMAINING_SECONDS:
         return jsonify({
             "error": f"Esse ponto de corte deixaria só {max(total - cut_at, 0):.0f}s de episódio "
                      f"(mínimo {config.PODCAST_CUT_MIN_REMAINING_SECONDS:.0f}s). Escolha um ponto mais cedo."
@@ -3450,7 +3778,7 @@ def podcast_transcribe(job_id):
         return jsonify({"error": "Este projeto é de outro usuário."}), 403
     if job.get("job_type") != "podcast":
         return jsonify({"error": "Este projeto não é um podcast."}), 400
-    if not job.get("local_path") or not os.path.exists(job["local_path"]):
+    if not _podcast_tem_fonte(job):
         return jsonify({"error": "O arquivo do podcast não está mais no servidor. Envie de novo."}), 409
 
     with _upload_lock:
@@ -3545,7 +3873,7 @@ def podcast_hooks_view(job_id):
         "hook_choice": choice,
         "intro_cut_at": job.get("intro_cut_at"),
         "fps": job.get("fps"),
-        "source_available": bool(job.get("local_path") and os.path.exists(job["local_path"])),
+        "source_available": _podcast_tem_fonte(job),
         "final_available": bool(job.get("podcast_final_key")) and job["status"] == "done",
         "audio_status": job.get("podcast_audio_status"),
         "audio_available": bool(job.get("podcast_audio_key")) and job.get("podcast_audio_status") == "done",
@@ -3566,9 +3894,18 @@ def podcast_source(job_id):
     job, err = _podcast_job_or_error(job_id)
     if err:
         return err
-    if not job.get("local_path") or not os.path.exists(job["local_path"]):
-        return jsonify({"error": "O arquivo do podcast não está mais no servidor. Envie de novo."}), 409
-    return send_file(job["local_path"], conditional=True)
+    local = job.get("local_path")
+    if local and os.path.exists(local):
+        return send_file(local, conditional=True)
+    if job.get("podcast_source_key"):
+        # Fonte ainda só no S3 (upload direto, antes da materialização). 302 pra presignada em
+        # vez de baixar 10GB pra servir: o S3 responde Range nativamente, então o preview do
+        # trim funciona igual, e a VPS sai do caminho dos bytes também na leitura.
+        # TTL curto e explícito, ao contrário dos entregáveis: isto é o MASTER BRUTO, e uma
+        # presignada é link ao portador que nenhuma revogação de sessão alcança. 15min cobre
+        # o preview do trim (o player renegocia a cada seek com uma request nova à rota).
+        return _s3_redirect(job["podcast_source_key"], expiry_seconds=900)
+    return jsonify({"error": "O arquivo do podcast não está mais no servidor. Envie de novo."}), 409
 
 
 @app.route("/api/podcast/<job_id>/approve", methods=["POST"])
@@ -3604,9 +3941,9 @@ def podcast_approve(job_id):
     dur = end - start
     if not (10.0 <= dur <= 90.0):
         return jsonify({"error": f"Duração de {dur:.0f}s fora do razoável pra uma abertura (10 a 90s)."}), 400
-    if not job.get("local_path") or not os.path.exists(job["local_path"]):
+    if not _podcast_tem_fonte(job):
         return jsonify({"error": "O arquivo do podcast não está mais no servidor. Envie de novo."}), 409
-    total = _probe_duration(job["local_path"])
+    total = _probe_duration(_podcast_fonte_para_probe(job))
     if total and end > total + 1.0:
         return jsonify({"error": f"O fim ({end:.1f}s) passa da duração do vídeo ({total:.1f}s)."}), 400
 
@@ -3635,7 +3972,7 @@ def podcast_compose_route(job_id):
         return jsonify({"error": "Sessão inválida.", "auth": False}), 401
     if job.get("user_email") != session["user"] and not user.get("is_admin"):
         return jsonify({"error": "Este projeto é de outro usuário."}), 403
-    if not job.get("local_path") or not os.path.exists(job["local_path"]):
+    if not _podcast_tem_fonte(job):
         return jsonify({"error": "O arquivo do podcast não está mais no servidor. Envie de novo."}), 409
     try:
         choice = json.loads(job.get("hook_choice") or "null")

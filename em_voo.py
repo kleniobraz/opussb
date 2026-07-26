@@ -56,6 +56,10 @@ BLOQUEIA_DEPLOY = {
     "rerender": True,   # encode de minutos, key .rerender.mp4 órfã no S3, custo de GPU.
     "audio":    True,   # extração de MP3; só se cura pelo stale de 30min.
     "revisor":  True,   # dinheiro já gasto na API da Anthropic, e nada ceifa caption_reviews.
+    "materializa": True,  # download de até 10GB do fonte do podcast pro disco. É a operação
+                        # longa que MIGROU do request de upload pra cá quando o upload virou
+                        # direto pro S3: se ficasse de fora, o incidente de 2026-07-26 voltava
+                        # com outra roupa (restart no meio, com pode_reiniciar dizendo true).
     "burn":     False,  # cache idempotente, teto de 180s, a rota já cai pra base sem legenda.
     "midia":    False,  # thumb/waveform/filmstrip: fila cheia já devolve 404 / peaks:[] / null.
     "ytprobe":  False,  # segundos, e o acquire non-blocking já devolve 429.
