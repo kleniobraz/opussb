@@ -24,16 +24,15 @@ derrubou a rede IGUAL, 84s depois de começar (5a correlação, 1a com concorrê
 No mesmo teste dá pra ver o mecanismo: o throughput despenca de ~30 MB/s pra ~2,4 MB/s por
 volta dos 60s, e conexões NOVAS passam a não completar o handshake. Ou seja, o gatilho é
 TAXA, não número de conexões. A concorrência 2 fica porque não custa nada, mas quem mitiga de
-verdade é config.PODCAST_MATERIALIZA_MAX_MBPS, medido e fixado em 8 MB/s: nesse teto um
-episódio de 8,12GB atravessa INTEIRO em 18,5min a 7,5 MB/s constantes, com zero janelas de
-falha de rede (contra a rede caindo aos 84s sem teto). Os números e o método estão no comentário
-da constante em config.py.
+verdade é config.PODCAST_MATERIALIZA_MAX_MBPS, medido e fixado em 25 MB/s: nesse teto um
+episódio de 8,12GB atravessa INTEIRO em 6,3min a 22,1 MB/s constantes, com zero janelas de
+falha de rede (contra a rede caindo aos 84s sem teto nenhum). Cinco execuções e o método estão
+no comentário da constante em config.py, inclusive o teto real NÃO ter sido encontrado.
 
-CONSEQUÊNCIA PRÁTICA que precisa estar dita: a materialização é DE PROPÓSITO mais lenta do que
-o link aguenta. 18,5min pra um episódio é o comportamento correto, não sintoma. Quem "otimizar"
-isso subindo o teto vai ganhar alguns minutos no job e tirar o time inteiro da internet por 8 a
-20. Continua valendo a pena de longe: é background, com retry, e ninguém esperando, contra
-75min de request com 21% de sucesso.
+CONSEQUÊNCIA PRÁTICA que precisa estar dita: a materialização é DE PROPÓSITO limitada, mesmo
+com o link dando 124 MB/s num speedtest. O teto não está lá pra ser rápido, está pra não
+disparar o shaping do provedor, que tira a empresa inteira do GitHub e do S3 por 8 a 20
+minutos. Quem "otimizar" isso subindo o número ganha ~1min no job e arrisca aquilo.
 """
 import logging
 import os
@@ -117,8 +116,8 @@ def _com_heartbeat(job_id: str, status: str, fn):
     """Roda fn() batendo sinal de vida no job, no mesmo molde de podcast_cut._com_heartbeat.
 
     SEM ISTO a feature se autossabota: a materialização não escreve NADA no banco enquanto
-    baixa, e ela leva 18,5min medidos pra um episódio de 8,12GB (~34min pro maior arquivo
-    aceito, 15GB), porque o teto de banda a deixa lenta DE PROPÓSITO. O reap_stale_jobs ceifa em
+    baixa, e ela leva 6,3min medidos pra um episódio de 8,12GB (~12min pro maior arquivo
+    aceito, 15GB), e mais que isso se a rede estiver ruim. O reap_stale_jobs ceifa em
     30min e roda em 6 rotas, ou seja, qualquer outra pessoa clicando em enviar/transcrever/montar
     mata um job perfeitamente vivo. Pelo /transcribe o estrago é definitivo: o job vira 'error' e
     nada no sistema devolve um podcast pra 'uploaded', então o único caminho é excluir e

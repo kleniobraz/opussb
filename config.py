@@ -67,10 +67,10 @@ EM_VOO_SUSPEITO_S: dict = {
     "rerender": 3600,
     "revisor":  3600,
     "audio":    40 * 60,     # download do episódio + ffmpeg + upload do MP3
-    # Medido em 2026-07-26 com o teto de banda ligado (PODCAST_MATERIALIZA_MAX_MBPS=8): um
-    # episódio de 8,12GB leva 18,5min, e o maior arquivo aceito (15GB) levaria ~34min. As 2h
-    # são folga deliberada: o teto de 60min original marcaria como VAZAMENTO uma materialização
-    # saudável que pegasse rede ruim, e liberaria o deploy justo em cima dela.
+    # Com o teto de banda em 25 MB/s um episódio de 8,12GB leva 6,3min medidos, e o maior
+    # arquivo aceito (15GB) levaria ~12min. As 2h continuam sendo folga deliberada e generosa:
+    # o teto tem que aguentar uma materialização que pegue rede ruim de verdade sem virar
+    # "vazamento", porque marcar suspeito libera o deploy justo em cima dela.
     "materializa": 2 * 3600,
     "burn":     15 * 60,
     "midia":    15 * 60,
@@ -261,22 +261,37 @@ PODCAST_MATERIALIZA_CONCURRENCY: int = int(os.environ.get("PODCAST_MATERIALIZA_C
 # tira o time inteiro do GitHub e do S3, não só o job. Materializar devagar em background, sem
 # ninguém esperando, é barato; derrubar a rede da empresa, não.
 #
-# O 8 SAIU DE MEDIÇÃO, não de chute. Três execuções em 2026-07-26, com /root/rede-monitor
-# vigiando a conectividade em paralelo:
-#   sem teto (~30 MB/s):  a rede CAIU 84s depois de começar e ficou fora ~10min. 5a de 5.
-#   teto 8 MB/s, 3,16GB:  nenhuma janela de falha de rede.
-#   teto 8 MB/s, 8,12GB:  o EPISÓDIO INTEIRO em 18,5min a 7,5 MB/s constantes (pior janela
-#                         também 7,5), com ZERO janelas de falha de rede.
-# O terceiro é o que fecha a questão: é o caso de uso real, do começo ao fim, sem degradar.
+# O 25 SAIU DE MEDIÇÃO, não de chute. Cinco execuções em 2026-07-26, todas com
+# /root/rede-monitor vigiando a conectividade da VPS em paralelo (é ELE quem dá o veredito, não
+# a taxa do próprio download: o que importa é o time não ficar sem internet):
+#   sem max_bandwidth (~30 MB/s):  a rede CAIU aos 84s e ficou fora ~10min. 5a correlação de 5.
+#   teto  8 MB/s, 3,16GB:          zero janelas de falha.
+#   teto  8 MB/s, 8,12GB (inteiro): 18,5min a  7,5 MB/s constantes, zero janelas de falha.
+#   teto 15 MB/s, 8,12GB (inteiro): 10,1min a 13,7 MB/s constantes, zero janelas de falha.
+#   teto 25 MB/s, 8,12GB (inteiro):  6,3min a 22,1 MB/s constantes, zero janelas de falha.
+# Sempre o episódio COMPLETO, não um recorte: um teste curto não prova nada quando o mecanismo
+# suspeito é justamente taxa sustentada.
 #
-# CORREÇÃO DE UMA LEITURA ANTERIOR, registrada de propósito: uma execução intermediária caiu
-# pra 2,4 MB/s aos 3,09GB e sugeriu que o gatilho fosse VOLUME acumulado. O teste do episódio
-# completo desmentiu (passou de 8GB sem oscilar), então aquilo foi resíduo do estado da rede,
-# que tinha acabado de ser derrubada pelo teste sem teto. O gatilho é TAXA.
+# O TETO REAL NÃO FOI ENCONTRADO: nem 15 nem 25 estolaram. O limiar está em algum lugar entre
+# 22,1 (medido seguro) e ~30 (medido derrubando), e a janela é estreita demais pra valer o
+# custo de caçar: subir de 25 pra 30 economizaria ~1min na materialização e cada tentativa
+# errada custa 8 a 20min de rede parada pra empresa inteira.
 #
-# Quem for AUMENTAR este número: meça de novo, com o monitor de rede ligado, e leia o log dele
-# depois. O sintoma de errar não aparece aqui, aparece no time sem internet.
-PODCAST_MATERIALIZA_MAX_MBPS: float = float(os.environ.get("PODCAST_MATERIALIZA_MAX_MBPS", "8"))
+# HIPÓTESE NÃO TESTADA, e importante pra quem for mexer: pode não ser só o VALOR. O
+# max_bandwidth do boto3 é um token bucket que SUAVIZA o tráfego, enquanto sem ele o transfer
+# manager dispara rajadas de pico bem acima da média. Se o shaping do provedor reage a pico
+# instantâneo, o suavizador é a mitigação real e o número importa menos do que parece. Os dados
+# são compatíveis com as duas leituras (25 com suavização passou; ~30 sem suavização caiu).
+#
+# CORREÇÃO DE UMA LEITURA INTERMEDIÁRIA, registrada de propósito: uma execução caiu pra 2,4
+# MB/s aos 3,09GB e sugeriu que o gatilho fosse VOLUME acumulado. Os testes de episódio
+# completo desmentiram (passaram de 8GB sem oscilar uma vez), então aquilo foi resíduo do
+# estado da rede, que tinha acabado de ser derrubada pelo teste sem teto. Lição de método: não
+# medir logo depois de derrubar a rede.
+#
+# Quem for AUMENTAR este número: meça de novo, com o monitor ligado, com o episódio inteiro, e
+# leia o log DEPOIS. O sintoma de errar não aparece aqui, aparece no time sem internet.
+PODCAST_MATERIALIZA_MAX_MBPS: float = float(os.environ.get("PODCAST_MATERIALIZA_MAX_MBPS", "25"))
 
 
 # Corte manual do início do corpo bruto, ANTES da transcrição (§39 Parte 2): reencoda só o
