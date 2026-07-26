@@ -3540,9 +3540,26 @@ def podcast_upload_complete():
             return jsonify({"error": f"O vídeo do podcast precisa ser 16:9 (ex.: 1920x1080). "
                                      f"Este veio {w}x{h}."}), 400
 
+    # FPS pela MESMA presignada do probe acima. A rota antiga grava o fps (é o que alimenta a
+    # navegação quadro a quadro da tela de corte), e deixar o caminho novo gravando None criava
+    # duas rotas escrevendo coisas diferentes na mesma coluna: hoje sem consumidor no pipeline,
+    # daqui a três meses um bug que ninguém liga à origem do job. Best-effort igual na antiga:
+    # probe que falha deixa fps=None e o job segue, porque isto é auxiliar, não crítico.
+    fps = None
+    try:
+        sig = podcast_compose.probe_av_signature(url, require_audio=False)
+        if sig and sig.get("fps_s") and "/" in sig["fps_s"]:
+            num, den = sig["fps_s"].split("/")
+            fps = float(num) / float(den) if float(den) else None
+    except Exception as e:
+        # AMPLO de propósito: o fps é auxiliar e este ponto roda DEPOIS de o arquivo inteiro
+        # já estar no bucket. Qualquer exceção não prevista aqui custaria um upload de 10GB
+        # que deu certo, o que é desproporcional a não saber o frame rate.
+        log.warning("[podcast/complete] job %s: não consegui ler o fps (%s)", job_id, e)
+
     try:
         db.create_podcast_job(job_id, tk["filename"], None, session["user"], tk["vinheta_id"],
-                              fps=None, podcast_source_key=key)
+                              fps=fps, podcast_source_key=key)
     except sqlite3.IntegrityError:
         # Duplo clique: dois completes em voo passaram juntos pelo get_job() lá em cima, que
         # ainda devolvia None pros dois. O outro ganhou a corrida e o job já existe. É o mesmo

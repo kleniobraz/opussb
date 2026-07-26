@@ -68,8 +68,10 @@ def s3_falso(mocker):
     mocker.patch("s3_client.abortar_multipart")
     mocker.patch("s3_client.delete_object")
     mocker.patch("s3_client.get_presigned_url", side_effect=lambda k, **kw: f"https://s3.example/{k}")
-    # O probe por range roda contra a presignada; sem mock ele tentaria abrir a URL falsa.
+    # Os probes por range rodam contra a presignada; sem mock tentariam abrir a URL falsa.
     mocker.patch("app._probe_podcast_video", return_value=(1920, 1080, 16 / 9))
+    mocker.patch("podcast_compose.probe_av_signature",
+                 return_value={"fps_s": "30000/1001", "width": 1920, "height": 1080})
     return m
 
 
@@ -275,6 +277,34 @@ def test_complete_cria_o_job_em_uploaded_com_a_key(client, s3_falso):
     assert job["status"] == "uploaded" and job["job_type"] == "podcast"
     assert job["podcast_source_key"] == f"jobs/{ini['job_id']}/podcast/source.mp4"
     assert job["local_path"] is None, "com upload direto o fonte ainda não está em disco"
+
+
+def test_complete_grava_o_FPS_igual_a_rota_antiga(client, s3_falso):
+    """As duas rotas escrevem na MESMA coluna e precisam escrever a mesma coisa. A antiga grava
+    o fps (é o que alimenta a navegação quadro a quadro do corte); deixar a nova gravando None
+    era divergência silenciosa esperando virar bug de origem difícil de rastrear."""
+    _vinheta()
+    _login(client)
+    ini = _init(client).get_json()
+
+    client.post("/api/podcast/upload/complete",
+                json={"token": ini["token"], "parts": [{"number": 1, "etag": "a"}]})
+
+    assert abs(db.get_job(ini["job_id"])["fps"] - 30000 / 1001) < 1e-9
+
+
+def test_complete_sem_fps_legivel_nao_derruba_o_upload(client, s3_falso, mocker):
+    """O fps é AUXILIAR: um probe que falha não pode custar um upload de 10GB que deu certo."""
+    _vinheta()
+    _login(client)
+    ini = _init(client).get_json()
+    mocker.patch("podcast_compose.probe_av_signature", side_effect=Exception("probe morreu"))
+
+    r = client.post("/api/podcast/upload/complete",
+                    json={"token": ini["token"], "parts": [{"number": 1, "etag": "a"}]})
+
+    assert r.status_code == 201
+    assert db.get_job(ini["job_id"])["fps"] is None
 
 
 def test_complete_e_IDEMPOTENTE(client, s3_falso):
