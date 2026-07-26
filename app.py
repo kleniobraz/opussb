@@ -3151,13 +3151,20 @@ def upload():
     if user["must_change_password"]:
         return jsonify({"error": "Troque a senha do primeiro acesso antes de processar vídeos."}), 403
 
+    # Mesma razão do upload de podcast: recusa depois de um envio longo tem que dizer POR QUE
+    # no journal, senão o motivo se perde e sobra só o 400 no log do nginx.
+    _tam = request.content_length or 0
     file = request.files.get("video")
     if not file or not file.filename or not _allowed(file.filename):
+        log.warning("[upload] recusado (extensão/arquivo): filename=%r tamanho=%.2fGB",
+                    getattr(file, "filename", None), _tam / 2**30)
         return jsonify({"error": "Arquivo inválido. Use mp4, mov, avi, mkv ou webm."}), 400
 
     min_duration = request.form.get("min_duration", type=int)
     max_duration = request.form.get("max_duration", type=int)
     if min_duration is None or max_duration is None or min_duration >= max_duration:
+        log.warning("[upload] recusado (duração inválida): min=%r max=%r arquivo=%r",
+                    min_duration, max_duration, file.filename)
         return jsonify({
             "error": "min_duration e max_duration são obrigatórios e min deve ser menor que max."
         }), 400
@@ -3271,11 +3278,21 @@ def podcast_upload():
     if user["must_change_password"]:
         return jsonify({"error": "Troque a senha do primeiro acesso antes de processar vídeos."}), 403
 
+    # Todo ramo de recusa daqui pra baixo LOGA o motivo. Sem isto o motivo se perdia: em 14
+    # dias de log do nginx houve 18 respostas 400 nesta rota e não havia como saber se foram
+    # VFR, não-16:9, extensão, vinheta inexistente ou arquivo ilegível. O usuário sobe 10GB e
+    # espera até 75min pra ser recusado, então saber POR QUE é o mínimo. Inclui o tamanho: um
+    # 400 depois de 8GB dói diferente de um 400 em 2MB.
+    _tam = request.content_length or 0
     file = request.files.get("video")
     if not file or not file.filename or not _allowed(file.filename):
+        log.warning("[podcast] upload recusado (extensão/arquivo): filename=%r tamanho=%.2fGB",
+                    getattr(file, "filename", None), _tam / 2**30)
         return jsonify({"error": "Arquivo inválido. Use mp4, mov, avi, mkv ou webm."}), 400
     vinheta_id = (request.form.get("vinheta_id") or "").strip()
     if not vinheta_id or not db.get_vinheta(vinheta_id):
+        log.warning("[podcast] upload recusado (vinheta): id=%r arquivo=%r tamanho=%.2fGB",
+                    vinheta_id, file.filename, _tam / 2**30)
         return jsonify({"error": "Escolha uma vinheta válida da biblioteca."}), 400
 
     job_id = str(uuid.uuid4())
@@ -3294,20 +3311,28 @@ def podcast_upload():
         probe = _probe_podcast_video(local_path)
         if not probe:
             shutil.rmtree(job_dir, ignore_errors=True)
+            log.warning("[podcast] upload recusado (ffprobe não leu vídeo): arquivo=%r "
+                        "tamanho=%.2fGB", file.filename, _tam / 2**30)
             return jsonify({"error": "O arquivo não parece um vídeo válido."}), 400
         w, h, dar = probe
         if abs(dar - 16 / 9) > (16 / 9) * 0.02:
             shutil.rmtree(job_dir, ignore_errors=True)
+            log.warning("[podcast] upload recusado (não é 16:9): %dx%d dar=%.4f arquivo=%r "
+                        "tamanho=%.2fGB", w, h, dar, file.filename, _tam / 2**30)
             return jsonify({"error": f"O vídeo do podcast precisa ser horizontal, na proporção 16:9 "
                                      f"(ex.: 1920x1080). Este arquivo veio {w}x{h}. Exporte o vídeo em "
                                      f"16:9 e envie de novo."}), 400
         if not _podcast_is_cfr(local_path):
             shutil.rmtree(job_dir, ignore_errors=True)
+            log.warning("[podcast] upload recusado (VFR): %dx%d arquivo=%r tamanho=%.2fGB",
+                        w, h, file.filename, _tam / 2**30)
             return jsonify({"error": "Esse vídeo está com taxa de quadros irregular e ainda não pode ser "
                                      "processado. Peça ao estúdio um export com frame rate constante "
                                      "(CFR, ex.: 30 fps fixos) e envie de novo."}), 422
     except subprocess.TimeoutExpired:
         shutil.rmtree(job_dir, ignore_errors=True)
+        log.warning("[podcast] upload recusado (probe estourou %ds): arquivo=%r tamanho=%.2fGB",
+                    config.PODCAST_PROBE_TIMEOUT, file.filename, _tam / 2**30)
         return jsonify({"error": "A análise do vídeo demorou demais e foi interrompida. Tente enviar de "
                                  "novo; se acontecer outra vez, avise o administrador."}), 400
 
