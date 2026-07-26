@@ -14,6 +14,15 @@
 //
 // XHR e não fetch, de propósito: fetch não reporta progresso de upload (não há
 // request.onprogress no padrão), e sem barra de progresso um envio de 40min parece travado.
+//
+// ATENÇÃO, QUEM FOR MEXER AQUI: este arquivo NÃO TEM TESTE. O projeto não tem infra de teste
+// no front (nem vitest nem jest), e montar uma foi deixado como frente separada, decisão
+// consciente do dono em 2026-07-26. Ou seja, a lógica não trivial daqui (pool de workers,
+// contabilidade de progresso por parte, retry com renovação de presignada, watchdog de
+// progresso, abort em cascata) está sem rede de proteção: uma regressão silenciosa só
+// aparece com um episódio real de vários GB, que é o teste mais caro que existe neste
+// produto. Releia o caminho inteiro antes de simplificar qualquer coisa, e prefira mudanças
+// pequenas e verificáveis à mão a refactors amplos.
 
 import { ApiError } from "@/lib/api";
 import * as api from "@/lib/api";

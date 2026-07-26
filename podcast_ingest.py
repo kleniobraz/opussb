@@ -23,14 +23,17 @@ MEDIDO EM 2026-07-26, e o resultado contraria o que se supunha: baixar com conco
 derrubou a rede IGUAL, 84s depois de começar (5a correlação, 1a com concorrência reduzida).
 No mesmo teste dá pra ver o mecanismo: o throughput despenca de ~30 MB/s pra ~2,4 MB/s por
 volta dos 60s, e conexões NOVAS passam a não completar o handshake. Ou seja, o gatilho é
-taxa/volume, não número de conexões. A concorrência 2 fica porque não custa nada, mas quem
-mitiga de verdade é config.PODCAST_MATERIALIZA_MAX_MBPS (default 0 = desligado; o valor tem
-que sair de medição, não de chute).
+TAXA, não número de conexões. A concorrência 2 fica porque não custa nada, mas quem mitiga de
+verdade é config.PODCAST_MATERIALIZA_MAX_MBPS, medido e fixado em 8 MB/s: nesse teto um
+episódio de 8,12GB atravessa INTEIRO em 18,5min a 7,5 MB/s constantes, com zero janelas de
+falha de rede (contra a rede caindo aos 84s sem teto). Os números e o método estão no comentário
+da constante em config.py.
 
-CONSEQUÊNCIA PRÁTICA que precisa estar dita: sob estrangulamento, materializar 8GB leva
-perto de uma hora. Continua valendo a pena (é background, com retry, e ninguém esperando,
-contra 75min de request com 21% de sucesso), mas quem for mexer nos tetos de tempo precisa
-saber que "lento" aqui é o normal, não sintoma.
+CONSEQUÊNCIA PRÁTICA que precisa estar dita: a materialização é DE PROPÓSITO mais lenta do que
+o link aguenta. 18,5min pra um episódio é o comportamento correto, não sintoma. Quem "otimizar"
+isso subindo o teto vai ganhar alguns minutos no job e tirar o time inteiro da internet por 8 a
+20. Continua valendo a pena de longe: é background, com retry, e ninguém esperando, contra
+75min de request com 21% de sucesso.
 """
 import logging
 import os
@@ -67,8 +70,8 @@ def emitir_token(dados: dict) -> str:
 
     É isto que dispensa criar linha no banco entre o init e o complete. Por que não o banco:
     (1) o S3 já é o registro dos uploads pendentes (list_multipart_uploads enumera, e a regra
-    AbortIncompleteMultipartUpload de 7 dias coleta;
-    regra VERIFICADA no bucket em 2026-07-26, ID opussb-abort-multipart-prod, prefixo vazio), e duas fontes de verdade divergem no
+    AbortIncompleteMultipartUpload de 7 dias coleta; regra VERIFICADA no bucket em 2026-07-26,
+    ID opussb-abort-multipart-prod, prefixo vazio), e duas fontes de verdade divergem no
     primeiro restart; (2) um job criado no init apareceria na lista de projetos por 75min com
     todos os botões dando 409; (3) ele seria excluível pelo DELETE /api/projects no meio do
     upload, apagando jobs/<id>/ por baixo das partes em voo.
@@ -114,9 +117,10 @@ def _com_heartbeat(job_id: str, status: str, fn):
     """Roda fn() batendo sinal de vida no job, no mesmo molde de podcast_cut._com_heartbeat.
 
     SEM ISTO a feature se autossabota: a materialização não escreve NADA no banco enquanto
-    baixa, e ela leva ~55min quando o provedor estrangula. O reap_stale_jobs ceifa em 30min e
-    roda em 6 rotas, ou seja, qualquer outra pessoa clicando em enviar/transcrever/montar mata
-    um job perfeitamente vivo. Pelo /transcribe o estrago é definitivo: o job vira 'error' e
+    baixa, e ela leva 18,5min medidos pra um episódio de 8,12GB (~34min pro maior arquivo
+    aceito, 15GB), porque o teto de banda a deixa lenta DE PROPÓSITO. O reap_stale_jobs ceifa em
+    30min e roda em 6 rotas, ou seja, qualquer outra pessoa clicando em enviar/transcrever/montar
+    mata um job perfeitamente vivo. Pelo /transcribe o estrago é definitivo: o job vira 'error' e
     nada no sistema devolve um podcast pra 'uploaded', então o único caminho é excluir e
     reenviar os 10GB, que é exatamente o incidente que esta frente existe pra eliminar.
 

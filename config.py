@@ -67,9 +67,10 @@ EM_VOO_SUSPEITO_S: dict = {
     "rerender": 3600,
     "revisor":  3600,
     "audio":    40 * 60,     # download do episódio + ffmpeg + upload do MP3
-    # Medido em 2026-07-26: o provedor estrangula o download de ~30 MB/s pra ~2,4 MB/s depois
-    # de ~60s. Nesse ritmo 8GB levam ~55min, e um teto de 60min marcaria como VAZAMENTO uma
-    # materialização perfeitamente saudável (e liberaria o deploy justo em cima dela).
+    # Medido em 2026-07-26 com o teto de banda ligado (PODCAST_MATERIALIZA_MAX_MBPS=8): um
+    # episódio de 8,12GB leva 18,5min, e o maior arquivo aceito (15GB) levaria ~34min. As 2h
+    # são folga deliberada: o teto de 60min original marcaria como VAZAMENTO uma materialização
+    # saudável que pegasse rede ruim, e liberaria o deploy justo em cima dela.
     "materializa": 2 * 3600,
     "burn":     15 * 60,
     "midia":    15 * 60,
@@ -254,13 +255,28 @@ PODCAST_UPLOAD_TOKEN_TTL: int = int(os.environ.get("PODCAST_UPLOAD_TOKEN_TTL", 1
 # morrer. Concorrência 2 fica porque não custa nada, mas quem mitiga de verdade é o teto de
 # banda abaixo: o gatilho é TAXA/VOLUME, não conexões.
 PODCAST_MATERIALIZA_CONCURRENCY: int = int(os.environ.get("PODCAST_MATERIALIZA_CONCURRENCY", "2"))
-# Teto de banda da materialização, em MB/s. 0 desliga o limite.
+# Teto de banda da materialização, em MB/s. 0 desliga o limite (NÃO faça isso, ver abaixo).
 #
-# É a mitigação REAL do bloqueio de TCP do provedor (8 a 20min de rede parada, o que trava o
-# site inteiro pro time, não só o job). Materializar devagar em background, sem ninguém
-# esperando, é barato; derrubar a rede da empresa por 20min, não. O valor sai medido, não
-# chutado: ver o número validado no BACKEND_CONTEXT antes de subir.
-PODCAST_MATERIALIZA_MAX_MBPS: float = float(os.environ.get("PODCAST_MATERIALIZA_MAX_MBPS", "0"))
+# É a mitigação REAL do bloqueio de TCP do provedor, que para a rede da VPS por 8 a 20min e
+# tira o time inteiro do GitHub e do S3, não só o job. Materializar devagar em background, sem
+# ninguém esperando, é barato; derrubar a rede da empresa, não.
+#
+# O 8 SAIU DE MEDIÇÃO, não de chute. Três execuções em 2026-07-26, com /root/rede-monitor
+# vigiando a conectividade em paralelo:
+#   sem teto (~30 MB/s):  a rede CAIU 84s depois de começar e ficou fora ~10min. 5a de 5.
+#   teto 8 MB/s, 3,16GB:  nenhuma janela de falha de rede.
+#   teto 8 MB/s, 8,12GB:  o EPISÓDIO INTEIRO em 18,5min a 7,5 MB/s constantes (pior janela
+#                         também 7,5), com ZERO janelas de falha de rede.
+# O terceiro é o que fecha a questão: é o caso de uso real, do começo ao fim, sem degradar.
+#
+# CORREÇÃO DE UMA LEITURA ANTERIOR, registrada de propósito: uma execução intermediária caiu
+# pra 2,4 MB/s aos 3,09GB e sugeriu que o gatilho fosse VOLUME acumulado. O teste do episódio
+# completo desmentiu (passou de 8GB sem oscilar), então aquilo foi resíduo do estado da rede,
+# que tinha acabado de ser derrubada pelo teste sem teto. O gatilho é TAXA.
+#
+# Quem for AUMENTAR este número: meça de novo, com o monitor de rede ligado, e leia o log dele
+# depois. O sintoma de errar não aparece aqui, aparece no time sem internet.
+PODCAST_MATERIALIZA_MAX_MBPS: float = float(os.environ.get("PODCAST_MATERIALIZA_MAX_MBPS", "8"))
 
 
 # Corte manual do início do corpo bruto, ANTES da transcrição (§39 Parte 2): reencoda só o
