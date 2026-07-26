@@ -219,6 +219,17 @@ PODCAST_AUDIO_ENABLED: bool = os.environ.get("PODCAST_AUDIO_ENABLED", "false").l
 # deste projeto (mesmo padrão de PODCAST_AUDIO_ENABLED e REFRAME_GPU_ENABLED): dá rollback de
 # uma linha no .env, sem git e sem restart de emergência. A rota antiga continua existindo
 # enquanto isto estiver false; combinar data pra removê-la, senão vira dívida permanente.
+# PONTO DE NÃO-RETORNO, e é o que decide se o rollback é barato ou caro: o PRIMEIRO job criado
+# pelo caminho novo. Antes dele, reverter é desligar esta flag e reiniciar, sem tocar em código
+# nem em banco (todo o resto do caminho novo só acorda quando existe podcast_source_key, e sem a
+# flag nenhum job nasce com ela). DEPOIS dele, reverter os COMMITS passa a exigir intervenção
+# manual: os jobs criados têm local_path NULL e o fonte só no S3, e o código antigo não sabe
+# materializar, então alguém teria que baixar o fonte à mão e preencher o local_path de cada um.
+# Desligar a flag continua sendo limpo mesmo depois; o que fica caro é reverter o código.
+#
+# Uma segunda coisa que desligar a flag NÃO faz: salvar um upload em voo. As rotas /parts,
+# /complete e /abort passam todas a 404, então o envio morre e as partes já enviadas ficam
+# órfãs e cobradas até o lifecycle de 7 dias coletar. É rollback de emergência, não gracioso.
 PODCAST_UPLOAD_DIRETO: bool = (
     os.environ.get("PODCAST_UPLOAD_DIRETO", "false").lower() in ("1", "true", "yes")
 )
