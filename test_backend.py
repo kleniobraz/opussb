@@ -31,6 +31,24 @@ os.environ["S3_SECRET_KEY"] = "secrettest"
 os.environ["S3_KEY_PREFIX"] = ""
 os.environ["SOURCE16X9_LIFECYCLE_ENSURE"] = "false"
 
+# FLAGS DE COMPORTAMENTO pinadas, pelo mesmo motivo do bloco acima e com a mesma técnica
+# (config.py lê o ambiente no import, e load_dotenv NÃO sobrescreve o que já está setado).
+#
+# POR QUE: teste que muda de resultado conforme o .env não testa CÓDIGO, testa CONFIGURAÇÃO, e
+# vira falso positivo permanente no dia em que a flag é ligada em produção. Aconteceu: o check
+# "RERENDER_GPU_ENABLED default false" ficou vermelho quando a flag foi para true no .env, e a
+# suíte passou a reprovar sem nada estar quebrado. Pior, ela passava no worktree (que tem .env
+# curto, sem essas linhas) e reprovava em produção, então o resultado dependia de ONDE você
+# rodava. Suíte permanentemente vermelha é suíte que ninguém olha.
+#
+# O que estes pinos travam é a pergunta certa: "o DEFAULT DO CÓDIGO é seguro?". A pergunta
+# "a configuração de produção está como eu quero?" é outra coisa, não é teste, e não mora aqui.
+for _flag in ("REFRAME_GPU_ENABLED", "RERENDER_GPU_ENABLED", "PODCAST_ENABLED",
+              "PODCAST_AUDIO_ENABLED", "PODCAST_UPLOAD_DIRETO", "S3_ACCELERATE_DOWNLOADS"):
+    os.environ[_flag] = "false"
+os.environ["MAX_CONCURRENT_JOBS"] = "1"
+os.environ["PODCAST_UPLOAD_CONCURRENCY"] = "1"
+
 import app          # noqa: E402
 import captions     # noqa: E402
 import processor    # noqa: E402

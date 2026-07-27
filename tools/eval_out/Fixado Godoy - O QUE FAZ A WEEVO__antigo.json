@@ -1,0 +1,82 @@
+{
+  "repo": "/tmp/eval_revisor_master_d1v51lx5",
+  "video": "/opt/opussb/tools/eval_data/Fixado Godoy - O QUE FAZ A WEEVO.mp4",
+  "frames": 28,
+  "frames_legenda": 0,
+  "legenda_fala": "Esse grupo fatura R$60 milhões e eu vou te mostrar o que está... Mas o que... No marketing cria campanhas No comercial, e no RH, a IA ela multiplica E não é que A gente vive isso na prática E tudo isso no seu negócio.",
+  "graficos": [
+    {
+      "texto": "Vínicius Godoy",
+      "tipo": "nome"
+    },
+    {
+      "texto": "COO Weevo",
+      "tipo": "cargo"
+    },
+    {
+      "texto": "Estamos falando do Grupo SB formado por",
+      "tipo": "slide"
+    },
+    {
+      "texto": "SB",
+      "tipo": "marca"
+    },
+    {
+      "texto": "SeuBoné",
+      "tipo": "marca"
+    },
+    {
+      "texto": "ONEVO",
+      "tipo": "marca"
+    },
+    {
+      "texto": "Carbone",
+      "tipo": "marca"
+    },
+    {
+      "texto": "CARBONE EDUCAÇÃO",
+      "tipo": "marca"
+    },
+    {
+      "texto": "CLUB CLASS",
+      "tipo": "slide"
+    },
+    {
+      "texto": "CARBONE CLUB",
+      "tipo": "marca"
+    },
+    {
+      "texto": "ONEVO 10 ANOS DE OPERAÇÃO",
+      "tipo": "slide"
+    },
+    {
+      "texto": "Eu não vim para con... m para apresen...",
+      "tipo": "slide"
+    },
+    {
+      "texto": "...cês vão ver aconteceu de ve...",
+      "tipo": "slide"
+    },
+    {
+      "texto": "10 anos de me...",
+      "tipo": "slide"
+    }
+  ],
+  "findings": [
+    {
+      "trecho": "Vínicius Godoy",
+      "origem": "grafico",
+      "tipo": "ortografia",
+      "sugestao": "Vinícius Godoy",
+      "explicacao": "Nome próprio grafado incorretamente, acento no lugar errado",
+      "confianca": 0.95
+    }
+  ],
+  "cost_usd": 0.1198,
+  "tokens": {
+    "read_in": 35026,
+    "read_out": 477,
+    "review_in": 2033,
+    "review_out": 98
+  }
+}

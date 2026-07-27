@@ -29,12 +29,29 @@ os.environ.setdefault("S3_KEY_PREFIX", "")
 # produção (o caso desejado), o mock de get_presigned_url em test_podcast_audio deixaria de
 # interceptar (o código chamaria get_presigned_url_accelerate) e a suíte ficaria vermelha sem
 # nada estar quebrado. O pino mantém o teste determinístico com a flag em qualquer valor.
-os.environ.setdefault("S3_ACCELERATE_DOWNLOADS", "false")
+os.environ["S3_ACCELERATE_DOWNLOADS"] = "false"
 # Mesma lição, flag diferente: PODCAST_AUDIO_ENABLED foi LIGADA em produção em 2026-07-25, e
 # test_audio_route_kill_switch_off_por_padrao_503 checa justamente o DEFAULT do kill switch.
 # Sem o pino a suíte lê o .env real e o teste passa a falhar por causa da configuração de
 # produção, não do código.
-os.environ.setdefault("PODCAST_AUDIO_ENABLED", "false")
+os.environ["PODCAST_AUDIO_ENABLED"] = "false"
+
+# TODAS as flags de comportamento por ATRIBUIÇÃO DIRETA, não setdefault, e a razão é a mesma do
+# bloco de S3 lá em cima: setdefault não sobrescreve variável já exportada no shell. Quem rodasse
+# a suíte com a flag exportada (`set -a; . .env`, ou um `PODCAST_AUDIO_ENABLED=true pytest`)
+# testava a configuração DELE, não o default do código, e o resultado mudava conforme a máquina.
+# Medido em 2026-07-27: com as 7 flags booleanas exportadas como true, a suíte ia de 11 pra 12
+# falhas, e a que caía era justamente a que checa o default do kill switch.
+#
+# Teste que muda de resultado conforme o .env não testa CÓDIGO, testa CONFIGURAÇÃO. Se um dia
+# você precisar exercitar a flag LIGADA, ligue com monkeypatch DENTRO do teste (é o que
+# test_upload_direto.py faz), nunca pelo ambiente.
+os.environ["PODCAST_ENABLED"] = "false"
+os.environ["PODCAST_UPLOAD_DIRETO"] = "false"
+os.environ["REFRAME_GPU_ENABLED"] = "false"
+os.environ["RERENDER_GPU_ENABLED"] = "false"
+os.environ["MAX_CONCURRENT_JOBS"] = "1"
+os.environ["PODCAST_UPLOAD_CONCURRENCY"] = "1"
 
 import pytest
 import importlib

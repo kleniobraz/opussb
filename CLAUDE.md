@@ -53,10 +53,12 @@ Estas SOBREPÕEM qualquer comportamento padrão:
 # Lint (ruff não está no venv; roda ad-hoc):
 uvx ruff check .            # ou pipx run ruff check .
 
-# Rodar/operar o backend (produção):
+# Rodar/operar o backend (produção). O gate e o restart no MESMO encadeamento, nunca em
+# linhas separadas (ver "Verificação que não bloqueia é teatro", abaixo):
 maintenance on                              # 1o: nginx recusa /api pra nao-admin, nenhum upload novo entra
-curl -s localhost:5001/api/internal/deploy_gate | jq   # 2o: exige "pode_reiniciar": true E olhe "suspeitos"
-systemctl restart opussb                    # 3o: só então (com backup feito)
+curl -s localhost:5001/api/internal/deploy_gate | jq   # 2o: leia, inclusive os "suspeitos"
+curl -sf localhost:5001/api/internal/deploy_gate | jq -e '.pode_reiniciar == true' >/dev/null \
+  && systemctl restart opussb                # 3o: o && é o que impede o restart quando o gate fecha
 cat /opt/opussb-deploy/current/.next/BUILD_ID   # 4o: SE tocou o front, tem que ter MUDADO
 journalctl -u opussb -f                      # logs (print() do worker fica buffered; use log.*/stderr)
 curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5001/health
@@ -106,6 +108,38 @@ curl -s https://sbclips.space/<rota> | grep -oE '/_next/static/chunks/[^"]+\.js'
 
 Compilar não é publicar, e "o build passou" não é evidência de nada. Verifique o RESULTADO
 servido pela URL pública, não o processo de build.
+
+## Verificação que não bloqueia é teatro
+
+**Toda verificação tem que BLOQUEAR a ação que ela protege, não só reportar.** Verificação que
+imprime e deixa o comando seguinte rodar é teatro: ela produz a sensação de rigor e o registro
+de que "foi checado", sem nunca impedir nada.
+
+Na prática: o comando de verificação e a ação ficam no MESMO encadeamento (`&&`), ou a ação é
+condicionada ao código de saída da verificação (`if ! verifica; then exit 1; fi`, com
+`set -euo pipefail` em script). **Nunca em linhas independentes.** Um `assert` que imprime
+`ABORTAR` numa linha não impede o `systemctl restart` da linha de baixo.
+
+E a verificação tem que olhar o EFEITO, não o processo: o resultado servido, não o build que
+compilou; o estado no banco, não a resposta HTTP; o teste ficando vermelho quando você quebra o
+código de propósito, não o teste passando.
+
+Três casos do MESMO padrão, todos em 2026-07-26/27, que é a razão de isto estar escrito aqui
+como regra e não como anedota:
+
+1. **O build que compilou sem publicar.** `npm run build` rodou, `systemctl restart opussb-web`
+   rodou, e o release no ar continuou sendo o de três commits antes, porque o serviço serve de
+   outro diretório. Verificou-se o processo (compilou), não o efeito (o BUILD_ID servido).
+   A feature ficou fora do ar por horas com todo mundo achando que estava publicada.
+2. **O gate que reportou sem bloquear.** O `deploy_gate` respondeu `pode_reiniciar: false` com
+   um upload em voo há 140s, o assert disparou corretamente, e o `systemctl restart` da linha
+   SEGUINTE rodou assim mesmo e matou o upload de um usuário (`POST /api/upload -> 502`). O
+   gate funcionou; quem não obedeceu foi o operador. Duas linhas, nenhum `&&`.
+3. **O teste de mutação que não chegou a ser aplicado.** Ao validar três gates novos de
+   autorização removendo cada um pra ver o teste ficar vermelho, uma das três substituições
+   não casou a string e não alterou nada. O teste passou verde e teria sido reportado como
+   "provado por mutação" sem nunca ter sido mutado. Mutação só vale se você confirma que a
+   mutação foi APLICADA.
 
 **O gate de deploy é o `pode_reiniciar`, NÃO o `active_jobs`.** O `active_jobs` só enxerga a
 tabela `jobs`, e já mentiu 3x: upload em voo não cria linha até TERMINAR (um restart matou um

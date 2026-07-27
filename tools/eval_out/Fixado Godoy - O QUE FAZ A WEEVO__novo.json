@@ -1,0 +1,54 @@
+{
+  "repo": "/opt/opussb",
+  "video": "/opt/opussb/tools/eval_data/Fixado Godoy - O QUE FAZ A WEEVO.mp4",
+  "frames": 100,
+  "frames_legenda": 96,
+  "legenda_fala": "Esse grupo fatura mais de R$60 milhões por ano e eu vou te mostrar o que está por trás disso. falando do Grupo SB formado por CARBONE EDUCAÇÃO ONEVO ENERGIA Mas o que é inteligencia artificial aplicada em cada setor da empresa. No marketing, cria campanhas e roteiros No comercial, qualifica vende e ainda audita os atendimentos e no RH, conduz pesquisa e organiza os eventos internos e muito mais. A IA não substitui o time ela multiplica o resultado dele. E tudo isso você também pode aplicar no seu negócio. E a Weevo te ensina como. Link na bio.",
+  "graficos": [
+    {
+      "texto": "SeuBoné",
+      "tipo": "marca"
+    },
+    {
+      "texto": "CARBONE EDUCAÇÃO",
+      "tipo": "marca"
+    },
+    {
+      "texto": "ONEVO ENERGIA",
+      "tipo": "marca"
+    },
+    {
+      "texto": "Vínicius Godoy",
+      "tipo": "nome"
+    },
+    {
+      "texto": "COO Weevo",
+      "tipo": "cargo"
+    }
+  ],
+  "findings": [
+    {
+      "trecho": "inteligencia artificial",
+      "origem": "legenda",
+      "tipo": "ortografia",
+      "sugestao": "inteligência artificial",
+      "explicacao": "Falta acento em 'inteligência'",
+      "confianca": 0.97
+    },
+    {
+      "trecho": "Vínicius Godoy",
+      "origem": "grafico",
+      "tipo": "ortografia",
+      "sugestao": "Vinícius Godoy",
+      "explicacao": "Acento no lugar errado; correto é Vinícius, conforme glossário",
+      "confianca": 0.97
+    }
+  ],
+  "cost_usd": 0.31393,
+  "tokens": {
+    "read_in": 99594,
+    "read_out": 383,
+    "review_in": 2255,
+    "review_out": 176
+  }
+}
