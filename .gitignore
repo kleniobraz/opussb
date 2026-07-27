@@ -24,3 +24,14 @@ video/
 
 # Vídeos de teste do revisor de legendas (viabilidade; NUNCA commitar - arquivos grandes)
 jobtest/
+
+# Insumo e saída das avaliações manuais do reframe (tools/eval_*). NUNCA commitar.
+# Isto aqui é cicatriz: em 2026-07-27 um `git add -A` levou de carona o
+# tools/eval_data/teste.mp4, de 1,5GB, dentro de um commit cuja mensagem falava só de
+# pinar flags nas suítes. Ficou 3 commits sem ser notado porque nada quebra: só aparece
+# no `git push`, que sobe 1,5GB por SSH para o GitHub RECUSAR no fim (o teto dele é
+# 100MB por arquivo). E subir 1,5GB sustentado é o perfil de tráfego que dispara o
+# shaping do provedor e tira o time do ar por 8 a 20 minutos, para um push que ia falhar.
+# Consertar exigiu reescrever o histórico dos 3 commits; estas duas linhas custam nada.
+tools/eval_data/
+tools/eval_out/
