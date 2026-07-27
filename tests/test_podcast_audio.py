@@ -439,7 +439,7 @@ def test_hooks_view_get_nao_sobrescreve_post_concorrente_redisparado(client, mon
 
     def _rodar_get():
         with app_module.app.test_client() as c_get:
-            _login(c_get, "get@t")
+            _login(c_get, "t@t")   # idem: dois clientes, o MESMO dono
             r = c_get.get(f"/api/podcast/{jid}/hooks")
             resultado_get["status_code"] = r.status_code
             resultado_get["body"] = r.get_json()
@@ -451,7 +451,9 @@ def test_hooks_view_get_nao_sobrescreve_post_concorrente_redisparado(client, mon
     # Enquanto o GET está pausado (já decidiu 'stale', ainda não pegou o lock), o POST
     # concorrente entra, também vê stale e redispara: grava 'extraindo' fresco.
     with app_module.app.test_client() as c_post:
-        _login(c_post, "post@t")
+        # Os dois clientes logam como o DONO: o gate de dono de 2026-07-27 recusaria
+        # outro usuário, e este teste é sobre CORRIDA GET/POST, não sobre autorização.
+        _login(c_post, "t@t")
         r_post = c_post.post(f"/api/podcast/{jid}/audio")
     assert r_post.status_code == 202
     assert r_post.get_json()["audio_status"] == "extraindo"

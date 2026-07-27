@@ -759,6 +759,11 @@ def test_end_screen():
 
         # rotas
         db.upsert_user("es@test", generate_password_hash("pw12345678"), must_change=False)
+        # ADMIN: desde 2026-07-27 o DELETE de tela final e admin-only (asset GLOBAL, sem
+        # lixeira, alinhado com a biblioteca de vinhetas). O resto deste bloco e leitura e
+        # escolha de tela por projeto, que segue liberado pra qualquer usuario.
+        with db._conn() as _cx:
+            _cx.execute("UPDATE users SET is_admin = 1 WHERE email = ?", ("es@test",))
         db.create_job("JES", "v.mp4", 10, 60, "/x", "es@test")
         db.update_job("JES", status="done",
                       result_urls=_json.dumps([{"key": "jobs/JES/clips/clip_01_base.mp4"},
