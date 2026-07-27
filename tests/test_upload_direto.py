@@ -578,7 +578,7 @@ def test_materializa_BATE_HEARTBEAT_durante_o_download(mocker, tmp_path, monkeyp
     monkeypatch.setattr(config, "JOB_DIR", str(tmp_path))
     mocker.patch("s3_client.head_size", return_value=1000)
     mocker.patch("podcast_ingest.checar_cfr", return_value=True)
-    bateu = mocker.patch("db.heartbeat_job")
+    bateu = mocker.patch("db.heartbeat_job_vivo")
     # O heartbeat vive numa thread com intervalo de 60s: em vez de esperar, verifico que o
     # download roda DENTRO do _com_heartbeat (é isso que a regressão quebraria).
     dentro = {}
@@ -587,17 +587,52 @@ def test_materializa_BATE_HEARTBEAT_durante_o_download(mocker, tmp_path, monkeyp
     mocker.patch("s3_client.download_file", side_effect=_fake_download)
     real = podcast_ingest._com_heartbeat
     chamado = {}
-    def _espia(job_id, status, fn):
-        chamado["args"] = (job_id, status)
-        return real(job_id, status, fn)
+    def _espia(job_id, fn):
+        chamado["args"] = job_id
+        return real(job_id, fn)
     mocker.patch("podcast_ingest._com_heartbeat", side_effect=_espia)
 
     podcast_ingest.garantir_fonte_local({"job_id": "j", "local_path": None,
                                          "podcast_source_key": "k", "status": "montando"})
 
     assert dentro.get("ativo"), "o download não rodou"
-    assert chamado["args"] == ("j", "montando"), "download fora do heartbeat: o watchdog ceifa"
+    assert chamado["args"] == "j", "download fora do heartbeat: o watchdog ceifa"
     assert bateu.call_count == 0, "não deve bater antes do primeiro intervalo"
+
+
+# ─── O heartbeat batendo DE VERDADE (o teste acima não provava isso) ──────────
+# Os dois abaixo existem por um bug que passou pela suíte inteira: o de cima confirma que o
+# download roda DENTRO do bloco de heartbeat, mas monta o dict do job à mão, então nunca
+# exercitou o que o heartbeat faz com o BANCO. E era ali que estava quebrado: o chamador real
+# passava um status velho e o UPDATE não casava com linha nenhuma. Verde o tempo todo, com o
+# mecanismo desligado.
+
+def test_heartbeat_bate_mesmo_com_status_trocado_depois_do_snapshot():
+    """A regressão real. O run_thread1 lê o job, TROCA o status e só então materializa: se o
+    sinal de vida depender do status que o chamador tinha em mãos, ele não casa e a
+    materialização de 6 a 12min corre descoberta sob o reap de 30min."""
+    jid = "TEST-hb-status-trocado"
+    db.create_job(jid, "v.mp4", 30, 90, "/tmp/x.mp4", "dono@test")
+    db.update_job(jid, status="extracting_audio")      # o que o run_thread1 faz na linha 47
+    antes = db.get_job(jid)["updated_at"]
+
+    db.heartbeat_job_vivo(jid)                          # o chamador NÃO diz o status
+
+    assert db.get_job(jid)["updated_at"] != antes, (
+        "o sinal de vida não chegou ao banco: o watchdog vai ceifar um job vivo")
+
+
+def test_heartbeat_NAO_ressuscita_job_cancelado():
+    """A única garantia do heartbeat_job que precisava sobreviver ao conserto: cancelamento
+    (status 'error') não volta a parecer vivo, senão o reap perde o job de vez."""
+    jid = "TEST-hb-cancelado"
+    db.create_job(jid, "v.mp4", 30, 90, "/tmp/x.mp4", "dono@test")
+    db.update_job(jid, status="error", error="cancelado pelo usuário")
+    antes = db.get_job(jid)["updated_at"]
+
+    db.heartbeat_job_vivo(jid)
+
+    assert db.get_job(jid)["updated_at"] == antes, "ressuscitou um job cancelado"
 
 
 def test_materializa_RECUSA_VFR(mocker, tmp_path, monkeypatch):

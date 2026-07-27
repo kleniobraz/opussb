@@ -375,8 +375,13 @@ def ensure_lifecycle_rule(prefix: str, days: int, rule_id: str) -> bool:
     """Garante (idempotente) uma regra de lifecycle de EXPIRACAO no bucket: objetos sob `prefix`
     expiram apos `days` dias (TTL do 16:9 retido, BACKEND §33). O prefixo entra namespaced via _k
     (staging/ no staging). Faz MERGE por rule_id com as regras existentes (NAO apaga regras de outros
-    prefixos). So PUTa quando a regra falta ou difere (steady-state e so um GET read-only). Retorna
-    True se aplicou/atualizou, False se ja estava igual. Validado: Hetzner RGW honra lifecycle.
+    prefixos). So PUTa quando a regra falta ou difere (steady-state e so um GET read-only). Validado:
+    Hetzner RGW honra lifecycle.
+
+    RETORNO: True se aplicou/atualizou. False significa DUAS coisas diferentes, e quem for consumir
+    isto precisa saber: ou a regra ja estava igual, ou nao deu pra LER a config atual e nada foi
+    feito (ver o except abaixo). Ou seja, False NAO garante que a regra existe no bucket. Hoje o
+    unico chamador (app.py, thread de fundo do boot) ignora o retorno e o warning e quem avisa.
 
     O GET e o PUT passam pelo _api (teto de config.S3_API_TIMEOUT CADA um): em 2026-07-24 esta
     função travou o BOOT do app por 6min20s sem exceção nenhuma, porque o unico teto era o do
@@ -389,8 +394,21 @@ def ensure_lifecycle_rule(prefix: str, days: int, rule_id: str) -> bool:
     try:
         existing = _api("get_lifecycle", lambda: client.get_bucket_lifecycle_configuration(
             Bucket=config.S3_BUCKET)).get("Rules", [])
-    except ClientError:
-        existing = []   # NoSuchLifecycleConfiguration (bucket sem regra) ou erro transitorio
+    except ClientError as e:
+        # SO "o bucket nao tem lifecycle nenhum" autoriza seguir com a lista vazia. Qualquer
+        # OUTRO ClientError (throttling, 500, ou AccessDenied numa policy que de Put sem Get)
+        # significa que NAO sabemos o estado atual, e seguir com [] faria o PUT la embaixo
+        # gravar {"Rules": [desired]}: a configuracao INTEIRA do bucket substituida por uma
+        # regra so. O que sumiria e a opussb-abort-multipart-prod, unico coletor das partes
+        # orfas do upload direto, e o desenho dele dispensa estado no banco JUSTAMENTE porque
+        # conta com ela (ver podcast_ingest, cabecalho). Pior: sumiria com log de SUCESSO, ja
+        # que o PUT teria funcionado. Com SOURCE16X9_LIFECYCLE_ENSURE=true em producao isto
+        # roda a cada boot, entao cada restart era um sorteio.
+        if e.response.get("Error", {}).get("Code") != "NoSuchLifecycleConfiguration":
+            log.warning("lifecycle: nao consegui LER a config atual do bucket (%s); "
+                        "nao vou reescrever por cima do que nao conheco", e)
+            return False
+        existing = []
     current = next((r for r in existing if r.get("ID") == rule_id), None)
     if (current and current.get("Status") == "Enabled"
             and current.get("Expiration", {}).get("Days") == int(days)

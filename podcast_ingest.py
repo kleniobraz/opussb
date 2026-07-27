@@ -112,7 +112,7 @@ def calcular_partes(tamanho: int) -> tuple:
     return parte, n
 
 
-def _com_heartbeat(job_id: str, status: str, fn):
+def _com_heartbeat(job_id: str, fn):
     """Roda fn() batendo sinal de vida no job, no mesmo molde de podcast_cut._com_heartbeat.
 
     SEM ISTO a feature se autossabota: a materialização não escreve NADA no banco enquanto
@@ -123,14 +123,18 @@ def _com_heartbeat(job_id: str, status: str, fn):
     nada no sistema devolve um podcast pra 'uploaded', então o único caminho é excluir e
     reenviar os 10GB, que é exatamente o incidente que esta frente existe pra eliminar.
 
-    O status esperado vem do snapshot do chamador de propósito: se alguém cancelou nesse meio
-    tempo, o WHERE status do heartbeat_job não bate e a batida vira no-op, em vez de
-    ressuscitar um job morto."""
+    NÃO recebe o status esperado, e isso foi um CONSERTO, não simplificação: recebia, e o
+    único chamador passava o snapshot lido ANTES do próprio update de status (processor
+    run_thread1 lê o job, grava 'extracting_audio', chama daqui com o dict velho). O WHERE
+    status batia 'queued' contra uma linha 'extracting_audio' e não casava nunca: a
+    materialização inteira rodava SEM sinal de vida, exatamente o que este bloco existe pra
+    impedir, e sem nada no log. O db.heartbeat_job_vivo lê o estado atual no próprio UPDATE e
+    preserva a garantia que importa: job cancelado (status 'error') não é ressuscitado."""
     pare = threading.Event()
 
     def _bate():
         while not pare.wait(60):
-            db.heartbeat_job(job_id, status)
+            db.heartbeat_job_vivo(job_id)
 
     threading.Thread(target=_bate, daemon=True).start()
     try:
@@ -215,7 +219,7 @@ def garantir_fonte_local(job: dict, fator_disco: float = None,
         **({"max_bandwidth": int(limite * 2**20)} if limite > 0 else {}))
     t0 = time.monotonic()
     with em_voo.registrar("materializa", f"job {job_id}"):
-        _com_heartbeat(job_id, job.get("status") or "",
+        _com_heartbeat(job_id,
                        lambda: s3_client.download_file(key, destino, transfer_config=cfg))
     dur = time.monotonic() - t0
     # A taxa vai pro log de propósito: é o número que diz se o provedor estrangulou de novo

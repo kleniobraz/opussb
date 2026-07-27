@@ -1,6 +1,7 @@
 import time
 
 import pytest
+from botocore.exceptions import ClientError
 
 import s3_client
 
@@ -342,6 +343,67 @@ def test_ensure_lifecycle_rule_travado_no_put_desiste(mocker, monkeypatch):
 
     with pytest.raises(s3_client.S3StalledError, match="put_lifecycle"):
         s3_client.ensure_lifecycle_rule("source16x9/", 30, "rid")
+
+
+def _erro_s3(codigo, op="GetBucketLifecycleConfiguration"):
+    return ClientError({"Error": {"Code": codigo, "Message": codigo}}, op)
+
+
+def test_ensure_lifecycle_rule_erro_no_get_NAO_reescreve_a_config(mocker):
+    """O bug: `except ClientError: existing = []` tratava QUALQUER falha de leitura como
+    "bucket sem regra", e o PUT seguinte gravava só a regra desejada, substituindo a
+    configuração inteira. O que sumia era a opussb-abort-multipart-prod, único coletor das
+    partes órfãs do upload direto, e sumia com log de SUCESSO. Com
+    SOURCE16X9_LIFECYCLE_ENSURE=true em produção isto roda a cada boot."""
+    mock_s3 = mocker.MagicMock()
+    mock_s3.get_bucket_lifecycle_configuration.side_effect = _erro_s3("SlowDown")
+    mocker.patch("s3_client._client", return_value=mock_s3)
+
+    assert s3_client.ensure_lifecycle_rule("source16x9/", 30, "rid") is False
+    assert mock_s3.put_bucket_lifecycle_configuration.call_count == 0, \
+        "reescreveu a config do bucket sem saber o que havia lá"
+
+
+@pytest.mark.parametrize("codigo", ["AccessDenied", "InternalError", "SlowDown"])
+def test_ensure_lifecycle_rule_preserva_a_regra_de_abort_em_erro_de_leitura(mocker, codigo):
+    """O mesmo, dito pelo efeito que importa: a regra de abort continua no bucket. Ela é a
+    razão de o upload direto poder dispensar estado no banco."""
+    mock_s3 = mocker.MagicMock()
+    mock_s3.get_bucket_lifecycle_configuration.side_effect = _erro_s3(codigo)
+    mocker.patch("s3_client._client", return_value=mock_s3)
+
+    s3_client.ensure_lifecycle_rule("source16x9/", 30, "rid")
+
+    assert mock_s3.put_bucket_lifecycle_configuration.call_count == 0
+
+
+def test_ensure_lifecycle_rule_bucket_SEM_lifecycle_ainda_cria(mocker):
+    """O caminho legítimo do except, que não pode ter sido fechado junto: bucket virgem
+    responde NoSuchLifecycleConfiguration e a regra tem que nascer."""
+    mock_s3 = mocker.MagicMock()
+    mock_s3.get_bucket_lifecycle_configuration.side_effect = _erro_s3(
+        "NoSuchLifecycleConfiguration")
+    mocker.patch("s3_client._client", return_value=mock_s3)
+
+    assert s3_client.ensure_lifecycle_rule("source16x9/", 30, "rid") is True
+    regras = mock_s3.put_bucket_lifecycle_configuration.call_args.kwargs[
+        "LifecycleConfiguration"]["Rules"]
+    assert [r["ID"] for r in regras] == ["rid"]
+
+
+def test_ensure_lifecycle_rule_merge_preserva_regra_alheia(mocker):
+    """O merge por ID que já existia, agora com teste: a regra de abort convive com a do TTL."""
+    abort = {"ID": "opussb-abort-multipart-prod", "Filter": {"Prefix": ""},
+             "Status": "Enabled", "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7}}
+    mock_s3 = mocker.MagicMock()
+    mock_s3.get_bucket_lifecycle_configuration.return_value = {"Rules": [abort]}
+    mocker.patch("s3_client._client", return_value=mock_s3)
+
+    s3_client.ensure_lifecycle_rule("source16x9/", 30, "rid")
+
+    regras = mock_s3.put_bucket_lifecycle_configuration.call_args.kwargs[
+        "LifecycleConfiguration"]["Rules"]
+    assert sorted(r["ID"] for r in regras) == ["opussb-abort-multipart-prod", "rid"]
 
 
 def test_api_propaga_erro_real_e_devolve_valor(mocker, monkeypatch):

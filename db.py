@@ -937,6 +937,28 @@ def heartbeat_job(job_id: str, expected_status: str) -> None:
         )
 
 
+def heartbeat_job_vivo(job_id: str) -> None:
+    """Sinal de vida SEM o chamador precisar saber o status atual: bate em qualquer job que
+    não esteja cancelado. Mantém a única garantia que importa no heartbeat_job (um job morto
+    não é ressuscitado), sem a que provou não se sustentar (o chamador acertar o snapshot).
+
+    EXISTE PORQUE o heartbeat_job com status esperado é uma armadilha quando a etapa longa
+    não é quem escreveu o status. Foi o caso da materialização do fonte do podcast: o
+    run_thread1 lia o job, gravava 'extracting_audio' e chamava o garantir_fonte_local com o
+    dict ANTERIOR, então o heartbeat batia WHERE status='queued' contra uma linha que já dizia
+    'extracting_audio' e não casava NUNCA. Resultado: um download de 6 a 12min rodava sem
+    sinal de vida nenhum sob o reap de 30min, e o mecanismo escrito pra impedir exatamente
+    isso estava desligado por um snapshot velho, em silêncio.
+
+    Quem escreve o próprio status logo antes (podcast_cut, o _heartbeat do processor) segue
+    no heartbeat_job: lá o status é literal na mesma função e o WHERE é uma trava real."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE jobs SET updated_at = ? WHERE job_id = ? AND status != 'error'",
+            (_now(), job_id),
+        )
+
+
 def heartbeat_podcast_audio(job_id: str) -> None:
     """Mesmo espírito de heartbeat_job, mas checa `podcast_audio_status` em vez de
     `jobs.status`: durante a extração de áudio do podcast, jobs.status fica fixo em
