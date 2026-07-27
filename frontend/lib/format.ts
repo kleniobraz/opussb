@@ -141,3 +141,33 @@ export function hashStr(s?: string | null): number {
   }
   return h >>> 0;
 }
+
+// ─── Progresso de upload ────────────────────────────────────────────────────
+// Formatação pt-BR (ponto de milhar, vírgula decimal) e com CASAS FIXAS, ao contrário do
+// fmtBytes. O fmtBytes é certo pra tamanho parado (um clipe de "45 MB"), mas péssimo pra número
+// que corre: em GB com 1 casa ele só muda a cada 107MB, e acima de 10GB arredonda pra inteiro,
+// então um upload contínuo aparece na tela pulando de 1GB em 1GB. O valor por baixo sempre foi
+// contínuo; era a formatação que criava o degrau.
+
+export function fmtMB(bytes?: number | null): string {
+  if (bytes == null || isNaN(bytes)) return "";
+  return (bytes / 1048576).toLocaleString("pt-BR", {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  }) + " MB";
+}
+
+export function fmtGB(bytes?: number | null): string {
+  if (bytes == null || isNaN(bytes)) return "";
+  return (bytes / 1073741824).toLocaleString("pt-BR", {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  }) + " GB";
+}
+
+// MB/s com uma casa. Null vira "—": no começo do envio ainda não há janela suficiente pra uma
+// média honesta, e mostrar "0,0 MB/s" pareceria travado justo quando está começando.
+export function fmtVelocidade(bytesPorSeg?: number | null): string {
+  if (bytesPorSeg == null || !isFinite(bytesPorSeg) || bytesPorSeg < 0) return "—";
+  return (bytesPorSeg / 1048576).toLocaleString("pt-BR", {
+    minimumFractionDigits: 1, maximumFractionDigits: 1,
+  }) + " MB/s";
+}
