@@ -203,7 +203,11 @@ export default function ProjetoPage() {
             >
               + Enviar
             </button>
-            {p.end_screen && (
+            {/* Só admin: a exclusão apaga o asset GLOBAL do S3, sem lixeira, e tira a tela
+                final de todos os projetos que a usam. Espelha a biblioteca de vinhetas. O gate
+                que vale é o do servidor (@admin_required na rota); esconder aqui é pra não
+                oferecer um botão que só devolveria 403. */}
+            {p.end_screen && !!user?.is_admin && (
               <button
                 type="button"
                 className="project-es-btn project-es-del"

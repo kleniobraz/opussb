@@ -2575,7 +2575,11 @@ def end_screen_upload():
 
 
 @app.route("/api/end_screens/<es_id>", methods=["DELETE"])
-@login_required
+# admin, igual ao DELETE de vinhetas: as duas são bibliotecas de asset GLOBAL, e a assimetria
+# não tinha justificativa. Aqui não há lixeira nem versionamento: um DELETE apaga o objeto no
+# S3 e todos os _matched cacheados, e todo projeto que referenciava degrada em silêncio pra
+# "sem tela final" (o _resolve_end_screen_id ignora id inexistente).
+@admin_required
 def end_screen_delete(es_id):
     """Remove uma tela final da biblioteca (DB + asset no S3 + matched cacheados). Clipes/projetos que
     a referenciavam degradam pra 'sem tela final' (o _resolve ignora id inexistente). Idempotente."""
@@ -2728,7 +2732,11 @@ def glossary_create():
 
 
 @app.route("/api/glossary/<term_id>", methods=["PUT"])
-@login_required
+# admin, igual ao DELETE logo abaixo. Sem isto o controle do DELETE era decorativo: esta rota
+# chama db.add_glossary, que é UPSERT (ON CONFLICT DO UPDATE), então qualquer usuário
+# sobrescrevia o conteúdo de qualquer termo, com o mesmo efeito prático de apagar. O servidor
+# bloqueava o VERBO e não o EFEITO, e o front escondia só o botão de excluir.
+@admin_required
 def glossary_update(term_id):
     existing = db.get_glossary(term_id)
     if not existing:
@@ -4061,6 +4069,15 @@ def podcast_audio_route(job_id):
                                  "um problema). Tente novamente mais tarde."}), 503
     if job["status"] != "done" or not job.get("podcast_final_key"):
         return jsonify({"error": "O episódio ainda não foi montado."}), 409
+
+    # Gate de dono, o MESMO das outras quatro rotas de podcast (/cut-intro, /transcribe,
+    # /approve, /compose). Faltava só aqui, e a assimetria não era inofensiva: as outras são
+    # etapas do pipeline do próprio dono, e esta é a única que GASTA DINHEIRO por conta de
+    # terceiro (baixa o episódio inteiro do bucket pago e roda ffmpeg). Ler o MP3 pronto segue
+    # aberto, como o resto da biblioteca compartilhada: o que fecha aqui é o POST que produz.
+    user = db.get_user(session["user"])
+    if job.get("user_email") != session["user"] and not (user or {}).get("is_admin"):
+        return jsonify({"error": "Este projeto é de outro usuário."}), 403
 
     with _podcast_audio_lock(job_id):
         job = db.get_job(job_id)
