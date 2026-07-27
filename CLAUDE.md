@@ -150,6 +150,47 @@ revisor de legendas também não aparecem lá. O `pode_reiniciar` junta as duas 
 **Ligue a manutenção ANTES** (`maintenance on`): o nginx passa a recusar `/api` pra não-admin,
 então nenhum upload novo começa e a fila converge, em vez de você correr atrás dela.
 
+### A manutenção é CONTRAINTUITIVA no upload direto, e isso precisa estar dito inteiro
+
+**O primeiro passo do ritual, que existe pra proteger trabalho em voo, é o que mais destrói
+trabalho em voo no upload direto.**
+
+No upload direto os bytes vão do navegador pro S3 **sem passar pela VPS**, e o cliente volta
+ao servidor só pra pedir o próximo LOTE de URLs presignadas (`/parts`). Então o restart, que é
+o que o ritual teme, esse caminho **sobrevive** por construção (ver o cabeçalho do
+`podcast_ingest.py`); e a tela de 503 da manutenção, que é o que o ritual usa pra proteger,
+**mata**: um envio de 10GB morre em minutos, quando esgota o lote atual de presignadas.
+
+Duas coisas foram feitas a respeito, e a segunda ainda está aberta:
+
+1. **`/api/podcast/upload/parts` é exceção ao gate de manutenção** (nginx, `location =`, junto
+   de `/api/login` e irmãs). É seguro e não afrouxa nada: a rota exige sessão válida E token
+   assinado de um multipart JÁ ABERTO, não inicia trabalho na VPS, não cria job, não ocupa a
+   vaga; só assina URL. E o **`/init` continua bloqueado**, então nenhum upload novo começa:
+   só terminam os que já estavam voando, que é exatamente o que a manutenção quer.
+2. **O `/complete` continua sendo o buraco.** Ele cria o job, então segue bloqueado. Upload que
+   TERMINA dentro da janela sobe todos os bytes e morre no último passo; o retry do cliente
+   cobre só ~42s (3 tentativas com backoff). Janela curta ele atravessa, janela longa não.
+   **A saída definitiva já está decidida, pra não virar discussão nova quando chegar a hora:**
+   com a manutenção ligada, o `/complete` **ESTACIONA** o job (`uploaded`) em vez de disparar
+   a thread1. Aí nada começa, nada se perde, e a isenção passa a ser completa. Depende do
+   estacionamento condicional que entra com a frente de upload direto pra clipes.
+
+**Por isso, o ritual ganhou um passo que o gate NÃO consegue dar por você.** Antes de ligar a
+manutenção, olhe se há upload direto em voo, porque o `deploy_gate` **não enxerga isso por
+construção**: os bytes não passam pela VPS, então não há request longo pro `_marca_upload_em_voo`
+marcar, e o `pode_reiniciar` responde `true` com um envio de 10GB acontecendo. Está correto
+(o restart não o mataria); o que mata é o passo seguinte do ritual.
+
+```bash
+# Upload direto em voo? (o gate não sabe responder isso)
+grep -E "upload/(parts|complete)" /var/log/nginx/access.log | tail -3
+```
+
+Se houver `/parts` recente sem um `/complete` depois, tem envio acontecendo. Com a isenção do
+item 1 ele sobrevive à manutenção, mas se estiver perto do fim pode bater no `/complete`
+bloqueado: espere o `/complete` aparecer no log antes de seguir.
+
 O gate fica numa rota INTERNA (o nginx devolve 404 pra fora) e não no `/health`: aquele é
 público, e publicar em tempo real o que a VPS está fazendo entregaria a qualquer um o horário
 dos uploads e o momento exato em que a fila esvazia, que é quando o site cai pro deploy.
