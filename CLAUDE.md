@@ -57,21 +57,55 @@ uvx ruff check .            # ou pipx run ruff check .
 maintenance on                              # 1o: nginx recusa /api pra nao-admin, nenhum upload novo entra
 curl -s localhost:5001/api/internal/deploy_gate | jq   # 2o: exige "pode_reiniciar": true E olhe "suspeitos"
 systemctl restart opussb                    # 3o: só então (com backup feito)
+cat /opt/opussb-deploy/current/.next/BUILD_ID   # 4o: SE tocou o front, tem que ter MUDADO
 journalctl -u opussb -f                      # logs (print() do worker fica buffered; use log.*/stderr)
 curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5001/health
 
 # Frontend (Next.js) — Node 20 via nvm sob o root:
 source ~/.nvm/nvm.sh && nvm use 20
 cd frontend && npm run dev        # dev
-npm run build && npm run lint     # build de produção + eslint
+npm run lint                      # eslint
+
+# Deploy do FRONT: SEMPRE por este script, NUNCA npm run build em /opt/opussb/frontend
+./deploy-frontend.sh              # build isolado + smoke test + symlink atômico + restart
+./deploy-frontend.sh --dry-run    # valida o pipeline sem reiniciar produção
 
 # Manutenção programada (tela 503 do nginx):
 maintenance on|off|status         # break-glass SSH; mesmo flag que o botão do painel admin
 ```
 
-**Deploy** (sem CI): backup (`cp opussb.db` + `tar czf` dos `.py` em `/opt/opussb_backups/`),
-`systemctl restart opussb` **só com `"pode_reiniciar": true` em `/api/internal/deploy_gate`**, e pro front
-`npm run build` + `systemctl restart opussb-web`.
+**Deploy do BACKEND** (sem CI): backup (`cp opussb.db` + `tar czf` dos `.py` em
+`/opt/opussb_backups/`), `systemctl restart opussb` **só com `"pode_reiniciar": true` em
+`/api/internal/deploy_gate`**.
+
+**Deploy do FRONT: `./deploy-frontend.sh`, e SÓ ele.** Nunca `npm run build` dentro de
+`/opt/opussb/frontend`, nunca `systemctl restart opussb-web` na mão. Duas razões, e as duas já
+custaram caro:
+
+1. **Buildar na árvore viva derruba produção.** O `next start` faz `require()` dos arquivos de
+   `.next/server` sob demanda a cada requisição, não só no boot. Um `next build` por cima troca
+   os nomes com hash e APAGA os antigos enquanto o processo no ar e o cache do navegador ainda
+   apontam pra eles: 500 em chunk JS. Aconteceu **três vezes** em 2026-07-13. O script builda
+   numa worktree isolada por SHA, com `node_modules` e `.next` próprios.
+2. **Buildar ali não publica nada.** O `opussb-web` serve de `/opt/opussb-deploy/current`, um
+   symlink pra releases versionadas. Buildar em `/opt/opussb/frontend` e reiniciar o serviço faz
+   o serviço subir com o MESMO release de antes: o build compila, o restart funciona, e nada
+   muda no ar. Em 2026-07-26 isso passou por um deploy inteiro sem ser notado, e a feature nova
+   ficou fora do ar por horas com todo mundo achando que estava publicada.
+
+O script cuida do resto: preflight (recusa se `frontend/` tem mudança não commitada, senão
+deployaria sem ela), smoke test numa porta descartável ANTES de trocar o symlink, troca atômica,
+verificação pós-restart pela via real e rollback automático pra release anterior se falhar.
+
+**Se a mudança toca o front, a verificação obrigatória é o BUILD_ID SERVIDO ter mudado:**
+
+```bash
+cat /opt/opussb-deploy/current/.next/BUILD_ID       # antes e depois: tem que ser diferente
+curl -s https://sbclips.space/<rota> | grep -oE '/_next/static/chunks/[^"]+\.js'  # e baixar um
+```
+
+Compilar não é publicar, e "o build passou" não é evidência de nada. Verifique o RESULTADO
+servido pela URL pública, não o processo de build.
 
 **O gate de deploy é o `pode_reiniciar`, NÃO o `active_jobs`.** O `active_jobs` só enxerga a
 tabela `jobs`, e já mentiu 3x: upload em voo não cria linha até TERMINAR (um restart matou um
