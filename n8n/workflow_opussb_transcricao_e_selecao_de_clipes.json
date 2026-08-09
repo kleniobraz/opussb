@@ -1,0 +1,756 @@
+{
+  "id": "UGtxQOBzHsfI9Bpg",
+  "name": "OpusSB — Transcrição e Seleção de Clipes",
+  "active": true,
+  "isArchived": false,
+  "createdAt": "2026-06-12 19:36:35.101",
+  "updatedAt": "2026-07-27 04:14:06.379",
+  "versionId": "6232e1e5-73dc-4ca6-95f0-7d732d4b0939",
+  "versionCounter": 60,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "opussb",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "aba6ab15-eebe-4ccf-979f-6d0e04f48386",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        3488,
+        0
+      ],
+      "webhookId": "opussb-main-webhook"
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://172.17.0.1:5001/api/internal/jobs/{{ $('Webhook').item.json.body.job_id }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "status",
+              "value": "transcribing"
+            },
+            {
+              "name": "progress",
+              "value": 40
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "9e3bb170-c62b-4db0-9452-4b2829ba98d2",
+      "name": "PATCH Transcribing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3712,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.runpod.ai/v2/fczh1t4sx02j1s/run",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "input.audio",
+              "value": "={{ $('Webhook').item.json.body.audio_s3_url }}"
+            },
+            {
+              "name": "input.model",
+              "value": "turbo"
+            },
+            {
+              "name": "input.language",
+              "value": "pt"
+            },
+            {
+              "name": "input.transcription",
+              "value": "srt"
+            },
+            {
+              "name": "input.word_timestamps",
+              "value": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "f4eb915d-bd2c-47a0-984f-a7b28b7356be",
+      "name": "Submit RunPod Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3936,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "yxbC5A0OGh7KTn81",
+          "name": "RunPod API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const sd = $getWorkflowStaticData('global');\nsd.counter = 0;\nsd.runpod_job_id = $('Submit RunPod Job').first().json.id;\nreturn [{ json: { counter: 0, runpod_job_id: sd.runpod_job_id } }];"
+      },
+      "id": "7a2f60d3-5ec7-4d79-81c7-78c0b3ce9fa9",
+      "name": "Init Counter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4368,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "counter-lt-60",
+              "leftValue": "={{ $json.counter }}",
+              "rightValue": 120,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "054c0fe9-fce7-471c-b85f-60e32fcd5cc0",
+      "name": "IF Counter Limit",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4592,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 10
+      },
+      "id": "193e2e9a-1e4b-4a6e-9bd9-2369e8d90172",
+      "name": "Wait 10s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        4592,
+        -144
+      ],
+      "webhookId": "opussb-wait-resume"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.runpod.ai/v2/fczh1t4sx02j1s/status/{{ $json.runpod_job_id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "d7dd1191-4ff7-423a-bd8f-2fb211a226a8",
+      "name": "GET RunPod Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4784,
+        -144
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "yxbC5A0OGh7KTn81",
+          "name": "RunPod API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond-completed",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "COMPLETED",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "cond-failed",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "FAILED",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "8612c808-9727-42bd-a821-933a53e57e3b",
+      "name": "IF Job Done",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4960,
+        -144
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const sd = $getWorkflowStaticData('global');\nsd.counter = (sd.counter || 0) + 1;\nreturn [{ json: { counter: sd.counter, runpod_job_id: sd.runpod_job_id } }];"
+      },
+      "id": "e568d831-86fc-4478-8540-5c2906a872df",
+      "name": "Increment Counter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4976,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond-ok",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "COMPLETED",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a8fd2ff3-3dab-43c2-a6a7-c34885f397ce",
+      "name": "IF Transcription OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        5264,
+        -144
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://172.17.0.1:5001/api/internal/jobs/{{ $('Webhook').item.json.body.job_id }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "status",
+              "value": "error"
+            },
+            {
+              "name": "error",
+              "value": "={{ \"RunPod transcription failed after \" + $('Track Retry').item.json.retryAttempt + \" tentativa(s)\" }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "18a4d3ee-cfcc-426d-a242-e10bf553b6fe",
+      "name": "PATCH Error RunPod Failed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5472,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const runpodItem = $('GET RunPod Status').first();\nconst segments = runpodItem.json.output.segments;\nconst minDuration = $('Webhook').first().json.body.min_duration;\nconst maxDuration = $('Webhook').first().json.body.max_duration;\nconst jobId = $('Webhook').first().json.body.job_id;\n\nconst segmentsText = segments.map(s => \n  `[${s.start.toFixed(2)}s - ${s.end.toFixed(2)}s] ${s.text.trim()}`\n).join('\\n');\n\nconst prompt = `Você é um editor de vídeo especialista em cortes virais para Instagram e TikTok. Seu trabalho é selecionar trechos de podcast que funcionem como clipes independentes e completos.\n\nREGRAS INEGOCIÁVEIS:\n- Cada clipe deve ter duração entre ${minDuration}s e ${maxDuration}s\n- O clipe DEVE começar no início de uma fala completa (nunca no meio de uma frase)\n- O clipe DEVE terminar no final de uma ideia completa (nunca cortar no meio de uma resposta)\n- Se uma pergunta é feita, inclua a resposta COMPLETA até o ponto final natural\n- Nunca termine um clipe com o entrevistado ainda falando\n- Ignore trechos de apresentação (nome, empresa) e despedidas\n- Corrija erros óbvios de transcrição (ex: nomes próprios errados)\n\nCRITÉRIOS DE SELEÇÃO (em ordem de prioridade):\n1. Insight acionável e direto — algo que o espectador pode aplicar imediatamente\n2. Declaração polêmica ou provocativa — gera debate e compartilhamento\n3. História ou exemplo concreto com começo, meio e fim\n4. Pergunta + resposta completa com conclusão clara\n\nTRANSCRIÇÃO COM TIMESTAMPS:\n${segmentsText}\n\nRetorne APENAS um JSON válido, sem markdown, sem texto antes ou depois:\n[\n  {\n    \"start\": 10.02,\n    \"end\": 55.76,\n    \"title\": \"Título curto e impactante\",\n    \"score\": 9.2,\n    \"reason\": \"Por que é viral e por que os cortes estão no lugar certo\"\n  }\n]`;\n\nreturn [{\n  json: {\n    claudeBody: JSON.stringify({\n      model: 'claude-haiku-4-5',\n      max_tokens: 2048,\n      messages: [{ role: 'user', content: prompt }]\n    }),\n    transcript: $('GET RunPod Status').first().json.output.transcription,\n    job_id: jobId\n  }\n}];"
+      },
+      "id": "0850bec6-a2c2-4a18-9341-345becb43922",
+      "name": "Build Claude Body",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5696,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.claudeBody }}",
+        "options": {}
+      },
+      "id": "8c5db04d-542d-45b7-82d8-081a53a27c4c",
+      "name": "Call Claude API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5920,
+        -16
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "r2J0PzpO8I9EoA0Q",
+          "name": "Claude API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://172.17.0.1:5001/api/internal/jobs/{{ $json.job_id }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "status",
+              "value": "cutting"
+            },
+            {
+              "name": "progress",
+              "value": 65
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "3f77b1ff-d9fb-4cf1-b0be-0f7320f7ea54",
+      "name": "PATCH Cutting",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6320,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://172.17.0.1:5001/api/callback",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "job_id",
+              "value": "={{ $('Extract Clips - Code').item.json.job_id }}"
+            },
+            {
+              "name": "transcript",
+              "value": "={{ $('Extract Clips - Code').item.json.transcript }}"
+            },
+            {
+              "name": "clips_json",
+              "value": "={{ $('Extract Clips - Code').item.json.clips_json }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c5464f1c-b9b3-4881-b7d2-c5cb7b1ac2d5",
+      "name": "POST Callback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6544,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://172.17.0.1:5001/api/internal/jobs/{{ $('Webhook').item.json.body.job_id }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "status",
+              "value": "error"
+            },
+            {
+              "name": "error",
+              "value": "RunPod timeout após 10 minutos"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "bc60cc1c-0eea-4b57-bf70-fd6140108ab4",
+      "name": "PATCH Error Timeout",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4592,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json.content[0].text;\nconst match = raw.match(/\\[[\\s\\S]*\\]/);\nif (!match) throw new Error('Claude não retornou JSON válido: ' + raw.substring(0, 200));\nconst clips_json = match[0];\nJSON.parse(clips_json);\n\nreturn [{\n  json: {\n    clips_json: clips_json,\n    transcript: $('Build Claude Body').first().json.transcript,\n    job_id: $('Build Claude Body').first().json.job_id\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6112,
+        -16
+      ],
+      "id": "357205f4-d71a-4f21-8707-f57d8a993e6c",
+      "name": "Extract Clips - Code"
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://172.17.0.1:5001/api/internal/jobs/{{ $('Webhook').item.json.body.job_id }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "runpod_job_id",
+              "value": "={{ $json.id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "d1bc2f9f-b20a-41c4-b3fd-ca8b9c0ec317",
+      "name": "PATCH RunPod Job ID",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4160,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const sd = $getWorkflowStaticData('global');\nsd.retryAttempt = (sd.retryAttempt || 0) + 1;\nreturn [{ json: { retryAttempt: sd.retryAttempt } }];"
+      },
+      "id": "933211d8-50f5-4ecf-99dc-6504437267e9",
+      "name": "Track Retry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5472,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "retry-lte-2",
+              "leftValue": "={{ $json.retryAttempt }}",
+              "rightValue": 2,
+              "operator": {
+                "type": "number",
+                "operation": "lte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "66b1a295-4b4f-48cc-93c1-bd4484f3168c",
+      "name": "IF Retry Limit",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        5696,
+        384
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "PATCH Transcribing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PATCH Transcribing": {
+      "main": [
+        [
+          {
+            "node": "Submit RunPod Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Submit RunPod Job": {
+      "main": [
+        [
+          {
+            "node": "PATCH RunPod Job ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Init Counter": {
+      "main": [
+        [
+          {
+            "node": "IF Counter Limit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Counter Limit": {
+      "main": [
+        [
+          {
+            "node": "Wait 10s",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "PATCH Error Timeout",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 10s": {
+      "main": [
+        [
+          {
+            "node": "GET RunPod Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GET RunPod Status": {
+      "main": [
+        [
+          {
+            "node": "IF Job Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Job Done": {
+      "main": [
+        [
+          {
+            "node": "IF Transcription OK",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Increment Counter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Increment Counter": {
+      "main": [
+        [
+          {
+            "node": "IF Counter Limit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Transcription OK": {
+      "main": [
+        [
+          {
+            "node": "Build Claude Body",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Track Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Claude Body": {
+      "main": [
+        [
+          {
+            "node": "Call Claude API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Claude API": {
+      "main": [
+        [
+          {
+            "node": "Extract Clips - Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PATCH Cutting": {
+      "main": [
+        [
+          {
+            "node": "POST Callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Clips - Code": {
+      "main": [
+        [
+          {
+            "node": "PATCH Cutting",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PATCH RunPod Job ID": {
+      "main": [
+        [
+          {
+            "node": "Init Counter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Track Retry": {
+      "main": [
+        [
+          {
+            "node": "IF Retry Limit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Retry Limit": {
+      "main": [
+        [
+          {
+            "node": "Submit RunPod Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "PATCH Error RunPod Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "staticData": {
+    "global": {
+      "counter": 8,
+      "runpod_job_id": "9e1a34f0-3049-4ba3-89af-a7f6996ec9b9-u2",
+      "retryAttempt": 3
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  }
+}
