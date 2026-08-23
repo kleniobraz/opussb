@@ -78,6 +78,74 @@ def parse_srt(srt_text: str) -> list:
     return segments
 
 
+# ─── Sanity check de transcript degenerado ────────────────────────────────────
+# Limiares validados contra os 21 transcripts reais do banco (2026-08-22): pior caso
+# SAUDÁVEL observado foi top_share 11,1%, unique_ratio 84,2% e cobertura de fala 72,3%;
+# o caso DEGENERADO real (Whisper alucinando a mesma frase em 263/263 segmentos,
+# incidente de 2026-08-20) mede 100%, 0,4% e 11,0%. Cada limiar fica a pelo menos
+# ~2,4x de distância dos dois lados. Recalibrar SÓ com nova validação contra o banco.
+SANITY_MIN_SEGS = 10            # abaixo disso não avalia (arquivo curto legítimo)
+SANITY_TOP_SHARE_MASSIVO = 0.90  # n >= SANITY_MIN_SEGS: quase tudo igual = degenerado
+SANITY_MIN_SEGS_FINO = 20       # métricas finas só com amostra razoável
+SANITY_TOP_SHARE = 0.40         # fração de segmentos com o texto mais frequente
+SANITY_UNIQUE_RATIO = 0.30      # textos únicos / total
+SANITY_COBERTURA_FALA = 0.30    # soma das durações dos segmentos / duração coberta
+
+
+def _normaliza_texto(texto: str) -> str:
+    """Normaliza um cue pra comparação: minúsculas, sem pontuação, espaço colapsado.
+    Sem isso, cues curtas legítimas ("É.", "é,") contam como textos diferentes e
+    variações triviais da MESMA alucinação contam como únicas."""
+    t = re.sub(r"[^\w\s]", "", (texto or "").lower(), flags=re.UNICODE)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def avaliar_transcript(srt_text: str) -> dict:
+    """Sanity check determinístico de transcript degenerado (sem IA), pra barrar o
+    pipeline ANTES de gastar corte/reframe/S3 com conteúdo alucinado. Devolve
+    {"degenerado": bool, "motivo": str, "metricas": dict}; as métricas são só
+    números (seguras pra log; NUNCA logar texto do transcript, que é dado de cliente)."""
+    segs = [s for s in parse_srt(srt_text or "") if _normaliza_texto(s["text"])]
+    n = len(segs)
+    metricas = {"n_segmentos": n, "top_share": None, "unique_ratio": None,
+                "cobertura_fala": None}
+    if n == 0:
+        return {"degenerado": True, "motivo": "transcricao vazia (nenhum cue com texto)",
+                "metricas": metricas}
+    textos = [_normaliza_texto(s["text"]) for s in segs]
+    contagem = {}
+    for t in textos:
+        contagem[t] = contagem.get(t, 0) + 1
+    top = max(contagem.values())
+    duracao = segs[-1]["end"] - segs[0]["start"]
+    fala = sum(s["end"] - s["start"] for s in segs)
+    metricas.update({
+        "top_share": round(top / n, 3),
+        "unique_ratio": round(len(contagem) / n, 3),
+        "cobertura_fala": round(fala / duracao, 3) if duracao > 0 else 1.0,
+    })
+    if n < SANITY_MIN_SEGS:
+        return {"degenerado": False, "motivo": "amostra pequena (nao avaliada)",
+                "metricas": metricas}
+    if metricas["top_share"] >= SANITY_TOP_SHARE_MASSIVO:
+        return {"degenerado": True,
+                "motivo": f"{top}/{n} segmentos com o mesmo texto", "metricas": metricas}
+    if n >= SANITY_MIN_SEGS_FINO:
+        if metricas["top_share"] >= SANITY_TOP_SHARE:
+            return {"degenerado": True,
+                    "motivo": f"texto mais frequente cobre {metricas['top_share']:.0%} dos segmentos",
+                    "metricas": metricas}
+        if metricas["unique_ratio"] <= SANITY_UNIQUE_RATIO:
+            return {"degenerado": True,
+                    "motivo": f"so {metricas['unique_ratio']:.0%} de textos unicos",
+                    "metricas": metricas}
+        if metricas["cobertura_fala"] < SANITY_COBERTURA_FALA:
+            return {"degenerado": True,
+                    "motivo": f"fala cobre so {metricas['cobertura_fala']:.0%} da duracao",
+                    "metricas": metricas}
+    return {"degenerado": False, "motivo": "ok", "metricas": metricas}
+
+
 def snap_clip_bounds(srt_text, start, end, max_tail: float = 2.5, max_head: float = 1.0):
     """Ajusta [start, end] (segundos absolutos do vídeo) pra o corte não cair no meio
     de uma fala, usando o SRT da transcrição:

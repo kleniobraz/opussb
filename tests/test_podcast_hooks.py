@@ -296,8 +296,10 @@ def test_callback_clipe_segue_intacto(client, mocker):
     db.create_job("TEST-clip", "c.mp4", 30, 90, "/tmp/TEST-c.mp4")
     db.update_job("TEST-clip", status="transcribing")
 
+    # SRT válido (o sanity check de transcript degenerado barra transcript vazio;
+    # "srt" cru parseia em 0 cues e viraria error em vez de cutting)
     r = client.post("/api/callback", json={"job_id": "TEST-clip",
-                                           "transcript": "srt", "clips_json": "[]"})
+                                           "transcript": _srt_longo(60), "clips_json": "[]"})
     assert r.status_code == 200
     job = db.get_job("TEST-clip")
     assert job["status"] == "cutting" and job["clips_json"] == "[]"

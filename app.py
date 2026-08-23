@@ -4234,11 +4234,26 @@ def _is_trusted_caller(addr: str) -> bool:
     return ip.is_loopback or ip in _DOCKER_BRIDGE
 
 
+# Teto de corpo do callback: este caminho chega pelo bind 172.17.0.1 SEM passar pelo
+# nginx, então o client_max_body_size de lá não vale aqui, e o MAX_CONTENT_LENGTH global
+# (16 GiB, dimensionado pro upload de vídeo) não protege nada. O maior payload legítimo
+# observado tem ~220KB de transcript; 32 MiB dá folga de ~100x e ainda impede que um nó
+# do N8N mal mapeado (ex.: áudio em base64 no campo errado) carregue GBs pra RAM do
+# worker único via get_json e derrube o serviço por OOM.
+_MAX_CALLBACK_BODY = 32 * 1024 * 1024
+
+
 @app.route("/api/callback", methods=["POST"])
 def callback():
     if not _is_trusted_caller(request.remote_addr):
         abort(403)
-    data = request.get_json(force=True)
+    # Rejeitar Content-Length ausente cobre transfer-encoding chunked, que furaria o
+    # teto; o nó HTTP do N8N sempre manda Content-Length normal.
+    if request.content_length is None or request.content_length > _MAX_CALLBACK_BODY:
+        abort(413)
+    data = request.get_json(force=True, silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "corpo inválido"}), 400
     job_id = data.get("job_id")
     job = db.get_job(job_id)
     if not job_id or not job:
@@ -4263,13 +4278,44 @@ def callback():
     # leva vários segundos (até 2 chamadas ao Claude) com hooks_json ainda NULL nesse meio
     # tempo, e o serviço roda com threads reais (gthread) recebendo um N8N "at least once";
     # uma duplicata nessa janela reprocessaria e dispararia o Claude em dobro.
+    # Sanity check de transcript degenerado (incidente 2026-08-20: o Whisper alucinou
+    # a MESMA frase em 263/263 segmentos e o pipeline rodou por cima, entregando 18
+    # clipes falsos como 'done'). Degenerado marca error e NÃO segue: barra corte,
+    # reframe e S3 no fluxo de clipes e o gancho no de podcast. Roda DEPOIS das guardas
+    # de idempotência (duplicata do N8N nunca chega aqui) e é avaliado nos dois ramos,
+    # logo antes da ação. O scoring já rodou no N8N a essa altura; a chamada Haiku
+    # desperdiçada é aceita de propósito (mesma decisão do scoring de podcast, acima),
+    # em vez de acoplar a barreira em nós novos do N8N, que está marcado pra remoção.
+    _msg_degenerado = ("A transcrição saiu degenerada, provavelmente silêncio "
+                       "longo ou áudio ruim. Nada foi gerado; verifique o áudio "
+                       "do arquivo e reenvie.")
+
+    def _transcript_degenerado() -> bool:
+        veredito = captions.avaliar_transcript(data.get("transcript") or "")
+        if veredito["degenerado"]:
+            # Métricas são só números (nunca logar texto do transcript: dado de cliente).
+            log.warning("[callback] job %s: transcript degenerado (%s); metricas=%s",
+                        job_id, veredito["motivo"], veredito["metricas"])
+        return veredito["degenerado"]
+
     if job.get("job_type") == "podcast":
         if job.get("transcript") is not None:
             return jsonify({"ok": True, "skipped": f"podcast já processado (status {job['status']})"})
+        if _transcript_degenerado():
+            # Podcast: só marca error, sem mexer no disco (mesmo padrão dos outros
+            # erros de podcast, ex. hooks sem transcript); a fonte fica pro delete.
+            db.update_job(job_id, status="error", error=_msg_degenerado)
+            return jsonify({"ok": True, "skipped": "transcript degenerado"})
         db.update_job(job_id, transcript=data.get("transcript"),
                       status="analisando_gancho", progress=75)
         threading.Thread(target=hooks.run_podcast_hooks, args=(job_id,), daemon=True).start()
         return jsonify({"ok": True})
+    if _transcript_degenerado():
+        # Clipes: erro terminal segue o MESMO caminho dos demais (_fail_job: error +
+        # limpa JOB_DIR e o 16:9 retido), senão o vídeo de origem (GBs) vaza no disco
+        # da VPS até alguém deletar o card na mão.
+        processor._fail_job(job_id, _msg_degenerado)
+        return jsonify({"ok": True, "skipped": "transcript degenerado"})
     db.update_job(
         job_id,
         transcript=data.get("transcript"),
