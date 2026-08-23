@@ -123,6 +123,19 @@ JOB_DIR: str = os.environ.get("JOB_DIR", "/opt/opussb/jobs")
 # Acima da janela do Whisper (5-15min) com folga. Job preso passa disso vira error.
 JOB_STALE_MINUTES: int = int(os.environ.get("JOB_STALE_MINUTES", "30"))
 
+# Kill switch do sanity check de transcript degenerado no /api/callback (o que barra o
+# pipeline quando o Whisper alucina, ver captions.avaliar_transcript). Default LIGADO.
+# A flag existe porque o limiar de cobertura_fala é o ÚNICO com risco teórico de falso
+# positivo (arquivo legítimo com longos trechos sem fala), e a calibração foi feita em
+# 21 transcripts, que é amostra pequena. Um falso positivo bloqueia o MESMO arquivo pra
+# sempre (reenviar produz o mesmo transcript e cai na mesma barreira), sem bypass por
+# arquivo nem tela de admin; a saída de emergência é ESTA linha no .env + restart, sem
+# deploy. Mesma lição do gate de deploy (suspeitos com TTL) e da trava do delete (reap):
+# trava sem antídoto se descobre tarde.
+TRANSCRIPT_CHECK_ENABLED: bool = (
+    os.environ.get("TRANSCRIPT_CHECK_ENABLED", "true").lower() in ("1", "true", "yes")
+)
+
 # Teto de queimas de legenda SIMULTÂNEAS no processo. A queima sob demanda (GET
 # /api/clips/<id>/video) roda um ffmpeg libx264 que usa TODOS os núcleos; sem limite,
 # abrir vários clipes de um job recém-terminado disparava N queimas em paralelo (uma por

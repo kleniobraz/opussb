@@ -204,6 +204,36 @@ def test_callback_duplicata_em_done_nao_sobrescreve_com_error(client, mocker):
     db.delete_job("TEST-san4")
 
 
+def test_kill_switch_desligado_deixa_degenerado_passar(client, monkeypatch, mocker):
+    """TRANSCRIPT_CHECK_ENABLED=false é a saída de emergência pra falso positivo
+    (cobertura_fala é o limiar de maior risco; calibração em só 21 transcripts).
+    Com a flag off, o transcript degenerado NÃO barra: clipes seguem pro corte."""
+    monkeypatch.setattr(config, "TRANSCRIPT_CHECK_ENABLED", False)
+    t2 = mocker.patch("processor.run_thread2")
+    db.create_job("TEST-san5", "v.mp4", 30, 90, "/tmp/TEST-san5.mp4")
+    db.update_job("TEST-san5", status="transcribing")
+
+    r = client.post("/api/callback", json={"job_id": "TEST-san5",
+                                           "transcript": _srt_alucinado(),
+                                           "clips_json": "[]"})
+    assert r.status_code == 200 and "skipped" not in r.get_json()
+    assert db.get_job("TEST-san5")["status"] == "cutting"
+    assert _espera(lambda: t2.called)
+    db.delete_job("TEST-san5")
+
+    # e o ramo de podcast também respeita a flag
+    monkeypatch.setattr(config, "PODCAST_ENABLED", True)
+    rodou = mocker.patch("hooks.run_podcast_hooks")
+    db.create_podcast_job("TEST-san6", "pod.mp4", "/tmp/TEST-san6.mp4", "user@test", "vtest")
+    db.update_job("TEST-san6", status="transcribing")
+    r = client.post("/api/callback", json={"job_id": "TEST-san6",
+                                           "transcript": _srt_alucinado()})
+    assert r.status_code == 200 and "skipped" not in r.get_json()
+    assert db.get_job("TEST-san6")["status"] == "analisando_gancho"
+    assert _espera(lambda: rodou.called)
+    db.delete_job("TEST-san6")
+
+
 def test_callback_teto_de_corpo_413(client, monkeypatch):
     import app as app_module
     monkeypatch.setattr(app_module, "_MAX_CALLBACK_BODY", 128)

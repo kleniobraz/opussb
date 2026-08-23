@@ -4291,6 +4291,13 @@ def callback():
                        "do arquivo e reenvie.")
 
     def _transcript_degenerado() -> bool:
+        # Kill switch (ver o comentário de TRANSCRIPT_CHECK_ENABLED em config.py): com a
+        # flag desligada o check nem roda, e o log deixa rastro de que foi pulado por
+        # decisão operacional, não por bug.
+        if not config.TRANSCRIPT_CHECK_ENABLED:
+            log.info("[callback] job %s: sanity check de transcript DESLIGADO por flag "
+                     "(TRANSCRIPT_CHECK_ENABLED=false)", job_id)
+            return False
         veredito = captions.avaliar_transcript(data.get("transcript") or "")
         if veredito["degenerado"]:
             # Métricas são só números (nunca logar texto do transcript: dado de cliente).
