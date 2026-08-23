@@ -4,9 +4,9 @@
   "active": true,
   "isArchived": false,
   "createdAt": "2026-06-12 19:36:35.101",
-  "updatedAt": "2026-07-27 04:14:06.379",
-  "versionId": "6232e1e5-73dc-4ca6-95f0-7d732d4b0939",
-  "versionCounter": 60,
+  "updatedAt": "2026-08-23 00:06:36",
+  "versionId": "1cb31822-a5de-46f1-a39b-96962fe38880",
+  "versionCounter": 61,
   "nodes": [
     {
       "parameters": {
@@ -80,6 +80,10 @@
             },
             {
               "name": "input.word_timestamps",
+              "value": true
+            },
+            {
+              "name": "input.enable_vad",
               "value": true
             }
           ]
@@ -744,8 +748,8 @@
   },
   "staticData": {
     "global": {
-      "counter": 8,
-      "runpod_job_id": "9e1a34f0-3049-4ba3-89af-a7f6996ec9b9-u2",
+      "counter": 4,
+      "runpod_job_id": "8c9594fc-bab2-44a9-9ce9-7df00340ad4e-u1",
       "retryAttempt": 3
     }
   },

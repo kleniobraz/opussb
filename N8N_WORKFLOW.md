@@ -120,11 +120,28 @@ Submete o áudio para transcrição no endpoint Faster Whisper do RunPod.
 ```json
 {
   "input": {
-    "audio_url": "{{ $('Webhook').item.json.audio_s3_url }}",
-    "word_timestamps": true
+    "audio": "{{ $('Webhook').item.json.body.audio_s3_url }}",
+    "model": "turbo",
+    "language": "pt",
+    "transcription": "srt",
+    "word_timestamps": true,
+    "enable_vad": true
   }
 }
 ```
+
+**ARMADILHA: a chave é `audio`, NÃO `audio_url`.** A doc do worker diz `audio_url` e está
+errada: com `audio_url` o job "completa" em ~150ms com output vazio e SEM erro (crédito
+queimado, transcript vazio). Já aconteceu; confira a chave antes de qualquer mudança aqui.
+
+**`enable_vad: true` (adicionado 2026-08-22):** liga o Silero VAD do faster-whisper, que
+pula trechos sem fala em vez de "transcrever" créditos de legendagem alucinados. Origem:
+incidente 2026-08-20 (arquivo com 133s de silêncio inicial fez o Whisper turbo alucinar
+"Legenda Adriana Zanotto" em 263/263 segmentos do episódio inteiro). Validado por A/B em
+2026-08-22 contra os dois áudios reais: no degenerado, o VAD recuperou 4.760 cues de fala
+real; no saudável (Vitor Cunha), palavras -0,2% e cobertura de fala +4,4% (nenhuma perda).
+Defaults do Silero: só remove silêncio maior que 2s, com 400ms de padding; pausa dramática
+e respiração dentro de resposta não são tocadas.
 
 **Resposta esperada do RunPod:**
 ```json
